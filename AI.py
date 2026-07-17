@@ -13,11 +13,18 @@ try:
         base_url=config['aliyun']['base_url'],
     )
 
+    #初始化对话历史列表，放入设定的 prompt
+    messages = [
+        {'role': 'system', 'content': config['prompt']['system_prompt']}
+    ]
+
+    
+
     # 调用大模型 API
     completion = client.chat.completions.create(
         model=config['aliyun']['model'],
         messages=[
-            {'role': 'system', 'content': 'You are a helpful assistant.'},
+            {'role': 'system', 'content': config['prompt']['system_prompt']},
             {'role': 'user', 'content': '你是谁？'}
         ]
     )
