@@ -8,7 +8,7 @@ try:
     with open("config.yaml", "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
-
+    # 初始化 OpenAI 客户端
     client = OpenAI(
         api_key=config['aliyun']['api_key'],
         base_url=config['aliyun']['base_url'],
@@ -22,7 +22,7 @@ try:
     #开启一个无限循环，实现持续对话
     while True:
         #获取用户输入
-        user_input = input("用户: ")
+        user_input = input("\n用户: ")
 
         #判断是否退出
         if user_input.lower() in ['退出', 'exit', 'quit']:
@@ -32,14 +32,32 @@ try:
         #将用户输入添加到对话历史中
         messages.append({'role': 'user', 'content': user_input})
 
-        # 调用大模型 API
-        completion = client.chat.completions.create(
+        # 调用大模型 API,开启流式输出
+        stream = client.chat.completions.create(
         model=config['aliyun']['model'],
-        messages=messages
-        )        
+        messages=messages,
+        stream=True
+        )
+           
+        # 用于收集完整的回复，以便存入历史记录
+        full_reply = ""
     
-        # 打印模型的回复内容
-        print(f"遐蝶: {completion.choices[0].message.content}")
+        # 遍历流式返回的数据块
+        for chunk in stream:
+            # 安全检查：确保 chunk 里有 choices 列表，且列表不为空
+            if chunk.choices and len(chunk.choices) > 0:
+                # 提取当前块中的文本内容
+                content = chunk.choices[0].delta.content
+                # 确保内容有值再打印和拼接
+                if content:
+                    print(content, end="", flush=True)
+                    full_reply += content
+        
+        # 打印完一行后换行
+        print()
+
+        # 将 AI 的完整回复加入到对话历史中，供下一轮使用
+        messages.append({'role': 'assistant', 'content': full_reply})
 
     
 except Exception as e:
