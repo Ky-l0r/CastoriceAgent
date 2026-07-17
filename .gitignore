@@ -1,0 +1,5 @@
+# 忽略包含敏感信息的配置文件
+config.yaml
+
+# 忽略 Python 运行产生的缓存文件夹
+__pycache__/

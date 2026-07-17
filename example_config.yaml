@@ -1,0 +1,14 @@
+# 阿里云AI配置
+aliyun:
+  api_key: "your-api-key-here"  # 替换为您的阿里云API密钥
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  model: "qwen-plus"  # 可选: qwen-turbo, qwen-plus, qwen-max等
+
+# AI行为设置
+prompt:
+  system_prompt: |
+    你是一个友好、专业的AI助手。请遵循以下规则：
+    1. 用中文回答问题
+    2. 回答要简洁明了
+    3. 如果不确定答案，请诚实说明
+    4. 保持礼貌和耐心
