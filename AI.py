@@ -14,9 +14,21 @@ try:
         base_url=config['aliyun']['base_url'],
     )
 
+    #自动读取 prompts 文件夹下的所有 .md 文件
+    prompt_parts = []
+    prompts_dir = "prompts"
+    for filename in os.listdir(prompts_dir):
+        if filename.endswith(".md"):
+            filepath = os.path.join(prompts_dir, filename)
+            with open(filepath, "r", encoding="utf-8") as f:
+                prompt_parts.append(f.read())
+
+    # 将所有读取到的内容拼接成一个完整的 Prompt
+    prompt = "\n\n".join(prompt_parts)
+
     #初始化对话历史列表，放入设定的 prompt
     messages : list[Any] = [
-        {'role': 'system', 'content': config['prompt']['system_prompt']}
+        {'role': 'system', 'content': prompt}
     ]
 
     #开启一个无限循环，实现持续对话
@@ -38,9 +50,14 @@ try:
         messages=messages,
         stream=True
         )
-           
+        
+
+
         # 用于收集完整的回复，以便存入历史记录
         full_reply = ""
+
+        #在 AI 开始输出前，打印前缀
+        print("遐蝶：", end="", flush=True)
     
         # 遍历流式返回的数据块
         for chunk in stream:
