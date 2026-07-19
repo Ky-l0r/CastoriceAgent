@@ -2,7 +2,7 @@ import subprocess
 import sys
 
 # 这里写你需要的依赖包
-packages = ["openai", "pyyaml","chromadb","sentence_transformers"]
+packages = ["openai", "pyyaml","chromadb"]
 
 for package in packages:
     # 自动调用 pip 进行安装
