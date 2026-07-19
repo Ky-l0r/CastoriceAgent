@@ -3,3 +3,9 @@ config.yaml
 
 # 忽略 Python 运行产生的缓存文件夹
 __pycache__/
+
+# 忽略数据库文件夹
+database/
+
+# 忽略vscode文件夹
+.vscode/
