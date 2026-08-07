@@ -1,40 +1,148 @@
-import sys
-from PySide6.QtWidgets import QApplication
-from PySide6.QtGui import QFont
+"""
+主程序入口
+"""
 
-# 导入AI和UI模块
-from ai import ChatBot
+import sys
+import os
+from pathlib import Path
+
+# 导入UI模块
 from ui import ChatWindow
 
+# 导入AI核心模块
+try:
+    from ai import AIBot, get_ai_bot
+except ImportError as e:
+    print(f"错误: 无法导入AI模块 - {e}")
+    print("请确保 ai.py 文件存在且没有语法错误")
+    sys.exit(1)
+
+
+def setup_environment():
+    """
+    设置运行环境
+    
+    创建必要的目录和检查配置文件
+    """
+    # 创建必要的目录
+    directories = ["database", "prompts", "Image"]
+    for dir_name in directories:
+        Path(dir_name).mkdir(exist_ok=True)
+    
+    # 检查配置文件
+    config_file = Path("config.yaml")
+    if not config_file.exists():
+        print("警告: 未找到 config.yaml 配置文件")
+        print("请创建配置文件或使用示例配置")
+        # 可以创建默认配置文件
+        # create_default_config()
+    
+    # 检查提示词文件
+    prompts_dir = Path("prompts")
+    if not any(prompts_dir.iterdir()):
+        print("提示: prompts 目录为空，请添加提示词文件 (.md 或 .txt)")
+
+
+def find_avatar():
+    """
+    查找AI头像文件
+    
+    Returns:
+        头像文件路径，如果未找到则返回 None
+    """
+    avatar_dir = Path("Image")
+    if not avatar_dir.exists():
+        return None
+    
+    # 尝试不同的文件名和扩展名
+    avatar_names = [
+        "CastoriceAvatar",
+        "avatar",
+        "ai_avatar",
+        "profile"
+    ]
+    extensions = ['.jpeg', '.jpg', '.png', '.gif', '.webp']
+    
+    for name in avatar_names:
+        for ext in extensions:
+            avatar_file = avatar_dir / f"{name}{ext}"
+            if avatar_file.exists():
+                return str(avatar_file)
+    
+    return None
+
+
 def main():
+    """
+    应用程序主入口
+    """
+    # 设置环境
+    setup_environment()
+    
+    # 创建AI机器人实例
     try:
-        # 创建应用程序
-        app = QApplication(sys.argv)
+        # 方式1：使用默认配置
+        bot = AIBot()
         
-        # 设置应用程序字体
-        font = QFont("Microsoft YaHei", 9)
-        app.setFont(font)
+        # 方式2：使用单例模式（如果需要全局共享）
+        # bot = get_ai_bot()
         
-        # 初始化AI
-        bot = ChatBot()
+        # 方式3：指定提供商
+        # bot = AIBot(provider_name="deepseek")
         
-        # 创建并显示主窗口
-        window = ChatWindow(bot)
-        window.show()
-        
-        # 运行应用程序
-        sys.exit(app.exec())
-        
-    except FileNotFoundError as e:
-        print(f"错误：找不到必要的文件 - {e}")
-        print("请确保以下文件存在：")
-        print("  - config.yaml (配置文件)")
-        print("  - prompts/ 文件夹 (提示词模板)")
-        input("按回车键退出...")
+        print(f"AI机器人初始化成功 (提供商: {bot.provider_name})")
         
     except Exception as e:
-        print(f"启动失败：{e}")
-        input("按回车键退出...")
+        print(f"错误: AI机器人初始化失败 - {e}")
+        print("请检查 config.yaml 配置文件是否正确")
+        sys.exit(1)
+    
+    # 查找AI头像
+    avatar_path = find_avatar()
+    if avatar_path:
+        print(f"找到头像: {avatar_path}")
+    else:
+        print("提示: 未找到AI头像文件，将使用默认文字头像")
+    
+    # 创建聊天窗口
+    try:
+        window = ChatWindow(bot, ai_avatar_path=avatar_path)
+        return window
+    except Exception as e:
+        print(f"错误: 创建聊天窗口失败 - {e}")
+        sys.exit(1)
+
 
 if __name__ == "__main__":
-    main()
+    # 导入PySide6（在main函数外导入）
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtGui import QFont, QPalette, QColor
+    
+    # 创建QApplication实例
+    app = QApplication(sys.argv)
+    
+    # 设置应用程序样式（暗色主题）
+    app.setStyle("Fusion")
+    
+    # 设置暗色调色板
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window, QColor("#1A1A1A"))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor("#FFFFFF"))
+    palette.setColor(QPalette.ColorRole.Base, QColor("#2D2D2D"))
+    palette.setColor(QPalette.ColorRole.Text, QColor("#FFFFFF"))
+    palette.setColor(QPalette.ColorRole.Button, QColor("#2D2D2D"))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor("#FFFFFF"))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor("#3A9E4A"))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#FFFFFF"))
+    app.setPalette(palette)
+    
+    # 设置字体
+    font = QFont("Microsoft YaHei", 9)
+    app.setFont(font)
+    
+    # 运行主程序
+    window = main()
+    window.show()
+    
+    # 进入事件循环
+    sys.exit(app.exec())
