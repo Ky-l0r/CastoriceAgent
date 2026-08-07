@@ -90,10 +90,10 @@ def main():
         # 方式3：指定提供商
         # bot = AIBot(provider_name="deepseek")
         
-        print(f"AI机器人初始化成功 (提供商: {bot.provider_name})")
+        print(f"CastoriceAgent初始化成功 (提供商: {bot.provider_name})")
         
     except Exception as e:
-        print(f"错误: AI机器人初始化失败 - {e}")
+        print(f"错误: CastoriceAgent初始化失败 - {e}")
         print("请检查 config.yaml 配置文件是否正确")
         sys.exit(1)
     
@@ -132,7 +132,7 @@ if __name__ == "__main__":
     palette.setColor(QPalette.ColorRole.Text, QColor("#FFFFFF"))
     palette.setColor(QPalette.ColorRole.Button, QColor("#2D2D2D"))
     palette.setColor(QPalette.ColorRole.ButtonText, QColor("#FFFFFF"))
-    palette.setColor(QPalette.ColorRole.Highlight, QColor("#3A9E4A"))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor("#8B5CF6"))
     palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#FFFFFF"))
     app.setPalette(palette)
     

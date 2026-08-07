@@ -29,11 +29,11 @@ class Colors:
     INPUT_BG = "#2D2D2D"
     INPUT_TEXT = "#FFFFFF"
     INPUT_BORDER = "#3D3D3D"
-    INPUT_BORDER_FOCUS = "#3A9E4A"
+    INPUT_BORDER_FOCUS = "#8B5CF6"
     INPUT_PLACEHOLDER = "#888888"
     
     # 消息气泡
-    USER_BUBBLE_BG = "#2D7D3A"
+    USER_BUBBLE_BG = "#2A2A2A"
     AI_BUBBLE_BG = "#2A2A2A"
     BUBBLE_TEXT = "#FFFFFF"
     
@@ -52,8 +52,8 @@ class Colors:
     AVATAR_TEXT = "#FFFFFF"
     
     # 高亮
-    HIGHLIGHT = "#3A9E4A"
-    HIGHLIGHT_TEXT = "#FFFFFF"
+    HIGHLIGHT = "#8B5CF6"       
+    HIGHLIGHT_TEXT = "#FFFFFF"   
 
 
 class Sizes:
@@ -573,7 +573,7 @@ class ChatWindow(QMainWindow):
         # 布局：头像在左，气泡在右，顶部对齐
         layout.addWidget(avatar)
         layout.addWidget(bubble_container)
-        layout.setAlignment(avatar, Qt.AlignmentFlag.AlignTop)  # 顶部对齐
+        layout.setAlignment(avatar, Qt.AlignmentFlag.AlignTop)
         layout.addStretch()
         
         # 添加到消息布局
