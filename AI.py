@@ -289,7 +289,7 @@ class LLMProvider:
     
     def chat_completion(
         self,
-        messages: Sequence[Dict[str, str]],
+        messages: Sequence[Dict[str, Any]],
         stream: bool = True,
         **kwargs
     ) -> Tuple[str, List[Dict[str, Any]]]:
@@ -331,7 +331,7 @@ class OpenAICompatibleProvider(LLMProvider):
     
     def chat_completion(
         self,
-        messages: Sequence[Dict[str, str]],
+        messages: Sequence[Dict[str, Any]],
         stream: bool = True,
         **kwargs
     ) -> Tuple[str, List[Dict[str, Any]]]:
@@ -943,8 +943,8 @@ class AI:
             self.config_manager.get('search', {})
         )
         
-        # 初始化对话历史
-        self._messages: List[Dict[str, str]] = []
+        # 初始化对话历史（消息可包含 content=None 与 tool_calls，故用 Any 值）
+        self._messages: List[Dict[str, Any]] = []
         self._reset_messages()
         
         self.logger.info(f"AI聊天机器人初始化完成 (提供商: {self._provider_name})")
@@ -1153,7 +1153,7 @@ class AI:
         self.memory_manager.clear()
         self.logger.info("所有记忆已清空")
     
-    def get_history(self) -> List[Dict[str, str]]:
+    def get_history(self) -> List[Dict[str, Any]]:
         """
         获取对话历史
         
@@ -1172,7 +1172,7 @@ class AI:
         return self.memory_manager.count
     
     @property
-    def messages(self) -> List[Dict[str, str]]:
+    def messages(self) -> List[Dict[str, Any]]:
         """获取对话历史（只读）"""
         return self._messages.copy()
     

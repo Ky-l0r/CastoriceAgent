@@ -4,7 +4,7 @@ UI模块
 
 import os
 import sys
-from typing import Optional, Any
+from typing import Optional, Any, Dict
 from pathlib import Path
 
 from PySide6.QtWidgets import (
@@ -78,9 +78,7 @@ class Sizes:
     AVATAR_SIZE = 40
     BUBBLE_MAX_WIDTH = 450
     INPUT_MAX_HEIGHT = 100
-    INPUT_MIN_HEIGHT = 46
-    INPUT_MIN_WIDTH = 90
-    INPUT_MAX_WIDTH = 480
+    INPUT_MIN_HEIGHT = 50
     SCROLLBAR_WIDTH = 12
     MESSAGE_SPACING = 8
     BUBBLE_PADDING_H = 12
@@ -198,6 +196,25 @@ class AvatarLabel(QLabel):
         return result
 
 
+class WrapLabel(QLabel):
+    """
+    按内容自适应的换行文本标签
+
+    sizeHint 返回单行文本宽度，使气泡宽度随内容增长；
+    超过气泡最大宽度后由 wordWrap 自动换行。
+    """
+
+    def sizeHint(self) -> QSize:
+        text = self.text()
+        fm = self.fontMetrics()
+        width = 0
+        for line in text.split("\n"):
+            width = max(width, fm.horizontalAdvance(line))
+        if width <= 0:
+            return super().sizeHint()
+        return QSize(width, fm.height())
+
+
 class ChatBubble(QFrame):
     """
     聊天气泡组件
@@ -237,18 +254,19 @@ class ChatBubble(QFrame):
         # 创建气泡
         bubble = self._create_bubble()
         
-        # 布局排列
+        # 布局排列（bubble 加 stretch factor，使气泡背景包住文本、宽度随内容）
         if self._is_user:
-            main_layout.addWidget(bubble)
+            main_layout.addWidget(bubble, 1)
             main_layout.addWidget(avatar)
             main_layout.setAlignment(avatar, Qt.AlignmentFlag.AlignTop)
         else:
             main_layout.addWidget(avatar)
-            main_layout.addWidget(bubble)
+            main_layout.addWidget(bubble, 1)
             main_layout.setAlignment(avatar, Qt.AlignmentFlag.AlignTop)
         
+        # 水平方向不强制拉伸：气泡宽度随文本内容自适应（上限由 _adjust_bubble_widths 限定）
         self.setSizePolicy(
-            QSizePolicy.Policy.Expanding, 
+            QSizePolicy.Policy.Maximum,
             QSizePolicy.Policy.Minimum
         )
     
@@ -271,7 +289,7 @@ class ChatBubble(QFrame):
         )
         
         # 文本标签
-        self._label = QLabel(self._text)
+        self._label = WrapLabel(self._text)
         self._label.setWordWrap(True)
         self._label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._label.setFont(QFont(Fonts.FAMILY, Fonts.SIZE_BUBBLE))
@@ -627,164 +645,6 @@ class TitleBar(QWidget):
 # 平台工具
 # ============================================================================
 
-def enable_acrylic(hwnd: int) -> bool:
-    """
-    为窗口启用亚克力（毛玻璃）背景
-
-    优先使用 Windows 11 22H2+ 的 DWM 系统背景（DWMWA_SYSTEMBACKDROP_TYPE），
-    失败时回退到 SetWindowCompositionAttribute（Windows 10/11）。
-    非 Windows 平台或调用失败时返回 False，界面保持不透明背景。
-
-    Args:
-        hwnd: 原生窗口句柄
-
-    Returns:
-        是否成功启用亚克力
-    """
-    if sys.platform != "win32" or not hwnd:
-        return False
-
-    try:
-        import ctypes
-
-        # ---- 方式一：Windows 10/11 传统亚克力（ACCENT_ENABLE_ACRYLICBLURBEHIND）----
-        # 该方式兼容 WS_EX_LAYERED（Qt 半透明窗口），优先尝试
-        try:
-            class ACCENTPOLICY(ctypes.Structure):
-                _fields_ = [
-                    ("AccentState", ctypes.c_uint),
-                    ("AccentFlags", ctypes.c_uint),
-                    ("GradientColor", ctypes.c_uint),
-                    ("AnimationId", ctypes.c_uint),
-                ]
-
-            class WINDOWCOMPOSITIONATTRIBDATA(ctypes.Structure):
-                _fields_ = [
-                    ("Attribute", ctypes.c_int),
-                    ("Data", ctypes.c_void_p),
-                    ("SizeOfData", ctypes.c_size_t),
-                ]
-
-            accent = ACCENTPOLICY()
-            accent.AccentState = 4             # ACCENT_ENABLE_ACRYLICBLURBEHIND
-            accent.GradientColor = 0x99000000  # 深色着色（AABBGGRR）
-
-            data = WINDOWCOMPOSITIONATTRIBDATA()
-            data.Attribute = 19                # WCA_ACCENT_POLICY
-            data.SizeOfData = ctypes.sizeof(accent)
-            data.Data = ctypes.cast(
-                ctypes.pointer(accent), ctypes.c_void_p
-            )
-
-            user32 = ctypes.windll.user32
-            if user32.SetWindowCompositionAttribute(
-                ctypes.c_void_p(hwnd), ctypes.byref(data)
-            ):
-                return True
-        except Exception:
-            pass
-
-        # ---- 方式二：Windows 11 22H2+ 系统级亚克力（DWM 系统背景）----
-        try:
-            dwmapi = ctypes.windll.dwmapi
-            DWMWA_SYSTEMBACKDROP_TYPE = 38
-            DWMSBT_TRANSIENTWINDOW = 3  # 亚克力背景
-            hr = dwmapi.DwmSetWindowAttribute(
-                ctypes.c_void_p(hwnd),
-                DWMWA_SYSTEMBACKDROP_TYPE,
-                ctypes.byref(ctypes.c_int(DWMSBT_TRANSIENTWINDOW)),
-                ctypes.sizeof(ctypes.c_int),
-            )
-            if hr == 0:  # S_OK
-                return True
-        except Exception:
-            pass
-    except Exception:
-        pass
-
-    return False
-
-
-class AdaptiveInputBox(QTextEdit):
-    """
-    自适应输入框
-
-    宽度随输入内容增长，在 [Sizes.INPUT_MIN_WIDTH, Sizes.INPUT_MAX_WIDTH] 之间变化：
-    只输入一两个字时显示为紧凑的小输入框，内容变长时自动扩展，
-    达到最大宽度后开始自动换行；高度同样随内容行数在
-    [Sizes.INPUT_MIN_HEIGHT, Sizes.INPUT_MAX_HEIGHT] 之间变化。
-    """
-
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.textChanged.connect(self._on_content_changed)
-        self._on_content_changed()
-
-    # ------------------------------------------------------------------------
-    # 自适应尺寸
-    # ------------------------------------------------------------------------
-
-    def _content_width(self) -> int:
-        """计算内容（文本/占位符）所需的最小宽度"""
-        fm = self.fontMetrics()
-        text = self.toPlainText()
-        width = 0
-        for line in text.split("\n"):
-            width = max(width, fm.horizontalAdvance(line))
-        # 占位符只在输入框为空时显示，此时才计入宽度
-        if not text and self.placeholderText():
-            width = max(width, fm.horizontalAdvance(self.placeholderText()))
-        return width
-
-    def _on_content_changed(self) -> None:
-        """内容变化：自适应宽度与高度"""
-        self._update_width()
-        self._update_height()
-
-    def _update_width(self) -> None:
-        """根据内容自适应宽度"""
-        # 水平开销：padding(8*2) + 边框(1*2) + 文档边距(2*margin) + 余量
-        document_margin = self.document().documentMargin()
-        extra = int(8 * 2 + 1 * 2 + document_margin * 2 + 10)
-
-        max_width = Sizes.INPUT_MAX_WIDTH
-        window = self.window()
-        if window is not None and window is not self:
-            max_width = min(
-                max_width,
-                max(Sizes.INPUT_MIN_WIDTH, window.width() - 60),
-            )
-
-        new_width = max(
-            Sizes.INPUT_MIN_WIDTH,
-            min(self._content_width() + extra, max_width),
-        )
-        if new_width != self.width():
-            self.setFixedWidth(new_width)
-
-    def _update_height(self) -> None:
-        """根据内容自适应高度（按文档实际排版高度计算）"""
-        doc_height = self.document().size().height()
-        # 垂直开销：padding(8*2) + 边框(1*2) + 余量
-        height = int(doc_height) + 8 * 2 + 1 * 2 + 4
-        height = max(
-            Sizes.INPUT_MIN_HEIGHT,
-            min(height, Sizes.INPUT_MAX_HEIGHT),
-        )
-        if height != self.height():
-            self.setFixedHeight(height)
-
-    def resizeEvent(self, event: Any) -> None:
-        """宽度变化后文档重新排版，刷新高度"""
-        super().resizeEvent(event)
-        self._update_height()
-
-    def showEvent(self, event: Any) -> None:
-        """显示后刷新一次尺寸（此时窗口宽度已知）"""
-        super().showEvent(event)
-        self._update_width()
-        self._update_height()
-
 
 # ============================================================================
 # 主窗口
@@ -810,8 +670,7 @@ class ChatWindow(QMainWindow):
         self._streaming_bubble: Optional[ChatBubble] = None
         self._streaming_container: Optional[QWidget] = None
         self._tool_labels: Dict[str, QLabel] = {}  # 工具状态气泡
-        self._acrylic_tried = False
-        self._acrylic_enabled = False
+        self._region_applied = False
         
         self._init_ui()
     
@@ -967,22 +826,22 @@ class ChatWindow(QMainWindow):
         self._content_layout.addWidget(self._scroll_area, 1)
     
     def _setup_input_area(self) -> None:
-        """设置输入区域（自适应宽度输入框）"""
+        """设置输入区域"""
         input_widget = QWidget()
         input_widget.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         
-        layout = QHBoxLayout(input_widget)
+        layout = QVBoxLayout(input_widget)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
         
-        self._input_text = AdaptiveInputBox()
-        self._input_text.setPlaceholderText("输入消息…")
+        self._input_text = QTextEdit()
+        self._input_text.setPlaceholderText(
+            "输入消息... (Shift+Enter换行，Enter发送)"
+        )
         self._input_text.setMaximumHeight(Sizes.INPUT_MAX_HEIGHT)
         self._input_text.setMinimumHeight(Sizes.INPUT_MIN_HEIGHT)
         self._input_text.installEventFilter(self)
         
         layout.addWidget(self._input_text)
-        layout.addStretch()
         self._content_layout.addWidget(input_widget, 0)
     
     def _setup_timer(self) -> None:
@@ -1016,16 +875,39 @@ class ChatWindow(QMainWindow):
         self._resize_timer.start(200)
     
     def showEvent(self, event: Any) -> None:
-        """窗口首次显示时启用亚克力（毛玻璃）效果"""
+        """窗口首次显示时关闭系统默认圆角（保持自绘圆角的干净半透明背景）"""
         super().showEvent(event)
-        if not self._acrylic_tried:
-            self._acrylic_tried = True
-            self._acrylic_enabled = enable_acrylic(int(self.winId()))
-            if self._acrylic_enabled:
-                self.update()
+        if not self._region_applied:
+            self._region_applied = True
+            self._apply_window_region()
+            self.update()
+
+    def _apply_window_region(self) -> None:
+        """
+        关闭 Windows 系统默认圆角，避免与自绘圆角叠加出方框。
+
+        窗口背景由 paintEvent 自绘为半透明圆角（圆角外透明），
+        不使用系统毛玻璃 blur，因此四角保持干净。
+        """
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            hwnd = int(self.winId())
+            dwmapi = ctypes.windll.dwmapi
+            DWMWA_WINDOW_CORNER_PREFERENCE = 33
+            DWMWCP_DONOTROUND = 1
+            dwmapi.DwmSetWindowAttribute(
+                ctypes.c_void_p(hwnd),
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                ctypes.byref(ctypes.c_int(DWMWCP_DONOTROUND)),
+                ctypes.sizeof(ctypes.c_int),
+            )
+        except Exception:
+            pass
 
     def paintEvent(self, event: Any) -> None:
-        """绘制圆角窗口背景（启用亚克力时为半透明）"""
+        """绘制圆角半透明窗口背景（圆角外透明，形成干净圆角）"""
         super().paintEvent(event)
         
         painter = QPainter(self)
@@ -1036,8 +918,7 @@ class ChatWindow(QMainWindow):
         path.addRoundedRect(rect, Sizes.WINDOW_RADIUS, Sizes.WINDOW_RADIUS)
         
         bg = QColor(Colors.WINDOW_BG)
-        if self._acrylic_enabled:
-            bg.setAlpha(Colors.WINDOW_BG_ALPHA)
+        bg.setAlpha(Colors.WINDOW_BG_ALPHA)
         painter.fillPath(path, bg)
         painter.end()
     
@@ -1290,7 +1171,7 @@ class ChatWindow(QMainWindow):
             scrollbar.setValue(scrollbar.maximum())
     
     def _adjust_bubble_widths(self) -> None:
-        """调整气泡宽度以适应窗口变化"""
+        """调整气泡最大宽度以适应窗口变化（气泡本身按内容自适应）"""
         width = self._scroll_area.width() - 60
         max_width = min(
             Sizes.BUBBLE_MAX_WIDTH, 
@@ -1308,6 +1189,10 @@ class ChatWindow(QMainWindow):
             
             for child in container.children():
                 if isinstance(child, ChatBubble):
+                    # 外层气泡（含头像）最大宽度 = 内容上限 + 头像 + 间距
+                    child.setMaximumWidth(
+                        max_width + Sizes.AVATAR_SIZE + 8
+                    )
                     for sub_child in child.children():
                         if isinstance(sub_child, QFrame) and sub_child.layout():
                             sub_child.setMaximumWidth(max_width)
