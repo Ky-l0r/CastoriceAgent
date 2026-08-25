@@ -11,7 +11,7 @@ from ui import ChatWindow
 
 # 导入AI核心模块
 try:
-    from ai import AIBot, get_ai_bot
+    from ai import AI, get_ai
 except ImportError as e:
     print(f"错误: 无法导入AI模块 - {e}")
     print("请确保 ai.py 文件存在且没有语法错误")
@@ -81,14 +81,7 @@ def main():
     
     # 创建AI机器人实例
     try:
-        # 方式1：使用默认配置
-        bot = AIBot()
-        
-        # 方式2：使用单例模式（如果需要全局共享）
-        # bot = get_ai_bot()
-        
-        # 方式3：指定提供商
-        # bot = AIBot(provider_name="deepseek")
+        bot = AI()
         
         print(f"CastoriceAgent初始化成功 (提供商: {bot.provider_name})")
         

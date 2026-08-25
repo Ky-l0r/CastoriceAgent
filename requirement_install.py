@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 # 这里写你需要的依赖包
-packages = ["openai", "pyyaml","chromadb","pyside6"]
+packages = ["openai", "pyyaml","chromadb","pyside6","pyinstaller"]
 
 for package in packages:
     # 自动调用 pip 进行安装
