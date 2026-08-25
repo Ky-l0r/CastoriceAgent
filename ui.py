@@ -509,7 +509,7 @@ class TitleBar(QWidget):
         self._drag_offset: Optional[QPoint] = None
 
         self.setFixedHeight(Sizes.TITLEBAR_HEIGHT)
-        self.setStyleSheet("background-color: transparent;")
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(Sizes.TITLEBAR_MARGIN_H, 0, 8, 0)
@@ -647,23 +647,8 @@ def enable_acrylic(hwnd: int) -> bool:
     try:
         import ctypes
 
-        # ---- 方式一：Windows 11 22H2+ 系统级亚克力 ----
-        try:
-            dwmapi = ctypes.windll.dwmapi
-            DWMWA_SYSTEMBACKDROP_TYPE = 38
-            DWMSBT_TRANSIENTWINDOW = 3  # 亚克力背景
-            hr = dwmapi.DwmSetWindowAttribute(
-                ctypes.c_void_p(hwnd),
-                DWMWA_SYSTEMBACKDROP_TYPE,
-                ctypes.byref(ctypes.c_int(DWMSBT_TRANSIENTWINDOW)),
-                ctypes.sizeof(ctypes.c_int),
-            )
-            if hr == 0:  # S_OK
-                return True
-        except Exception:
-            pass
-
-        # ---- 方式二：Windows 10/11 传统亚克力（ACCENT_ENABLE_ACRYLICBLURBEHIND）----
+        # ---- 方式一：Windows 10/11 传统亚克力（ACCENT_ENABLE_ACRYLICBLURBEHIND）----
+        # 该方式兼容 WS_EX_LAYERED（Qt 半透明窗口），优先尝试
         try:
             class ACCENTPOLICY(ctypes.Structure):
                 _fields_ = [
@@ -698,6 +683,22 @@ def enable_acrylic(hwnd: int) -> bool:
                 return True
         except Exception:
             pass
+
+        # ---- 方式二：Windows 11 22H2+ 系统级亚克力（DWM 系统背景）----
+        try:
+            dwmapi = ctypes.windll.dwmapi
+            DWMWA_SYSTEMBACKDROP_TYPE = 38
+            DWMSBT_TRANSIENTWINDOW = 3  # 亚克力背景
+            hr = dwmapi.DwmSetWindowAttribute(
+                ctypes.c_void_p(hwnd),
+                DWMWA_SYSTEMBACKDROP_TYPE,
+                ctypes.byref(ctypes.c_int(DWMSBT_TRANSIENTWINDOW)),
+                ctypes.sizeof(ctypes.c_int),
+            )
+            if hr == 0:  # S_OK
+                return True
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -706,32 +707,39 @@ def enable_acrylic(hwnd: int) -> bool:
 
 class AdaptiveInputBox(QTextEdit):
     """
-    自适应宽度输入框
+    自适应输入框
 
     宽度随输入内容增长，在 [Sizes.INPUT_MIN_WIDTH, Sizes.INPUT_MAX_WIDTH] 之间变化：
     只输入一两个字时显示为紧凑的小输入框，内容变长时自动扩展，
-    达到最大宽度后开始自动换行。
+    达到最大宽度后开始自动换行；高度同样随内容行数在
+    [Sizes.INPUT_MIN_HEIGHT, Sizes.INPUT_MAX_HEIGHT] 之间变化。
     """
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self.textChanged.connect(self._update_width)
-        self._update_width()
+        self.textChanged.connect(self._on_content_changed)
+        self._on_content_changed()
 
     # ------------------------------------------------------------------------
-    # 自适应宽度
+    # 自适应尺寸
     # ------------------------------------------------------------------------
 
     def _content_width(self) -> int:
         """计算内容（文本/占位符）所需的最小宽度"""
         fm = self.fontMetrics()
+        text = self.toPlainText()
         width = 0
-        for line in self.toPlainText().split("\n"):
+        for line in text.split("\n"):
             width = max(width, fm.horizontalAdvance(line))
-        placeholder = self.placeholderText()
-        if placeholder:
-            width = max(width, fm.horizontalAdvance(placeholder))
+        # 占位符只在输入框为空时显示，此时才计入宽度
+        if not text and self.placeholderText():
+            width = max(width, fm.horizontalAdvance(self.placeholderText()))
         return width
+
+    def _on_content_changed(self) -> None:
+        """内容变化：自适应宽度与高度"""
+        self._update_width()
+        self._update_height()
 
     def _update_width(self) -> None:
         """根据内容自适应宽度"""
@@ -754,10 +762,28 @@ class AdaptiveInputBox(QTextEdit):
         if new_width != self.width():
             self.setFixedWidth(new_width)
 
+    def _update_height(self) -> None:
+        """根据内容自适应高度（按文档实际排版高度计算）"""
+        doc_height = self.document().size().height()
+        # 垂直开销：padding(8*2) + 边框(1*2) + 余量
+        height = int(doc_height) + 8 * 2 + 1 * 2 + 4
+        height = max(
+            Sizes.INPUT_MIN_HEIGHT,
+            min(height, Sizes.INPUT_MAX_HEIGHT),
+        )
+        if height != self.height():
+            self.setFixedHeight(height)
+
+    def resizeEvent(self, event: Any) -> None:
+        """宽度变化后文档重新排版，刷新高度"""
+        super().resizeEvent(event)
+        self._update_height()
+
     def showEvent(self, event: Any) -> None:
-        """显示后刷新一次宽度（此时窗口宽度已知）"""
+        """显示后刷新一次尺寸（此时窗口宽度已知）"""
         super().showEvent(event)
         self._update_width()
+        self._update_height()
 
 
 # ============================================================================
@@ -873,7 +899,7 @@ class ChatWindow(QMainWindow):
     def _setup_central_widget(self) -> None:
         """设置中心部件"""
         central = QWidget()
-        central.setStyleSheet("background-color: transparent;")
+        central.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         self.setCentralWidget(central)
         self._central_widget = central
         
@@ -885,7 +911,7 @@ class ChatWindow(QMainWindow):
         
         # 内容区：消息区 + 输入区（保留四周内边距）
         content = QWidget()
-        content.setStyleSheet("background-color: transparent;")
+        content.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         self._content_widget = content
         
         self._content_layout = QVBoxLayout(content)
@@ -925,7 +951,12 @@ class ChatWindow(QMainWindow):
         
         # 消息容器
         self._message_container = QWidget()
-        self._message_container.setStyleSheet("background-color: transparent;")
+        self._message_container.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        
+        # 视口显式透明：避免渲染器跳过窗口背景（保证亚克力/暗色背景可见）
+        self._scroll_area.viewport().setStyleSheet(
+            "background-color: transparent;"
+        )
         
         self._message_layout = QVBoxLayout(self._message_container)
         self._message_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -938,7 +969,7 @@ class ChatWindow(QMainWindow):
     def _setup_input_area(self) -> None:
         """设置输入区域（自适应宽度输入框）"""
         input_widget = QWidget()
-        input_widget.setStyleSheet("background-color: transparent;")
+        input_widget.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         
         layout = QHBoxLayout(input_widget)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1051,7 +1082,7 @@ class ChatWindow(QMainWindow):
     def _show_loading_indicator(self) -> None:
         """显示加载指示器"""
         self._loading_container = QWidget()
-        self._loading_container.setStyleSheet("background-color: transparent;")
+        self._loading_container.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         
         layout = QHBoxLayout(self._loading_container)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1183,7 +1214,7 @@ class ChatWindow(QMainWindow):
         )
         
         self._streaming_container = QWidget()
-        self._streaming_container.setStyleSheet("background-color: transparent;")
+        self._streaming_container.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         
         layout = QHBoxLayout(self._streaming_container)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1230,7 +1261,7 @@ class ChatWindow(QMainWindow):
         bubble = ChatBubble(text, is_user, avatar_path)
         
         container = QWidget()
-        container.setStyleSheet("background-color: transparent;")
+        container.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         
         layout = QHBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
