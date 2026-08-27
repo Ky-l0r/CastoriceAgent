@@ -1,7 +1,7 @@
 # config.yaml - 支持多种LLM提供商
 
 # 当前激活的提供商
-active_provider: "aliyun"  # 可选: openai, deepseek, aliyun, etc.
+active_provider: "deepseek"  # 可选: openai, deepseek, aliyun, etc.
 
 # 所有提供商的配置
 providers:

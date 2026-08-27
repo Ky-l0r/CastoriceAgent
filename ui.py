@@ -4,7 +4,7 @@ UI模块
 
 import os
 import sys
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, List
 from pathlib import Path
 
 from PySide6.QtWidgets import (
@@ -63,14 +63,14 @@ class Colors:
     TITLEBAR_TEXT = "#FFFFFF"
     
     # 亚克力透明度（0-255）
-    WINDOW_BG_ALPHA = 150       # 窗口背景透明度
-    INPUT_BG_ALPHA = 130        # 输入框背景透明度
+    WINDOW_BG_ALPHA = 225       # 窗口背景透明度
+    INPUT_BG_ALPHA = 175        # 输入框背景透明度
 
 
 class Sizes:
     """尺寸常量"""
-    WINDOW_WIDTH = 800
-    WINDOW_HEIGHT = 600
+    WINDOW_WIDTH = 960
+    WINDOW_HEIGHT = 768   # 5:4 比例 (960 * 4 / 5 = 768)
     WINDOW_RADIUS = 12          # 窗口圆角半径
     TITLEBAR_HEIGHT = 36        # 标题栏高度
     TITLE_BUTTON_SIZE = 26      # 标题栏按钮大小
@@ -554,9 +554,9 @@ class TitleBar(QWidget):
         self._min_button.clicked.connect(self._on_minimize_clicked)
         layout.addWidget(self._min_button)
 
-        # 关闭按钮
+        # 关闭按钮（高亮颜色与最小化一致）
         self._close_button = TitleBarButton(
-            "✕", hover_color="#E81123", tooltip="关闭", parent=self
+            "✕", hover_color=Colors.TITLEBAR_BG_HOVER, tooltip="关闭", parent=self
         )
         self._close_button.clicked.connect(self._on_close_clicked)
         layout.addWidget(self._close_button)
@@ -671,6 +671,8 @@ class ChatWindow(QMainWindow):
         self._streaming_container: Optional[QWidget] = None
         self._tool_labels: Dict[str, QLabel] = {}  # 工具状态气泡
         self._region_applied = False
+        self._typewriter_chars: List[str] = []   # 打字机待显示字符队列
+        self._typewriter_timer: Optional[QTimer] = None
         
         self._init_ui()
     
@@ -849,6 +851,11 @@ class ChatWindow(QMainWindow):
         self._resize_timer = QTimer()
         self._resize_timer.setSingleShot(True)
         self._resize_timer.timeout.connect(self._adjust_bubble_widths)
+        
+        # 打字机定时器：逐字显示AI回复，实现流式输出效果
+        self._typewriter_timer = QTimer(self)
+        self._typewriter_timer.setInterval(20)
+        self._typewriter_timer.timeout.connect(self._typewriter_tick)
     
     # ------------------------------------------------------------------------
     # 事件处理
@@ -924,6 +931,9 @@ class ChatWindow(QMainWindow):
     
     def closeEvent(self, event: Any) -> None:
         """窗口关闭时停止后台线程，避免残留"""
+        if self._typewriter_timer is not None:
+            self._typewriter_timer.stop()
+        
         if self._loading_timer is not None:
             self._loading_timer.stop()
         
@@ -1071,18 +1081,31 @@ class ChatWindow(QMainWindow):
         self._tool_labels.clear()
 
     def _on_chunk_received(self, chunk: str) -> None:
-        """收到流式chunk"""
+        """收到流式chunk：拆成字符加入打字机队列，逐字显示"""
         if self._streaming_bubble is None:
             # 第一次收到chunk，移除加载指示器，创建流式气泡
             self._remove_loading_indicator()
             self._create_streaming_bubble()
+            self._adjust_bubble_widths()
         
-        # 追加文本
-        assert self._streaming_bubble is not None
-        self._streaming_bubble.append_text(chunk)
-        
-        # 滚动到底部
-        QTimer.singleShot(10, self._scroll_to_bottom)
+        # 拆成字符加入队列，由打字机定时器逐字显示
+        assert self._typewriter_timer is not None
+        self._typewriter_chars.extend(chunk)
+        if not self._typewriter_timer.isActive():
+            self._typewriter_timer.start()
+    
+    def _typewriter_tick(self) -> None:
+        """打字机：每个 tick 追加一个字符"""
+        assert self._typewriter_timer is not None
+        if self._streaming_bubble is None:
+            self._typewriter_timer.stop()
+            self._typewriter_chars.clear()
+            return
+        if self._typewriter_chars:
+            self._streaming_bubble.append_text(self._typewriter_chars.pop(0))
+        else:
+            self._typewriter_timer.stop()
+        self._scroll_to_bottom()
     
     def _create_streaming_bubble(self) -> None:
         """创建流式输出气泡"""
@@ -1109,6 +1132,13 @@ class ChatWindow(QMainWindow):
     
     def _on_stream_finished(self) -> None:
         """流式输出完成"""
+        # 停止打字机，并把剩余字符一次性补齐
+        if self._typewriter_timer is not None:
+            self._typewriter_timer.stop()
+        if self._streaming_bubble is not None and self._typewriter_chars:
+            self._streaming_bubble.append_text("".join(self._typewriter_chars))
+        self._typewriter_chars.clear()
+        
         self._streaming_bubble = None
         self._streaming_container = None
         self._finish_pending_tool_labels()
@@ -1120,6 +1150,9 @@ class ChatWindow(QMainWindow):
     
     def _on_ai_error(self, error_msg: str) -> None:
         """处理AI错误"""
+        if self._typewriter_timer is not None:
+            self._typewriter_timer.stop()
+        self._typewriter_chars.clear()
         self._remove_loading_indicator()
         self._finish_pending_tool_labels()
         

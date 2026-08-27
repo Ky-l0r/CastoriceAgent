@@ -973,11 +973,9 @@ class AI:
         )
     
     def _build_system_prompt(self, memory_context: Optional[str] = None) -> str:
-        """构建系统提示词：基础提示词 + 记忆上下文 + 工具使用说明"""
-        return (
-            self.prompt_manager.get_prompt(memory_context)
-            + self.TOOL_INSTRUCTIONS
-        )
+        """构建系统提示词：只保留固定部分（基础提示词 + 工具使用说明），不再拼接记忆"""
+        # 记忆已改放到 user 消息中（见 get_response_stream），系统提示词保持不变以节省 token
+        return self.prompt_manager.get_prompt() + self.TOOL_INSTRUCTIONS
 
     def _reset_messages(self) -> None:
         """重置对话历史"""
@@ -985,20 +983,6 @@ class AI:
         self._messages = [
             {'role': 'system', 'content': system_prompt}
         ]
-    
-    def _update_system_prompt(self, memory_context: Optional[str] = None) -> None:
-        """
-        更新系统提示词
-        
-        Args:
-            memory_context: 记忆上下文
-        """
-        system_prompt = self._build_system_prompt(memory_context)
-        
-        if self._messages and self._messages[0]['role'] == 'system':
-            self._messages[0]['content'] = system_prompt
-        else:
-            self._messages.insert(0, {'role': 'system', 'content': system_prompt})
     
     def _format_memory_context(self, memories: List[str]) -> str:
         """
@@ -1037,13 +1021,17 @@ class AI:
             return
         
         try:
-            # 1. 搜索相关记忆并更新系统提示词
+            # 1. 搜索相关记忆
             memories = self.memory_manager.search_memories(user_input)
-            memory_context = self._format_memory_context(memories)
-            self._update_system_prompt(memory_context if memory_context else None)
             
-            # 2. 添加用户消息到历史
-            self._messages.append({'role': 'user', 'content': user_input})
+            # 2. 记忆放到 user 消息里，而不是系统提示词（节省 token）
+            memory_prefix = ""
+            if memories:
+                memory_context = self._format_memory_context(memories)
+                memory_prefix = f"【相关记忆】\n{memory_context}\n\n"
+            
+            user_message = memory_prefix + user_input
+            self._messages.append({'role': 'user', 'content': user_message})
             
             tool_specs = self.tool_registry.to_openai_specs()
             full_reply = ""
