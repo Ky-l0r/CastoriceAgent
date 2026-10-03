@@ -7,7 +7,7 @@ import re
 import sys
 import json
 import math
-from typing import Optional, Any, Dict, List, Union, cast
+from typing import Optional, Any, Dict, List, Tuple, Union, cast
 from pathlib import Path
 
 from PySide6.QtWidgets import (
@@ -1776,6 +1776,8 @@ class SettingsDialog(QWidget):
 
     theme_selected = Signal(str)   # 主题模式变化（实时预览）
     config_saved = Signal()        # 配置已保存
+
+    _positioned = False            # 是否已按设置按钮定位过
 
     def __init__(
         self,
