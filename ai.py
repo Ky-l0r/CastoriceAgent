@@ -4,7 +4,9 @@ AI核心模块
 
 import os
 import re
+import io
 import json
+import base64
 import random
 import html as html_module
 import logging
@@ -44,6 +46,117 @@ def setup_logger(name: str = "AI") -> logging.Logger:
 # ============================================================================
 # 配置管理
 # ============================================================================
+
+def _yaml_scalar_text(value: Any) -> str:
+    """把 Python 值格式化成 YAML 标量文本（字符串统一加双引号）"""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    text = str(value)
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _yaml_key_of(line: str) -> Tuple[int, Optional[str]]:
+    """
+    解析一行 YAML 的缩进与键名
+
+    Returns:
+        (缩进空格数, 键名)；不是「键: 值」行时键名为 None
+    """
+    raw = line.rstrip("\n")
+    stripped = raw.strip()
+    if not stripped or stripped.startswith("#") or stripped.startswith("- "):
+        return (-1, None)
+    indent = len(raw) - len(raw.lstrip(" "))
+    match = re.match(r"^([^:#]+?)\s*:(?:\s|$)", stripped)
+    if not match:
+        return (indent, None)
+    key = match.group(1).strip().strip('"\'')
+    return (indent, key)
+
+
+def _locate_yaml_key(lines: List[str], path: Tuple[str, ...]) -> Optional[int]:
+    """定位指定键路径所在的行号；不存在返回 None"""
+    stack: List[Tuple[int, str]] = []
+    for index, line in enumerate(lines):
+        indent, key = _yaml_key_of(line)
+        if key is None:
+            continue
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        stack.append((indent, key))
+        if tuple(item[1] for item in stack) == path:
+            return index
+    return None
+
+
+def update_yaml_scalars(text: str, updates: Dict[Tuple[str, ...], Any]) -> str:
+    """
+    更新 YAML 文本中指定路径的标量值，保留原有注释与排版
+
+    只改动目标键所在行（行尾注释原样保留）；键不存在时在父块开头补一行。
+    找不到父块则跳过该键，不擅自创造结构。
+
+    Args:
+        text: 原始 YAML 文本
+        updates: {(键路径...): 新值}，如 {("providers", "deepseek", "api_key"): "sk-x"}
+
+    Returns:
+        更新后的 YAML 文本
+    """
+    lines = text.splitlines()
+
+    for path, value in updates.items():
+        rendered = _yaml_scalar_text(value)
+        index = _locate_yaml_key(lines, path)
+
+        if index is not None:
+            raw = lines[index]
+            match = re.match(r"^(\s*(?:-\s+)?[^:#]+?:\s*)(.*)$", raw)
+            if match:
+                rest = match.group(2)
+                # 保留行尾注释（连同其前面的空白）
+                comment = ""
+                hash_index = rest.find("#")
+                if hash_index >= 0:
+                    start = hash_index
+                    while start > 0 and rest[start - 1] in " \t":
+                        start -= 1
+                    comment = rest[start:]
+                lines[index] = f"{match.group(1)}{rendered}{comment}"
+            continue
+
+        # 键不存在：追加到父块的末尾
+        parent = path[:-1]
+        if not parent:
+            continue
+        parent_index = _locate_yaml_key(lines, parent)
+        if parent_index is None:
+            continue
+        parent_indent, _ = _yaml_key_of(lines[parent_index])
+        
+        insert_at = parent_index + 1
+        for index in range(parent_index + 1, len(lines)):
+            raw = lines[index]
+            if not raw.strip():
+                continue
+            current_indent = len(raw) - len(raw.lstrip(" "))
+            if current_indent <= parent_indent:
+                break
+            insert_at = index + 1
+        
+        lines.insert(
+            insert_at,
+            f"{' ' * (parent_indent + 2)}{path[-1]}: {rendered}"
+        )
+
+    result = "\n".join(lines)
+    if text.endswith("\n"):
+        result += "\n"
+    return result
+
 
 class ConfigManager:
 
@@ -104,6 +217,49 @@ class ConfigManager:
         if not provider:
             raise ValueError("未配置 active_provider")
         return provider
+    
+    @property
+    def provider_names(self) -> List[str]:
+        """所有已配置的提供商名称"""
+        providers = self.get('providers') or {}
+        if not isinstance(providers, dict):
+            return []
+        return list(providers.keys())
+    
+    def set_values(
+        self, updates: Dict[Tuple[str, ...], Any]
+    ) -> None:
+        """
+        写回配置项（保留 config.yaml 的注释与排版），随后重新加载
+
+        Args:
+            updates: {(键路径...): 新值}
+        """
+        if not self.config_path.exists():
+            raise FileNotFoundError(f"配置文件不存在: {self.config_path}")
+        
+        text = self.config_path.read_text(encoding="utf-8")
+        new_text = update_yaml_scalars(text, updates)
+        self.config_path.write_text(new_text, encoding="utf-8")
+        self._load_config()
+    
+    def set_provider_values(
+        self, provider_name: str, values: Dict[str, Any]
+    ) -> None:
+        """更新某个提供商的配置字段"""
+        updates = {
+            ("providers", provider_name, key): value
+            for key, value in values.items()
+        }
+        self.set_values(updates)
+    
+    def set_active_provider(self, provider_name: str) -> None:
+        """切换当前激活的提供商"""
+        self.set_values({("active_provider",): provider_name})
+    
+    def reload(self) -> None:
+        """重新读取配置文件（外部修改后同步内存中的配置）"""
+        self._load_config()
     
     @property
     def config(self) -> Dict[str, Any]:
@@ -206,20 +362,35 @@ class MemoryManager:
             name=collection_name
         )
     
-    def add_memory(self, content: str) -> str:
+    def add_memory(
+        self, content: str, timestamp: Optional[datetime] = None
+    ) -> str:
         """
-        添加记忆到数据库
-        
+        添加记忆到数据库（同时记录写入时刻的日期与时间）
+
+        时间戳写进 metadata 而不是正文：正文保持纯净，向量检索质量不受
+        日期数字干扰；检索时再把时间拼回每条记忆前面，
+        这样模型既知道「这件事是什么时候说的」，又不影响召回效果。
+
         Args:
             content: 记忆内容
-            
+            timestamp: 记忆时刻，默认取当前本地时间
+
         Returns:
             记忆ID
         """
+        moment = timestamp or datetime.now()
+        stamp = moment.strftime("%Y-%m-%d %H:%M:%S")
         memory_id = str(self._collection.count() + 1)
         
         self._collection.add(
             documents=[content],
+            metadatas=[{
+                "timestamp": stamp,
+                "date": moment.strftime("%Y-%m-%d"),
+                "time": moment.strftime("%H:%M:%S"),
+                "weekday": moment.strftime("%A"),
+            }],
             ids=[memory_id]
         )
         
@@ -230,20 +401,39 @@ class MemoryManager:
         query: str,
         n_results: int = DEFAULT_SEARCH_RESULTS
     ) -> List[str]:
+        """
+        检索相关记忆
 
+        返回的每条记忆都自带写入时刻前缀（[YYYY-MM-DD HH:MM:SS]），
+        时间来自 metadata，因此旧数据（没有记录时间）会保持原样返回。
+
+        Args:
+            query: 检索关键词
+            n_results: 返回条数
+
+        Returns:
+            记忆文本列表
+        """
         try:
             results = self._collection.query(
                 query_texts=[query],
-                n_results=n_results
+                n_results=n_results,
+                include=["documents", "metadatas"]
             )
             
-            # 提取文档内容
-            if results and 'documents' in results:
-                documents = results['documents']
-                if documents and len(documents) > 0:
-                    return [doc for doc in documents[0] if doc]
+            documents = (results or {}).get('documents') or [[]]
+            metadatas = (results or {}).get('metadatas') or [[]]
+            docs = documents[0] if documents else []
+            metas = metadatas[0] if metadatas else []
             
-            return []
+            memories: List[str] = []
+            for index, doc in enumerate(docs):
+                if not doc:
+                    continue
+                meta = metas[index] if index < len(metas) else None
+                stamp = (meta or {}).get('timestamp')
+                memories.append(f"[{stamp}] {doc}" if stamp else doc)
+            return memories
             
         except Exception as e:
             print(f"搜索记忆时出错: {e}")
@@ -907,7 +1097,7 @@ def create_builtin_tools(
 # 表情包系统（贴纸）
 # ============================================================================
 
-# 表情包标签规范：模型在回复中用 [表情:名称] 内联引用 Image 目录下的贴纸
+# 表情包标签规范：模型在回复中用 [表情:名称] 内联引用 Image/表情包 下的贴纸
 EMOJI_TAG_RE = re.compile(
     r"[\[【]\s*(?:表情包?|贴纸|emoji|sticker)\s*[:：]\s*([^\]】\n]{1,24}?)\s*[\]】]",
     re.IGNORECASE,
@@ -922,43 +1112,58 @@ _EMOJI_OPT_OUT_RE = re.compile(
 EMOJI_TAG_PREFIXES = ("[表", "[贴", "[e", "[E", "【表", "【贴")
 
 # 名称 -> 心情描述（内置默认；可被 config.yaml 的 emoji.moods 覆盖）
+# 对应 Image/表情包 目录下的文件名主干
 DEFAULT_EMOJI_MOODS: Dict[str, str] = {
-    "开心": "高兴、愉快、被逗笑、夸赞对方、气氛轻松",
-    "开心1": "开心得眯起眼睛、偷笑、藏不住的喜悦",
-    "卖萌": "撒娇、装可爱、想要亲近对方、俏皮",
-    "脸红": "害羞、被夸后不好意思、心动、紧张",
-    "嫌弃": "无语地嫌弃、假装不满、吐槽、故作傲娇",
-    "无语": "被噎住、不知道说什么好、无奈、沉默",
-    "枯萎": "低落、疲惫、被忽视、难过、委屈",
-    "好喝": "吃到好喝/好吃的东西、满足、惬意、小确幸",
-    "创作": "在画画写作、专注做事、分享成果、认真起来",
-    "蝴蝶": "温柔轻笑、思绪轻轻飘远、平静、若有所思",
+    "喜欢": "喜欢、心动、被吸引、觉得对方可爱、心里甜甜的",
+    "喜欢1": "悄悄喜欢、眼神藏不住、忍不住多看几眼",
+    "害羞": "害羞、被夸后不好意思、脸红、紧张",
+    "害羞1": "格外害羞、捂脸、不敢直视、被看穿心思",
+    "惊讶": "惊讶、吃惊、没想到、意外",
+    "惊讶1": "睁大眼睛的惊讶、愣住、被震到",
+    "生气": "生气、不满、被惹到、故作凶巴巴",
+    "疑问": "疑惑、不解、没听懂、想把事情问清楚",
+    "疑问1": "歪着头想不通、有点懵、迷惑",
+    "哭泣": "难过、委屈、伤心、想哭、低落",
+    "困倦": "困了、疲惫、想睡觉、打哈欠、没精神",
+    "欣赏": "欣赏、赞许、觉得不错、认可对方",
+    "称赞": "称赞、夸奖对方、觉得厉害、真诚赞美",
+    "耍帅": "耍帅、自信、有点得意、故作潇洒",
+    "苦恼": "苦恼、烦恼、纠结、为难、头疼",
+    "苦恼1": "更深的苦恼、无奈、叹气、想不出办法",
 }
 
-# 名称 -> 心情关键词（无模型标签时用于兜底猜心情；名称相同的多个文件共享）
-# 说明：关键词长度需 >= 2，避免「画」「想」这类单字误命中
+# 名称 -> 心情关键词（用于从回复文本猜心情）
+# 说明：关键词长度需 >= 2，避免「想」「累」这类单字误命中
 DEFAULT_EMOJI_KEYWORDS: Dict[str, List[str]] = {
-    "开心": ["开心", "高兴", "太好了", "好耶", "哈哈", "嘻嘻", "嘿嘿", "笑死",
-             "喜欢", "好棒", "厉害", "真好", "谢谢", "成功了", "搞定了", "期待"],
-    "开心1": ["开心", "高兴", "好玩", "有趣", "偷笑", "忍不住笑", "有点得意"],
-    "卖萌": ["人家", "撒娇", "陪我", "夸我", "抱抱", "嘛～", "好不好", "求你了",
-             "想要你", "亲亲"],
-    "脸红": ["害羞", "不好意思", "脸红", "心动", "羞", "别夸我", "讨厌啦", "被夸"],
-    "嫌弃": ["嫌弃", "才不是", "胡说", "吐槽", "才没有", "骗人", "嫌弃你", "幼稚"],
-    "无语": ["无语", "无奈", "算了", "随便你", "服了", "离谱", "不知道说什么",
-             "你认真的", "说不出话"],
-    "枯萎": ["难过", "伤心", "好累", "疲惫", "委屈", "低落", "不开心", "失落",
-             "压力", "崩溃", "睡不着", "想哭", "难受", "撑不住", "被忽视"],
-    "好喝": ["好喝", "好吃", "奶茶", "咖啡", "喝茶", "甜的", "吃了吗", "宵夜",
-             "零食", "蛋糕", "满足"],
-    "创作": ["画了", "画画", "写了", "写作", "创作", "代码", "程序", "工作了", "作业",
-             "任务", "完成了", "方案", "整理", "计划"],
-    "蝴蝶": ["晚安", "再见", "平静", "安静", "陪我", "沉默", "温柔", "月亮", "做梦",
-             "想起"],
+    "喜欢": ["喜欢", "心动", "好可爱", "爱你", "在意你", "想你", "好喜欢",
+             "舍不得", "中意", "偏爱"],
+    "喜欢1": ["偷偷喜欢", "忍不住看", "多看一眼", "着迷", "移不开眼"],
+    "害羞": ["害羞", "不好意思", "脸红", "羞", "别夸我", "讨厌啦", "被你发现",
+             "难为情"],
+    "害羞1": ["捂脸", "不敢看", "羞死", "太羞", "躲起来", "别看我"],
+    "惊讶": ["惊讶", "吃惊", "没想到", "竟然", "居然", "真的吗", "不会吧"],
+    "惊讶1": ["吓了一跳", "愣住", "震惊", "天啊", "怎么会", "不敢相信"],
+    "生气": ["生气", "过分", "气死", "不理你", "讨厌你", "欺负", "别闹",
+             "哼"],
+    "疑问": ["疑问", "不解", "为什么", "什么意思", "没听懂", "不太明白",
+             "确定吗", "是这样吗"],
+    "疑问1": ["想不通", "有点懵", "迷惑", "搞不懂", "奇怪", "哪里不对"],
+    "哭泣": ["难过", "伤心", "委屈", "想哭", "低落", "不开心", "失落",
+             "难受", "撑不住", "崩溃"],
+    "困倦": ["困了", "好累", "疲惫", "想睡", "睡觉", "打哈欠", "没精神",
+             "熬夜", "晚安", "睁不开眼"],
+    "欣赏": ["欣赏", "有品味", "认可", "佩服", "不错", "挺好的", "很赞"],
+    "称赞": ["称赞", "夸", "好棒", "真棒", "厉害", "优秀", "干得好",
+             "太强了", "了不起"],
+    "耍帅": ["耍帅", "帅气", "得意", "自信", "很酷", "骄傲", "厉害吧"],
+    "苦恼": ["苦恼", "烦恼", "纠结", "为难", "头疼", "怎么办", "麻烦了"],
+    "苦恼1": ["叹气", "无奈", "想不出", "没办法", "发愁", "难办", "没辙"],
 }
 
-# 参与“最后兜底”的心情优先级（越靠前越优先匹配关键词）
-_FALLBACK_MOOD_ORDER = ["枯萎", "脸红", "嫌弃", "无语", "卖萌", "好喝", "创作", "开心"]
+# 关键词都匹配不上时的兜底候选（随机取用）
+# 只放情绪温和、不易出错的几张，避免在语气平和时随机到
+# 哭泣 / 生气 / 苦恼 这类强烈情绪而显得违和
+_FALLBACK_MOOD_ORDER = ["欣赏", "害羞", "疑问", "耍帅", "喜欢", "惊讶"]
 
 
 @dataclass
@@ -978,13 +1183,16 @@ class EmojiCatalog:
     """
     表情包目录
 
-    扫描指定目录下的图片文件（跳过 _ 开头的 UI 资源），
-    每个文件名主干即表情包标签名。同名文件（如 开心.png / 开心.jpg /
-    开心1.jpg）会归到同名的多个贴纸，发送时随机挑一个，避免重复。
+    表情包统一放在 Image/表情包 子目录（该子目录不存在时退回 Image 本身，
+    兼容旧结构），扫描其中的图片文件（跳过 _ 开头的 UI 资源），
+    每个文件名主干即表情包标签名。同名文件（如 喜欢.png / 喜欢.jpg）
+    会归到同名的多个贴纸，发送时随机挑一个，避免重复。
     """
 
     SUPPORTED_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
     SKIP_PREFIXES = ("_", ".")
+    # 表情包专用子目录名
+    SUBDIR_NAME = "表情包"
 
     def __init__(
         self,
@@ -993,7 +1201,8 @@ class EmojiCatalog:
         moods: Optional[Dict[str, str]] = None,
         keywords: Optional[Dict[str, List[str]]] = None,
     ):
-        self.image_dir = Path(image_dir)
+        self._root_dir = Path(image_dir)
+        self.image_dir = self._resolve_dir(self._root_dir)
         self.avatar_name = avatar_name
         self._moods = dict(DEFAULT_EMOJI_MOODS)
         self._moods.update(moods or {})
@@ -1009,7 +1218,17 @@ class EmojiCatalog:
     # 构建
     # ------------------------------------------------------------------
 
+    @classmethod
+    def _resolve_dir(cls, image_dir: Path) -> Path:
+        """优先使用 <image_dir>/表情包 子目录，不存在则用 <image_dir> 本身"""
+        sub_directory = image_dir / cls.SUBDIR_NAME
+        if sub_directory.is_dir():
+            return sub_directory
+        return image_dir
+
     def _build(self) -> None:
+        # 每次重建都重新解析目录，便于用户新建/移动表情包子目录后热更新
+        self.image_dir = self._resolve_dir(self._root_dir)
         if not self.image_dir.exists():
             return
 
@@ -1037,6 +1256,11 @@ class EmojiCatalog:
         """重新扫描目录（用户新增图片后可热更新）"""
         self._stickers.clear()
         self._build()
+
+    def set_root_dir(self, image_dir: Union[str, Path]) -> None:
+        """更换图片根目录并重新扫描"""
+        self._root_dir = Path(image_dir)
+        self.reload()
 
     # ------------------------------------------------------------------
     # 查询
@@ -1104,10 +1328,11 @@ class EmojiCatalog:
             # 同分时随机，避免永远只发同一个
             return random.choice(top)
 
-        for name in _FALLBACK_MOOD_ORDER:
-            if name in self._stickers:
-                return name
-        return None
+        # 兜底：从通用候选里随机挑一个（避免每次都是同一张）
+        available = [n for n in _FALLBACK_MOOD_ORDER if n in self._stickers]
+        if not available:
+            available = self.names
+        return random.choice(available) if available else None
 
 
 class EmojiSession:
@@ -1115,14 +1340,15 @@ class EmojiSession:
     单个机器人实例的表情包发送状态
 
     控制：是否启用、出现概率、冷却回合、每场合计上限。
-    默认 probability=1.0、cooldown_turns=0，即每条回复都恰好附带一个表情包。
+    默认 probability=0.35、cooldown_turns=2，即偶尔（约三分之一概率，
+    且发过一次后至少隔两轮）才附带一个表情包，不会每条回复都发。
     """
 
     def __init__(
         self,
         enabled: bool = True,
-        probability: float = 1.0,
-        cooldown_turns: int = 0,
+        probability: float = 0.35,
+        cooldown_turns: int = 2,
         max_per_session: int = 0,
     ):
         self.enabled = enabled
@@ -1248,7 +1474,7 @@ class AI:
         
         self.logger.info(
             f"AI聊天机器人初始化完成 (提供商: {self._provider_name}, "
-            f"表情包: {self.emoji_catalog.count} 个)"
+            f"表情包: {self.emoji_catalog.count} 个 @ {self.emoji_catalog.image_dir})"
         )
     
     # agent 循环最大迭代次数（防止无限调用工具）
@@ -1266,13 +1492,24 @@ class AI:
         "3. 不要编造工具返回的内容，如实转述结果。"
     )
 
+    # 注入系统提示词的时间说明
+    TIME_INSTRUCTIONS = (
+        "\n\n【时间信息】\n"
+        "1. 每条用户消息开头的【当前时间】就是这条消息发出时的真实本地日期与时间，"
+        "回答「现在几点 / 今天几号 / 今天星期几」这类问题时以它为准，不要凭空猜测或说过时的时间；\n"
+        "2. 【相关记忆】里每条记忆都以 [日期 时间] 开头，表示那件事发生的时刻，"
+        "可以据此判断事情的先后顺序与相隔多久；\n"
+        "3. 需要更精确的时间时也可以调用 get_current_time 工具。"
+    )
+
     # 表情包说明模板（{catalog} 处填入可用贴纸列表）
     # 注意：表情包由程序在回复末尾自动附带，模型只负责产出纯文本，
     # 因此这里只声明「不要自己写标记」，避免一条回复出现多个表情包。
     EMOJI_INSTRUCTIONS = (
         "\n\n【表情包规则】\n"
-        "你的每条回复在界面上都会由程序自动附带一张表情包图片来表达心情，"
-        "你只需要专心写好文字内容，不要输出任何表情包标记或图片链接。\n"
+        "你的部分回复在界面上会由程序自动附带一张表情包图片来表达心情"
+        "（并非每条都会发），你只需要专心写好文字内容，"
+        "不要输出任何表情包标记或图片链接。\n"
         "供参考的可用表情包（名称（适用心情）），"
         "程序会依据你的文字情绪从中挑选，你无需也无法手动指定：\n"
         "{catalog}\n"
@@ -1293,14 +1530,16 @@ class AI:
         )
         self.emoji_session = EmojiSession(
             enabled=_to_bool(emoji_config.get('enabled'), True),
-            probability=_to_float(emoji_config.get('probability'), 1.0),
-            cooldown_turns=_to_int(emoji_config.get('cooldown_turns'), 0),
+            probability=_to_float(emoji_config.get('probability'), 0.35),
+            cooldown_turns=_to_int(emoji_config.get('cooldown_turns'), 2),
             max_per_session=_to_int(emoji_config.get('max_per_session'), 0),
         )
 
         if not self.emoji_catalog:
             self.logger.info(
-                f"未在 {image_dir} 找到可用表情包（文件名不能以 _ 开头）"
+                f"未在 {self.emoji_catalog.image_dir} 找到可用表情包"
+                f"（表情包放在 Image/{EmojiCatalog.SUBDIR_NAME} 下，"
+                f"文件名不能以 _ 开头）"
             )
 
     def _setup_provider(self) -> None:
@@ -1317,12 +1556,126 @@ class AI:
         prompt = self.prompt_manager.get_prompt()
         if self.emoji_catalog:
             prompt += self._build_emoji_instructions()
-        return prompt + self.TOOL_INSTRUCTIONS
+        return prompt + self.TOOL_INSTRUCTIONS + self.TIME_INSTRUCTIONS
 
     def _build_emoji_instructions(self) -> str:
         """按当前 Image 目录内容生成表情包规则说明"""
         catalog = "\n".join(f"- {item}" for item in self.emoji_catalog.labels())
         return self.EMOJI_INSTRUCTIONS.format(catalog=catalog)
+
+    # 视觉模型识别特征：模型名命中任一即认为支持图片输入
+    VISION_MODEL_RE = re.compile(
+        r"(vision|multimodal|omni|gemini|llava|pixtral|internvl|"
+        r"minicpm-v|glm-4v|step-1v|claude-[34]|gpt-4o|gpt-4-turbo|"
+        r"(?:^|[-_/.])vl(?:[-_/.\d]|$))",
+        re.IGNORECASE,
+    )
+
+    # 图片编码后最长边上限（像素），控制视觉 token 消耗
+    IMAGE_MAX_SIDE = 1280
+
+    def supports_vision(self, provider_name: Optional[str] = None) -> bool:
+        """
+        指定提供商是否支持图片输入（视觉模型）
+
+        判断顺序：
+        1. config.yaml 里该提供商显式配置的 vision 字段；
+        2. 否则按模型名特征自动识别（如 *-vl、gpt-4o、claude-3 等）。
+
+        Args:
+            provider_name: 提供商名称，默认当前提供商
+
+        Returns:
+            是否支持图片输入
+        """
+        name = provider_name or self._provider_name
+        try:
+            config = self.config_manager.get_provider_config(name)
+        except ValueError:
+            return False
+        
+        explicit = config.get('vision')
+        if explicit is not None:
+            return _to_bool(explicit, False)
+        return bool(self.VISION_MODEL_RE.search(str(config.get('model', ''))))
+
+    @classmethod
+    def encode_image_data_url(cls, path: str) -> str:
+        """
+        把本地图片编码成 data URL（供视觉模型识别）
+
+        用 Pillow 统一转成 JPEG 并限制最长边，避免超大图占用过多 token；
+        Pillow 不可用时退回原始字节。动图只取第一帧。
+
+        Args:
+            path: 图片文件路径
+
+        Returns:
+            形如 data:image/jpeg;base64,... 的字符串
+        """
+        mime = "image/png"
+        try:
+            from PIL import Image
+        except ImportError:
+            Image = None  # type: ignore[assignment]
+        
+        if Image is not None:
+            with Image.open(path) as image:
+                image = image.convert("RGB")
+                if max(image.size) > cls.IMAGE_MAX_SIDE:
+                    ratio = cls.IMAGE_MAX_SIDE / float(max(image.size))
+                    resample = getattr(Image, "Resampling", Image).LANCZOS
+                    image = image.resize(
+                        (
+                            max(1, int(image.width * ratio)),
+                            max(1, int(image.height * ratio)),
+                        ),
+                        resample,
+                    )
+                buffer = io.BytesIO()
+                image.save(buffer, format="JPEG", quality=88)
+                data = buffer.getvalue()
+            mime = "image/jpeg"
+        else:
+            data = Path(path).read_bytes()
+            suffix = Path(path).suffix.lower()
+            mime = {
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".webp": "image/webp",
+                ".gif": "image/gif",
+            }.get(suffix, "image/png")
+        
+        return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+    def _build_user_message(
+        self, text: str, images: Sequence[str]
+    ) -> Dict[str, Any]:
+        """
+        构造 user 消息
+
+        没有图片时用最简单的字符串 content（兼容性最好）；
+        有图片时用 OpenAI 视觉格式的 content 数组。
+        """
+        if not images:
+            return {'role': 'user', 'content': text}
+        
+        parts: List[Dict[str, Any]] = []
+        if text:
+            parts.append({'type': 'text', 'text': text})
+        
+        for path in images:
+            try:
+                parts.append({
+                    'type': 'image_url',
+                    'image_url': {'url': self.encode_image_data_url(path)},
+                })
+            except Exception as e:
+                self.logger.warning(f"图片读取失败 {path}: {e}")
+        
+        if not parts:
+            parts.append({'type': 'text', 'text': text or '（图片）'})
+        return {'role': 'user', 'content': parts}
 
     def _pick_emoji_for_reply(self, reply_text: str) -> Optional[EmojiSticker]:
         """
@@ -1373,7 +1726,7 @@ class AI:
         格式化记忆上下文
         
         Args:
-            memories: 记忆列表
+            memories: 记忆列表（每条已自带 [日期 时间] 前缀）
             
         Returns:
             格式化后的上下文字符串
@@ -1383,7 +1736,24 @@ class AI:
         
         return "\n".join([f"- {memory}" for memory in memories])
     
-    def get_response_stream(self, user_input: str):
+    @staticmethod
+    def _format_now(moment: Optional[datetime] = None) -> str:
+        """
+        当前本地时间的文本表示（含星期）
+
+        Args:
+            moment: 指定时刻，默认取当前时间
+
+        Returns:
+            形如「2026-10-03 16:20:15（星期六）」
+        """
+        now = moment or datetime.now()
+        weekday = "星期" + "一二三四五六日"[now.weekday()]
+        return f"{now.strftime('%Y-%m-%d %H:%M:%S')}（{weekday}）"
+    
+    def get_response_stream(
+        self, user_input: str, images: Optional[List[str]] = None
+    ):
         """
         流式 agent 循环（ReAct：思考 → 调工具 → 观察 → 继续）
 
@@ -1396,12 +1766,16 @@ class AI:
             ('done', 完整回复)          -> 循环结束
 
         Args:
-            user_input: 用户输入
+            user_input: 用户输入文本（可以只发图片，此时文本可为空）
+            images: 随消息一起发送的本地图片路径列表（视觉模型才能识别）
 
         Yields:
             Tuple[str, Any]: 事件元组
         """
-        if not user_input or not user_input.strip():
+        images = [p for p in (images or []) if p and os.path.exists(p)]
+        has_text = bool(user_input and user_input.strip())
+        
+        if not has_text and not images:
             yield ('text', "请输入有效的问题。")
             yield ('done', "请输入有效的问题。")
             return
@@ -1410,17 +1784,23 @@ class AI:
             # 0. 本轮表情包回合计数（用于概率/冷却判定）
             self.emoji_session.mark_turn()
             
-            # 1. 搜索相关记忆
-            memories = self.memory_manager.search_memories(user_input)
+            # 1. 搜索相关记忆（只发图片时不检索）
+            query = (user_input or "").strip()
+            memories = self.memory_manager.search_memories(query) if query else []
             
-            # 2. 记忆放到 user 消息里，而不是系统提示词（节省 token）
+            # 2. 当前时间 + 记忆都放到 user 消息里，而不是系统提示词（节省 token）
+            #    每轮都重新取时间，保证模型知道「现在」是什么时候
+            time_prefix = f"【当前时间】{self._format_now()}\n\n"
+            
             memory_prefix = ""
             if memories:
                 memory_context = self._format_memory_context(memories)
                 memory_prefix = f"【相关记忆】\n{memory_context}\n\n"
             
-            user_message = memory_prefix + user_input
-            self._messages.append({'role': 'user', 'content': user_message})
+            user_message = time_prefix + memory_prefix + (user_input or "")
+            self._messages.append(
+                self._build_user_message(user_message, images)
+            )
             
             tool_specs = self.tool_registry.to_openai_specs()
             full_reply = ""
@@ -1483,12 +1863,13 @@ class AI:
             plain_reply = self._strip_emoji_tags(full_reply)
             self._messages.append({'role': 'assistant', 'content': plain_reply})
             
-            # 8. 保存对话到记忆
-            memory_content = f"用户: {user_input}\n助理: {plain_reply}"
+            # 8. 保存对话到记忆（只发图片时用占位文本）
+            user_desc = query or f"[图片×{len(images)}]"
+            memory_content = f"用户: {user_desc}\n助理: {plain_reply}"
             self.memory_manager.add_memory(memory_content)
             
             self.logger.info(
-                f"用户: {user_input[:50]}... -> AI: {plain_reply[:50]}... "
+                f"用户: {user_desc[:50]}... -> AI: {plain_reply[:50]}... "
                 f"(历史消息数: {len(self._messages)})"
             )
             
@@ -1516,16 +1897,27 @@ class AI:
                 parts.append(payload)
         return ''.join(parts)
     
-    def change_provider(self, provider_name: str) -> None:
+    def change_provider(
+        self,
+        provider_name: str,
+        reload_config: bool = False,
+        keep_history: bool = False
+    ) -> None:
         """
         切换LLM提供商
         
         Args:
             provider_name: 提供商名称
+            reload_config: 是否先重新读取 config.yaml（设置界面改过 API 后需要）
+            keep_history: 是否保留当前对话历史（默认切提供商时清空）
         """
+        if reload_config:
+            self.config_manager.reload()
+        
         self._provider_name = provider_name
         self._setup_provider()
-        self._reset_messages()
+        if not keep_history:
+            self._reset_messages()
         self.emoji_session.reset()
         self.logger.info(f"已切换到提供商: {provider_name}")
     
@@ -1535,16 +1927,25 @@ class AI:
         self.emoji_session.reset()
         self.logger.info("对话历史已清空")
     
-    def reload_emojis(self, image_dir: str = "Image") -> int:
+    def reload_emojis(self, image_dir: Optional[str] = None) -> int:
         """
         重新扫描表情包目录（用户新增图片后无需重启即可识别）
-        
+
+        Args:
+            image_dir: 可选，新的图片根目录；不传则沿用原目录
+
         Returns:
             识别到的表情包数量
         """
-        self.emoji_catalog.reload()
+        if image_dir:
+            self.emoji_catalog.set_root_dir(image_dir)
+        else:
+            self.emoji_catalog.reload()
         self._reset_messages()
-        self.logger.info(f"表情包已重新载入: {self.emoji_catalog.count} 个")
+        self.logger.info(
+            f"表情包已重新载入: {self.emoji_catalog.count} 个 "
+            f"@ {self.emoji_catalog.image_dir}"
+        )
         return self.emoji_catalog.count
     
     def clear_memories(self) -> None:
