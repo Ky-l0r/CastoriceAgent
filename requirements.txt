@@ -1,0 +1,24 @@
+# 运行所需依赖
+# 安装：pip install -r requirements.txt
+# 或者运行 requirement_install.py 自动安装
+
+# LLM API（兼容 OpenAI 接口的服务都能用）
+openai>=1.0.0
+
+# 桌面界面
+PySide6>=6.5.0
+
+# 向量记忆库（内含本地 embedding，无需额外模型文件）
+chromadb>=0.4.0
+
+# 配置文件解析
+PyYAML>=6.0
+
+# 联网搜索工具（web_search 的后端请求）
+requests>=2.28.0
+
+# 图片读取与压缩（发送图片给视觉模型时用）
+Pillow>=9.0.0
+
+# 打包为 exe（仅打包时需要）
+pyinstaller>=6.0.0
