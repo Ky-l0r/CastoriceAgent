@@ -3,6 +3,24 @@
 # 当前激活的提供商
 active_provider: "deepseek"  # 可选: openai, deepseek, aliyun, etc.
 
+# 搜索配置（web_search 工具）
+search:
+  provider: "bing_html"   # bing_html | bing_api | tavily | serper | bocha | ddg_html | auto
+  api_key: ""             # 使用 key 型搜索接口时填写（也可用环境变量 SEARCH_API_KEY）
+  base_url: ""            # 可选，自定义兼容接口
+  max_results: 5          # 默认返回结果条数
+  fetch_content: true     # 是否抓取结果网页正文
+  fetch_top_n: 2          # 抓取前 N 条正文
+
+# 表情包配置（AI 每条回复固定附带 1 个表情包；图片放在 Image 目录，文件名主干即标签名）
+emoji:
+  enabled: true            # 是否允许 AI 发表情包
+  probability: 1.0         # 附带表情包的概率（1.0 = 每条回复都发一个，0.6 = 六成概率）
+  cooldown_turns: 0        # 概率小于 1.0 时，发过一次后隔几轮才再发
+  max_per_session: 0       # 每次启动最多发几个，0 表示不限制
+  moods: {}                # 标签名 -> 心情描述（留空用内置默认值）
+  keywords: {}             # 标签名 -> 心情关键词列表（留空用内置默认值）
+
 # 所有提供商的配置
 providers:
   # OpenAI

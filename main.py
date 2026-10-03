@@ -72,6 +72,17 @@ def find_avatar():
     return None
 
 
+def find_image_dir():
+    """
+    查找表情包目录（Image 下除头像与界面资源外的图片都会被当作表情包）
+    
+    Returns:
+        目录路径（不存在时也返回默认路径，由界面自行处理空目录）
+    """
+    image_dir = Path("Image")
+    return image_dir if image_dir.exists() else None
+
+
 def main():
     """
     应用程序主入口
@@ -97,9 +108,16 @@ def main():
     else:
         print("提示: 未找到AI头像文件，将使用默认文字头像")
     
+    # 查找表情包目录
+    emoji_dir = find_image_dir()
+    
     # 创建聊天窗口
     try:
-        window = ChatWindow(bot, ai_avatar_path=avatar_path)
+        window = ChatWindow(
+            bot,
+            ai_avatar_path=avatar_path,
+            emoji_dir=emoji_dir
+        )
         return window
     except Exception as e:
         print(f"错误: 创建聊天窗口失败 - {e}")

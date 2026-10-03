@@ -5,6 +5,7 @@ AI核心模块
 import os
 import re
 import json
+import random
 import html as html_module
 import logging
 from datetime import datetime
@@ -903,6 +904,300 @@ def create_builtin_tools(
 
 
 # ============================================================================
+# 表情包系统（贴纸）
+# ============================================================================
+
+# 表情包标签规范：模型在回复中用 [表情:名称] 内联引用 Image 目录下的贴纸
+EMOJI_TAG_RE = re.compile(
+    r"[\[【]\s*(?:表情包?|贴纸|emoji|sticker)\s*[:：]\s*([^\]】\n]{1,24}?)\s*[\]】]",
+    re.IGNORECASE,
+)
+
+# 用户明确表示不要发图片时的关键词（本回合不再自动补表情包）
+_EMOJI_OPT_OUT_RE = re.compile(
+    r"(不要|别|不用|无需|禁止|不许)[^。！？\n]{0,6}(表情|贴纸|图片|图|emoji)", re.I
+)
+
+# [表情:名] 的起始标记（用于流式解析时判断是否需要暂存字符）
+EMOJI_TAG_PREFIXES = ("[表", "[贴", "[e", "[E", "【表", "【贴")
+
+# 名称 -> 心情描述（内置默认；可被 config.yaml 的 emoji.moods 覆盖）
+DEFAULT_EMOJI_MOODS: Dict[str, str] = {
+    "开心": "高兴、愉快、被逗笑、夸赞对方、气氛轻松",
+    "开心1": "开心得眯起眼睛、偷笑、藏不住的喜悦",
+    "卖萌": "撒娇、装可爱、想要亲近对方、俏皮",
+    "脸红": "害羞、被夸后不好意思、心动、紧张",
+    "嫌弃": "无语地嫌弃、假装不满、吐槽、故作傲娇",
+    "无语": "被噎住、不知道说什么好、无奈、沉默",
+    "枯萎": "低落、疲惫、被忽视、难过、委屈",
+    "好喝": "吃到好喝/好吃的东西、满足、惬意、小确幸",
+    "创作": "在画画写作、专注做事、分享成果、认真起来",
+    "蝴蝶": "温柔轻笑、思绪轻轻飘远、平静、若有所思",
+}
+
+# 名称 -> 心情关键词（无模型标签时用于兜底猜心情；名称相同的多个文件共享）
+# 说明：关键词长度需 >= 2，避免「画」「想」这类单字误命中
+DEFAULT_EMOJI_KEYWORDS: Dict[str, List[str]] = {
+    "开心": ["开心", "高兴", "太好了", "好耶", "哈哈", "嘻嘻", "嘿嘿", "笑死",
+             "喜欢", "好棒", "厉害", "真好", "谢谢", "成功了", "搞定了", "期待"],
+    "开心1": ["开心", "高兴", "好玩", "有趣", "偷笑", "忍不住笑", "有点得意"],
+    "卖萌": ["人家", "撒娇", "陪我", "夸我", "抱抱", "嘛～", "好不好", "求你了",
+             "想要你", "亲亲"],
+    "脸红": ["害羞", "不好意思", "脸红", "心动", "羞", "别夸我", "讨厌啦", "被夸"],
+    "嫌弃": ["嫌弃", "才不是", "胡说", "吐槽", "才没有", "骗人", "嫌弃你", "幼稚"],
+    "无语": ["无语", "无奈", "算了", "随便你", "服了", "离谱", "不知道说什么",
+             "你认真的", "说不出话"],
+    "枯萎": ["难过", "伤心", "好累", "疲惫", "委屈", "低落", "不开心", "失落",
+             "压力", "崩溃", "睡不着", "想哭", "难受", "撑不住", "被忽视"],
+    "好喝": ["好喝", "好吃", "奶茶", "咖啡", "喝茶", "甜的", "吃了吗", "宵夜",
+             "零食", "蛋糕", "满足"],
+    "创作": ["画了", "画画", "写了", "写作", "创作", "代码", "程序", "工作了", "作业",
+             "任务", "完成了", "方案", "整理", "计划"],
+    "蝴蝶": ["晚安", "再见", "平静", "安静", "陪我", "沉默", "温柔", "月亮", "做梦",
+             "想起"],
+}
+
+# 参与“最后兜底”的心情优先级（越靠前越优先匹配关键词）
+_FALLBACK_MOOD_ORDER = ["枯萎", "脸红", "嫌弃", "无语", "卖萌", "好喝", "创作", "开心"]
+
+
+@dataclass
+class EmojiSticker:
+    """一个表情包贴纸"""
+    name: str                      # 标签名，也是文件名主干
+    path: str                      # 图片绝对路径
+    mood: str = ""                 # 心情描述（给模型看）
+    keywords: Tuple[str, ...] = () # 心情关键词（无标签时兜底用）
+
+    @property
+    def file_name(self) -> str:
+        return os.path.basename(self.path)
+
+
+class EmojiCatalog:
+    """
+    表情包目录
+
+    扫描指定目录下的图片文件（跳过 _ 开头的 UI 资源），
+    每个文件名主干即表情包标签名。同名文件（如 开心.png / 开心.jpg /
+    开心1.jpg）会归到同名的多个贴纸，发送时随机挑一个，避免重复。
+    """
+
+    SUPPORTED_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+    SKIP_PREFIXES = ("_", ".")
+
+    def __init__(
+        self,
+        image_dir: Union[str, Path] = "Image",
+        avatar_name: str = "CastoriceAvatar",
+        moods: Optional[Dict[str, str]] = None,
+        keywords: Optional[Dict[str, List[str]]] = None,
+    ):
+        self.image_dir = Path(image_dir)
+        self.avatar_name = avatar_name
+        self._moods = dict(DEFAULT_EMOJI_MOODS)
+        self._moods.update(moods or {})
+        self._keywords = {k: list(v) for k, v in DEFAULT_EMOJI_KEYWORDS.items()}
+        for name, words in (keywords or {}).items():
+            self._keywords[name] = list(words)
+
+        # 名称 -> 贴纸列表（同名多个文件）
+        self._stickers: Dict[str, List[EmojiSticker]] = {}
+        self._build()
+
+    # ------------------------------------------------------------------
+    # 构建
+    # ------------------------------------------------------------------
+
+    def _build(self) -> None:
+        if not self.image_dir.exists():
+            return
+
+        for filepath in sorted(self.image_dir.iterdir()):
+            if not filepath.is_file():
+                continue
+            if filepath.suffix.lower() not in self.SUPPORTED_SUFFIXES:
+                continue
+            if filepath.name.startswith(self.SKIP_PREFIXES):
+                continue
+
+            name = filepath.stem
+            if name == self.avatar_name:
+                continue
+
+            sticker = EmojiSticker(
+                name=name,
+                path=str(filepath),
+                mood=self._moods.get(name, ""),
+                keywords=tuple(self._keywords.get(name, ())),
+            )
+            self._stickers.setdefault(name, []).append(sticker)
+
+    def reload(self) -> None:
+        """重新扫描目录（用户新增图片后可热更新）"""
+        self._stickers.clear()
+        self._build()
+
+    # ------------------------------------------------------------------
+    # 查询
+    # ------------------------------------------------------------------
+
+    @property
+    def names(self) -> List[str]:
+        """所有表情包标签名（按文件名排序）"""
+        return list(self._stickers.keys())
+
+    @property
+    def count(self) -> int:
+        return len(self._stickers)
+
+    def __bool__(self) -> bool:
+        return bool(self._stickers)
+
+    def __contains__(self, name: str) -> bool:
+        return self._normalize(name) in self._stickers
+
+    def get(self, name: str) -> Optional[EmojiSticker]:
+        """按名称取贴纸（同名随机挑一个，让同一心情有变化）"""
+        candidates = self._stickers.get(self._normalize(name))
+        if not candidates:
+            return None
+        return random.choice(candidates)
+
+    def labels(self) -> List[str]:
+        """名称+心情描述，用于注入提示词"""
+        items = []
+        for name, stickers in self._stickers.items():
+            mood = stickers[0].mood or "（未定义心情）"
+            items.append(f"{name}（{mood}）")
+        return items
+
+    @staticmethod
+    def _normalize(name: str) -> str:
+        """把模型可能写出的名称规整到目录里的真实名称"""
+        name = (name or "").strip()
+        name = name.replace("表情包", "表情").replace("贴纸", "")
+        name = name.strip(" 　'\"“”‘’")
+        if name.endswith("表情"):
+            name = name[:-2].strip()
+        return name
+
+    # ------------------------------------------------------------------
+    # 匹配心情
+    # ------------------------------------------------------------------
+
+    def match_by_mood(self, text: str) -> Optional[str]:
+        """按心情关键词从回复文本里猜一个表情包名；猜不到则给一个通用表情"""
+        if not text:
+            return None
+        scores: Dict[str, int] = {}
+        for name, keywords in self._keywords.items():
+            if name not in self._stickers:
+                continue
+            # 太短的关键词（单字）容易误命中，直接忽略
+            score = sum(1 for kw in keywords if len(kw) >= 2 and kw in text)
+            if score:
+                scores[name] = score
+        if scores:
+            best = max(scores.values())
+            top = [n for n, s in scores.items() if s == best]
+            # 同分时随机，避免永远只发同一个
+            return random.choice(top)
+
+        for name in _FALLBACK_MOOD_ORDER:
+            if name in self._stickers:
+                return name
+        return None
+
+
+class EmojiSession:
+    """
+    单个机器人实例的表情包发送状态
+
+    控制：是否启用、出现概率、冷却回合、每场合计上限。
+    默认 probability=1.0、cooldown_turns=0，即每条回复都恰好附带一个表情包。
+    """
+
+    def __init__(
+        self,
+        enabled: bool = True,
+        probability: float = 1.0,
+        cooldown_turns: int = 0,
+        max_per_session: int = 0,
+    ):
+        self.enabled = enabled
+        self.probability = max(0.0, min(1.0, probability))
+        self.cooldown_turns = max(0, cooldown_turns)
+        self.max_per_session = max(0, max_per_session)
+        self.reset()
+
+    def reset(self) -> None:
+        """新一轮会话：清空计数（切换提供商 / 清空历史时调用）"""
+        self._turns = 0
+        self._last_used_turn = -999
+        self._sent = 0
+
+    def should_append(self) -> bool:
+        """本轮回复是否应该附带表情包"""
+        if not self.enabled:
+            return False
+        if self.max_per_session and self._sent >= self.max_per_session:
+            return False
+        # 必发模式（probability=1）：每轮都带一个，冷却不生效
+        if self.probability >= 1.0:
+            return True
+        # 冷却：刚发过就先停几轮
+        if self._turns - self._last_used_turn <= self.cooldown_turns:
+            return False
+        # 第一轮必发一次，让新会话立刻有情绪；之后按概率
+        if self._turns == 1:
+            return True
+        return random.random() < self.probability
+
+    def mark_turn(self) -> None:
+        """回合开始：轮次 +1"""
+        self._turns += 1
+
+    def mark_sent(self) -> None:
+        """记录一次发送"""
+        self._sent += 1
+        self._last_used_turn = self._turns
+
+    @property
+    def sent_count(self) -> int:
+        return self._sent
+
+    @property
+    def turn(self) -> int:
+        return self._turns
+
+
+def _to_bool(value: Any, default: bool = True) -> bool:
+    """宽松地把配置值转成 bool"""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in ("0", "false", "no", "off", "none", "")
+
+
+def _to_float(value: Any, default: float) -> float:
+    """宽松地把配置值转成 float"""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_int(value: Any, default: int) -> int:
+    """宽松地把配置值转成 int"""
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+# ============================================================================
 # AI聊天机器人
 # ============================================================================
 
@@ -919,7 +1214,8 @@ class AI:
         prompts_dir: str = "prompts",
         chroma_dir: str = "database",
         collection_name: str = "memories",
-        provider_name: Optional[str] = None
+        provider_name: Optional[str] = None,
+        image_dir: str = "Image"
     ):  
         
         # 初始化日志
@@ -943,11 +1239,17 @@ class AI:
             self.config_manager.get('search', {})
         )
         
+        # 初始化表情包系统（扫描 Image 目录 + 读取 emoji 配置）
+        self._init_emoji(image_dir)
+        
         # 初始化对话历史（消息可包含 content=None 与 tool_calls，故用 Any 值）
         self._messages: List[Dict[str, Any]] = []
         self._reset_messages()
         
-        self.logger.info(f"AI聊天机器人初始化完成 (提供商: {self._provider_name})")
+        self.logger.info(
+            f"AI聊天机器人初始化完成 (提供商: {self._provider_name}, "
+            f"表情包: {self.emoji_catalog.count} 个)"
+        )
     
     # agent 循环最大迭代次数（防止无限调用工具）
     MAX_ITERATIONS = 8
@@ -964,6 +1266,43 @@ class AI:
         "3. 不要编造工具返回的内容，如实转述结果。"
     )
 
+    # 表情包说明模板（{catalog} 处填入可用贴纸列表）
+    # 注意：表情包由程序在回复末尾自动附带，模型只负责产出纯文本，
+    # 因此这里只声明「不要自己写标记」，避免一条回复出现多个表情包。
+    EMOJI_INSTRUCTIONS = (
+        "\n\n【表情包规则】\n"
+        "你的每条回复在界面上都会由程序自动附带一张表情包图片来表达心情，"
+        "你只需要专心写好文字内容，不要输出任何表情包标记或图片链接。\n"
+        "供参考的可用表情包（名称（适用心情）），"
+        "程序会依据你的文字情绪从中挑选，你无需也无法手动指定：\n"
+        "{catalog}\n"
+        "因此请注意：\n"
+        "1. 不要在回复里写「[表情:xx]」这类标记，也不要写文件名或扩展名；\n"
+        "2. 不要在回复里描述、解释、点评自己发了什么表情包；\n"
+        "3. 文字依然保持纯文字，情绪用语气、措辞、断句来表达。"
+    )
+
+    def _init_emoji(self, image_dir: str) -> None:
+        """初始化表情包目录与会话状态"""
+        emoji_config = self.config_manager.get('emoji', {}) or {}
+
+        self.emoji_catalog = EmojiCatalog(
+            image_dir=image_dir,
+            moods=emoji_config.get('moods') or {},
+            keywords=emoji_config.get('keywords') or {},
+        )
+        self.emoji_session = EmojiSession(
+            enabled=_to_bool(emoji_config.get('enabled'), True),
+            probability=_to_float(emoji_config.get('probability'), 1.0),
+            cooldown_turns=_to_int(emoji_config.get('cooldown_turns'), 0),
+            max_per_session=_to_int(emoji_config.get('max_per_session'), 0),
+        )
+
+        if not self.emoji_catalog:
+            self.logger.info(
+                f"未在 {image_dir} 找到可用表情包（文件名不能以 _ 开头）"
+            )
+
     def _setup_provider(self) -> None:
         """设置LLM提供商"""
         provider_config = self.config_manager.get_provider_config(self._provider_name)
@@ -973,9 +1312,54 @@ class AI:
         )
     
     def _build_system_prompt(self, memory_context: Optional[str] = None) -> str:
-        """构建系统提示词：只保留固定部分（基础提示词 + 工具使用说明），不再拼接记忆"""
+        """构建系统提示词：固定部分（基础提示词 + 工具说明 + 表情包规则），不拼接记忆"""
         # 记忆已改放到 user 消息中（见 get_response_stream），系统提示词保持不变以节省 token
-        return self.prompt_manager.get_prompt() + self.TOOL_INSTRUCTIONS
+        prompt = self.prompt_manager.get_prompt()
+        if self.emoji_catalog:
+            prompt += self._build_emoji_instructions()
+        return prompt + self.TOOL_INSTRUCTIONS
+
+    def _build_emoji_instructions(self) -> str:
+        """按当前 Image 目录内容生成表情包规则说明"""
+        catalog = "\n".join(f"- {item}" for item in self.emoji_catalog.labels())
+        return self.EMOJI_INSTRUCTIONS.format(catalog=catalog)
+
+    def _pick_emoji_for_reply(self, reply_text: str) -> Optional[EmojiSticker]:
+        """
+        为一条回复挑选表情包（每条回复最多一个）
+
+        模型若自己写了标记（不推荐，规则里已禁止），则不再额外附加，
+        保证一条回复只会出现一个表情包。
+
+        Args:
+            reply_text: 本轮完整回复文本
+
+        Returns:
+            选中的贴纸；不需要发时返回 None
+        """
+        if not self.emoji_catalog or not self.emoji_session.should_append():
+            return None
+        if _EMOJI_OPT_OUT_RE.search(reply_text or ""):
+            return None
+
+        # 模型自己已经发过表情包标记 -> 不再追加第二个
+        for raw_name in EMOJI_TAG_RE.findall(reply_text or ""):
+            existing = self.emoji_catalog.get(raw_name)
+            if existing is not None:
+                return None
+
+        plain = EMOJI_TAG_RE.sub("", reply_text or "")
+        name = self.emoji_catalog.match_by_mood(plain)
+        if not name:
+            return None
+        return self.emoji_catalog.get(name)
+
+    def _strip_emoji_tags(self, text: str) -> str:
+        """把表情包标记从文本中移除（存记忆/历史时用纯文本更干净）"""
+        cleaned = EMOJI_TAG_RE.sub("", text or "")
+        cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+        cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+        return cleaned.strip()
 
     def _reset_messages(self) -> None:
         """重置对话历史"""
@@ -1007,6 +1391,8 @@ class AI:
             ('text', 文本片段)          -> 流式文本
             ('tool', {'name':..., 'status':'start'|'done'})
                                        -> 工具调用开始/结束
+            ('emoji', {'name':..., 'path':...})
+                                       -> 额外发送一个表情包贴纸
             ('done', 完整回复)          -> 循环结束
 
         Args:
@@ -1021,6 +1407,9 @@ class AI:
             return
         
         try:
+            # 0. 本轮表情包回合计数（用于概率/冷却判定）
+            self.emoji_session.mark_turn()
+            
             # 1. 搜索相关记忆
             memories = self.memory_manager.search_memories(user_input)
             
@@ -1083,15 +1472,23 @@ class AI:
                 full_reply += note
                 yield ('text', note)
             
-            # 6. 保存 assistant 回复到历史
-            self._messages.append({'role': 'assistant', 'content': full_reply})
+            # 6. 表情包：每条回复固定附带一个（模型没自己发标记时由这里补上）
+            sticker = self._pick_emoji_for_reply(full_reply)
+            if sticker is not None:
+                self.emoji_session.mark_sent()
+                self.logger.info(f"附带表情包: {sticker.file_name}")
+                yield ('emoji', {'name': sticker.name, 'path': sticker.path})
             
-            # 7. 保存对话到记忆
-            memory_content = f"用户: {user_input}\n助理: {full_reply}"
+            # 7. 保存 assistant 回复到历史（去掉表情包标记，历史保持纯文本）
+            plain_reply = self._strip_emoji_tags(full_reply)
+            self._messages.append({'role': 'assistant', 'content': plain_reply})
+            
+            # 8. 保存对话到记忆
+            memory_content = f"用户: {user_input}\n助理: {plain_reply}"
             self.memory_manager.add_memory(memory_content)
             
             self.logger.info(
-                f"用户: {user_input[:50]}... -> AI: {full_reply[:50]}... "
+                f"用户: {user_input[:50]}... -> AI: {plain_reply[:50]}... "
                 f"(历史消息数: {len(self._messages)})"
             )
             
@@ -1129,12 +1526,26 @@ class AI:
         self._provider_name = provider_name
         self._setup_provider()
         self._reset_messages()
+        self.emoji_session.reset()
         self.logger.info(f"已切换到提供商: {provider_name}")
     
     def clear_history(self) -> None:
         """清空对话历史"""
         self._reset_messages()
+        self.emoji_session.reset()
         self.logger.info("对话历史已清空")
+    
+    def reload_emojis(self, image_dir: str = "Image") -> int:
+        """
+        重新扫描表情包目录（用户新增图片后无需重启即可识别）
+        
+        Returns:
+            识别到的表情包数量
+        """
+        self.emoji_catalog.reload()
+        self._reset_messages()
+        self.logger.info(f"表情包已重新载入: {self.emoji_catalog.count} 个")
+        return self.emoji_catalog.count
     
     def clear_memories(self) -> None:
         """清空所有记忆"""
