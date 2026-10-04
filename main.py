@@ -245,7 +245,7 @@ def show_startup_error(message: str) -> None:
 if __name__ == "__main__":
     # 导入PySide6（在main函数外导入）
     from PySide6.QtWidgets import QApplication
-    from PySide6.QtGui import QFont
+    from PySide6.QtGui import QFont, QIcon
     
     root = app_root()
     # 统一工作目录到程序目录，保证所有相对路径都指向程序自身
@@ -258,6 +258,11 @@ if __name__ == "__main__":
     
     # 创建QApplication实例
     app = QApplication(sys.argv)
+
+    # 设置应用程序图标（任务栏 / 窗口左上角）
+    icon_path = root / "Image" / "CastoriceAgent.ico"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
     
     # 设置应用程序样式（按已保存的显示模式，默认跟随系统）
     app.setStyle("Fusion")

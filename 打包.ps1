@@ -1,4 +1,4 @@
-# 一键打包脚本：生成可直接分发的文件夹（含 exe 与运行所需资源）
+﻿# 一键打包脚本：生成可直接分发的文件夹（含 exe 与运行所需资源）
 #
 # 用法（在本目录下）：
 #   pwsh -File 打包.ps1
@@ -18,6 +18,17 @@ $dist = Join-Path $root "dist\CastoriceAgent"
 $releaseRoot = Join-Path $root "发布包"
 $release = Join-Path $releaseRoot "CastoriceAgent"
 
+Write-Host "== 0/4 准备 exe 图标 ==" -ForegroundColor Cyan
+$icon = Join-Path $root "Image\CastoriceAgent.ico"
+if (-not (Test-Path $icon)) {
+    $avatar = Join-Path $root "Image\CastoriceAvatar.jpeg"
+    if (-not (Test-Path $avatar)) { throw "缺少图标源文件: $avatar" }
+    Write-Host "未找到 $icon，正在根据头像生成..." -ForegroundColor Yellow
+    python -c "import sys; from PIL import Image; Image.open(sys.argv[1]).convert('RGBA').save(sys.argv[2], format='ICO', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])" $avatar $icon
+    if ($LASTEXITCODE -ne 0) { throw "生成 ico 失败（需要 Pillow：pip install pillow）" }
+}
+Write-Host "图标: $icon" -ForegroundColor Green
+
 Write-Host "== 1/4 调用 PyInstaller 打包 ==" -ForegroundColor Cyan
 Push-Location $root
 try {
@@ -26,7 +37,7 @@ try {
     #   运行时也不会导入，但 --collect-all 会把它们连带收进来，
     #   其中 torch_cpu.dll 一个文件就 291MB，排除后可省下约 460MB。
     #   onnxruntime / tokenizers 是记忆检索真正要用的，必须保留。
-    python -m PyInstaller --noconfirm --clean --windowed --name CastoriceAgent `
+    python -m PyInstaller --noconfirm --clean --windowed --name CastoriceAgent --icon "$icon" `
         --collect-all chromadb `
         --collect-all onnxruntime `
         --collect-all tokenizers `
