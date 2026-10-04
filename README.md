@@ -356,7 +356,7 @@ pip install -r requirements.txt
 或者直接运行附带脚本：
 
 ```bash
-python requirement_install.py
+python scripts/requirement_install.py
 ```
 
 然后：
@@ -370,7 +370,7 @@ python main.py
 ### 打包为 exe
 
 ```powershell
-pwsh -File 打包.ps1
+pwsh -File scripts\打包.ps1
 ```
 
 产物在 `发布包\CastoriceAgent\`，整个文件夹拷给别人就能用。
@@ -384,22 +384,26 @@ pwsh -File 打包.ps1
 
 ```
 CastoriceAgent/
-├── main.py                  程序入口：环境准备、日志、首次使用引导
-├── ui.py                    界面：主窗口、设置窗口、气泡、表情面板、动画
-├── ai.py                    AI 核心：配置、记忆库、提供商适配、工具、表情包
-├── requirement_install.py   依赖安装脚本
-├── requirements.txt         依赖清单
-├── 打包.ps1                 一键打包脚本
-├── 使用说明.txt              给最终用户的说明书（随发布包分发）
-├── example_config.yaml      配置模板（发布时用它占位）
-├── config.yaml              你的实际配置（已被 .gitignore 忽略）
-├── prompts/                 角色设定（11 个模块）
+├── main.py                     程序入口：环境准备、日志、首次使用引导
+├── ui.py                       界面：主窗口、设置窗口、气泡、表情面板、动画
+├── ai.py                       AI 核心：配置、记忆库、提供商适配、工具、表情包
+├── requirements.txt            依赖清单
+├── example_config.yaml         配置模板（发布时用它占位）
+├── config.yaml                 你的实际配置（已被 .gitignore 忽略）
+├── scripts/
+│   ├── 打包.ps1                一键打包脚本
+│   └── requirement_install.py  依赖安装脚本
+├── docs/
+│   ├── 使用说明.txt             给最终用户的说明书（随发布包分发）
+│   ├── screenshot-dark.png     界面截图（深色）
+│   └── screenshot-light.png    界面截图（浅色）
+├── prompts/                    角色设定（11 个模块）
 ├── Image/
-│   ├── CastoriceAvatar.jpeg 聊天头像
-│   ├── CastoriceAgent.ico   exe 图标（打包脚本自动生成 / 使用）
-│   └── 表情包/              表情贴纸，文件名即表情名
-├── database/                对话记忆库（自动生成）
-└── logs/app.log             运行日志
+│   ├── CastoriceAvatar.jpeg    聊天头像
+│   ├── CastoriceAgent.ico      exe 图标（打包脚本自动生成 / 使用）
+│   └── 表情包/                 表情贴纸，文件名即表情名
+├── database/                   对话记忆库（自动生成）
+└── logs/app.log                运行日志
 ```
 
 </details>

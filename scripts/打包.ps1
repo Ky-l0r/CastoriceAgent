@@ -1,7 +1,7 @@
 ﻿# 一键打包脚本：生成可直接分发的文件夹（含 exe 与运行所需资源）
 #
-# 用法（在本目录下）：
-#   pwsh -File 打包.ps1
+# 用法（在仓库根目录下）：
+#   pwsh -File scripts\打包.ps1
 #
 # 产物：发布包\CastoriceAgent\  （整个文件夹拷给别人即可使用）
 #
@@ -13,7 +13,8 @@
 
 $ErrorActionPreference = "Stop"
 
-$root = $PSScriptRoot
+# 本脚本位于 scripts\ 下，仓库根目录是它的上一级
+$root = Split-Path $PSScriptRoot -Parent
 $dist = Join-Path $root "dist\CastoriceAgent"
 $releaseRoot = Join-Path $root "发布包"
 $release = Join-Path $releaseRoot "CastoriceAgent"
@@ -73,8 +74,8 @@ Copy-Item (Join-Path $root "prompts") $release -Recurse -Force
 Copy-Item (Join-Path $root "example_config.yaml") (Join-Path $release "config.yaml")
 Copy-Item (Join-Path $root "example_config.yaml") (Join-Path $release "example_config.yaml")
 
-# 使用说明
-$manual = Join-Path $root "使用说明.txt"
+# 使用说明（放在 docs\ 下，复制进发布包根目录给用户看）
+$manual = Join-Path $root "docs\使用说明.txt"
 if (Test-Path $manual) { Copy-Item $manual $release }
 
 # 不放 database / logs / ui_settings.json：让用户以全新状态启动
