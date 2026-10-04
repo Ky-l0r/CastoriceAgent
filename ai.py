@@ -1624,7 +1624,8 @@ class AI:
                 image = image.convert("RGB")
                 if max(image.size) > cls.IMAGE_MAX_SIDE:
                     ratio = cls.IMAGE_MAX_SIDE / float(max(image.size))
-                    resample = getattr(Image, "Resampling", Image).LANCZOS
+                    resampling = getattr(Image, "Resampling", Image)
+                    resample = getattr(resampling, "LANCZOS", 1)
                     image = image.resize(
                         (
                             max(1, int(image.width * ratio)),
