@@ -85,3 +85,71 @@ providers:
     api_key: "your-api-key"
     base_url: "https://your-api-endpoint.com/v1"
     model: "your-model-name"
+
+# ---- QQ 渠道（NapCat / OneBot 11 反向 WebSocket，第二期）----
+# 整节保持注释状态 = 不启用渠道（缺省行为与第一期完全一致）。
+# 启用步骤：装好 NapCat 后取消注释并填写 url / access_token，重启程序。
+#   url:              NapCat 反向 WS 服务地址（NapCat 作服务端，本程序作为客户端连入）
+#   access_token:     NapCat 的 access token（空串 = 不鉴权；建议必填，鉴权走 Bearer 头）
+#   allowed_senders:  发送者 QQ 号白名单（空 = 不限制）
+#   allowed_groups:   群号白名单（空 = 不限制）
+#   default_chat_type: 裸数字 chat_id 的归属（private | group）
+#   max_chunk_len:    长文本分段长度（默认 4500，QQ 消息上限内）
+#   report_tools:     是否把工具事件折叠成「正在执行 xx…」提示（默认 false）
+#   connect_timeout / reconnect_initial / reconnect_max:
+#                     首连超时秒数 / 重连退避起始与上限秒数（默认 10 / 1 / 30）
+# channels:
+#   napcat:
+#     url: "ws://127.0.0.1:3001"
+#     access_token: "your-napcat-token"
+#     allowed_senders: []
+#     allowed_groups: []
+#     default_chat_type: "private"
+#     max_chunk_len: 4500
+#     report_tools: false
+#
+# 说明：
+#   · 首次连接会做 fail-fast 校验：连不上或 token 错误直接报错退出，不会「假在线」；
+#   · 断线后按 reconnect_initial → reconnect_max 的指数退避自动重连；
+#   · 收到的每条消息按 message_id 幂等去重，重复推送不会重复回复。
+
+# ---- 主动聊天（定时任务，第二期）----
+# 主动聊天不写在 config.yaml，而是程序目录下的 schedules.json（运行时生成/更新，
+# 不随发布包分发）。格式（顶层映射）与一条示例：
+# {
+#   "version": 1,
+#   "schedules": [
+#     {
+#       "id": "morning-greeting",
+#       "title": "早安问候",
+#       "triggers": {"daily": "08:30"},
+#       "proactive_message": "早上好，跟她打个招呼",
+#       "targets": [
+#         {"id": "desktop:main"},
+#         {"id": "qq:123456789", "fallback": "desktop"}
+#       ],
+#       "enabled": true,
+#       "first_at": "2026-01-01T00:00:00",
+#       "last_sent_at": null
+#     }
+#   ]
+# }
+# 字段说明：
+#   id                  必填，唯一标识
+#   title               必填，最长 120 字符
+#   triggers            必填，五选一互斥：
+#                         after_seconds: 3600（N 秒后一次）
+#                         at: "2026-01-01T09:00:00"（一次性定时）
+#                         every_seconds: 7200（固定周期）
+#                         daily: "08:30"（每天 HH:MM）
+#                         weekly: "10:00"（配合 weekday: 0-6，周一=0）
+#   proactive_message   必填，触发时交给模型的合成主动话头
+#   targets             必填，至少一个；id 形如 "desktop:main" / "qq:123456789"，
+#                       fallback = 渠道离线时回退策略：desktop | skip（默认 skip）
+#   enabled             true | false，false 的任务不触发
+#   first_at            可选，注册基准（every_seconds 的周期起点等），ISO 字面量
+#   last_sent_at        程序维护：最近一次已投递时点，请勿手改
+# 投递保证：
+#   · 只补发最近一次错过的时点（错过 3 个时点也只发 1 条，不会连环轰炸）；
+#   · 先落盘对话、投递成功才推进 last_sent_at（崩溃重启不重发）；
+#   · 触发精度为分钟级（秒字段被忽略）。
