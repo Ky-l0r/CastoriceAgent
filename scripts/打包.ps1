@@ -1,4 +1,4 @@
-﻿# 一键打包脚本：生成可直接分发的文件夹（含 exe 与运行所需资源）
+# 一键打包脚本：生成可直接分发的文件夹（含 exe 与运行所需资源）
 #
 # 用法（在仓库根目录下）：
 #   pwsh -File scripts\打包.ps1
@@ -78,7 +78,8 @@ Copy-Item (Join-Path $root "example_config.yaml") (Join-Path $release "example_c
 $manual = Join-Path $root "docs\使用说明.txt"
 if (Test-Path $manual) { Copy-Item $manual $release }
 
-# 不放 database / logs / ui_settings.json：让用户以全新状态启动
+# 不放 database / memory / sessions / logs / ui_settings.json：让用户以全新状态启动
+#（白名单式复制只拷贝上面列出的条目，sessions/ 等运行期产物天然不会进入发布包）
 
 Write-Host "== 4/4 完成 ==" -ForegroundColor Cyan
 $size = [math]::Round((Get-ChildItem $release -Recurse -File | Measure-Object Length -Sum).Sum / 1MB, 1)

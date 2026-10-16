@@ -3,6 +3,9 @@
 # 当前激活的提供商
 active_provider: "deepseek"  # 可选: openai, deepseek, aliyun, etc.
 
+# 当前会话模式
+mode: "chat"                 # 可选: chat | work | code | learn
+
 # 搜索配置（web_search 工具）
 search:
   provider: "bing_html"   # bing_html | bing_api | tavily | serper | bocha | ddg_html | auto
@@ -20,6 +23,32 @@ emoji:
   max_per_session: 0       # 每次启动最多发几个，0 表示不限制
   moods: {}                # 标签名 -> 心情描述（留空用内置默认值）
   keywords: {}             # 标签名 -> 心情关键词列表（留空用内置默认值）
+
+# 各模式的工作目录绑定（Code=可信代码目录，Learn=Obsidian Vault）
+#
+# 留空表示未绑定，界面右侧面板会提示；这里登记的目录同时是「可信根」，
+# 界面里只能绑定到可信根之内的目录，越界会被拒绝。
+modes:
+  work:
+    workdir: ""            # 工作模式的目录（可选）
+  code:
+    workdir: ""            # 编程模式的可信代码目录
+    sandbox: "workspace-write"
+  learn:
+    vault: ""              # 学习模式的 Obsidian Vault 根目录
+    sandbox: "workspace-write"
+
+# 权限与审批
+permissions:
+  sandbox_default: "read-only"   # read-only | workspace-write | danger-full-access
+  approval_policy: "ask"         # ask | never
+  command_allowlist: []          # 追加到内置只读命令白名单的命令
+
+# 记忆引擎
+memory:
+  engine: "embedding"            # embedding | wiki | summary
+  summary_threshold: 40          # 累积多少条后压缩
+  worldbook_enabled: true
 
 # 所有提供商的配置
 #

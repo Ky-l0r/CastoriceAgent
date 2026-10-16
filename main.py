@@ -7,6 +7,9 @@ import os
 import logging
 from pathlib import Path
 
+# 组合根：运行期目录约定 + 旧配置缺失节补齐（t20 第一期收口）
+from castorice.app import build_default_paths, ensure_core_sections
+
 # 导入UI模块
 from ui import ChatWindow, Colors, ThemeSettings, app_root, create_palette
 
@@ -67,6 +70,25 @@ def setup_environment(root: Path) -> None:
             print("请打开它填入你的 API Key（或在软件的「设置」里填写）")
         else:
             print("警告: 未找到 config.yaml 配置文件")
+
+    # 旧版 config.yaml 升级上来的用户可能没有四模式内核需要的节
+    #（mode / modes / permissions / memory）：缺失时按默认值补齐并给出
+    # 可读提示——绝不静默丢失设置（update_yaml_scalars 在父块缺失时会
+    # 静默跳过该键，设置窗口的保存会因此悄悄失效）。
+    if config_file.exists():
+        try:
+            ensure_core_sections(str(config_file))
+        except Exception as e:
+            print(f"警告: 检查配置节失败（不影响启动）: {e}")
+
+    # 运行期目录约定（sessions/ 与 database/ memory/ logs/ 同级，均以
+    # 程序根为锚点）。__main__ 已把 CWD 统一到程序目录，这里再显式
+    # 创建一次，保证「从哪里启动」都不影响落盘位置。
+    try:
+        paths = build_default_paths(root)
+        paths.sessions.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        print(f"警告: 无法创建 sessions 目录: {e}")
 
 
 def find_avatar(root: Path) -> "str | None":
@@ -185,6 +207,10 @@ def main(root: Path):
             prompts_dir=str(root / "prompts"),
             chroma_dir=str(root / "database"),
             image_dir=str(root / "Image"),
+            # 会话事件日志根：显式传绝对路径，落点不随启动 CWD 漂移
+            #（默认值 "sessions" 是相对路径，落点为进程 CWD——见
+            # docs/refactor/05-channel-contract.md 的目录约定一节）。
+            sessions_dir=str(root / "sessions"),
         )
         logging.getLogger("AI").info(
             f"初始化成功 (提供商: {bot.provider_name})"

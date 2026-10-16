@@ -99,7 +99,7 @@ Key 要去 AI 服务商的官网注册后自行创建，例如：
 ## 它能做什么
 
 **🎭 完整的角色扮演系统**
-角色设定拆成 11 个模块（人格核心、语气规则、世界观、人物关系、原作台词……），按触发词动态注入。
+角色设定拆成 11 个模块（人格核心、语气规则、世界观、人物关系、原作台词……），每次对话**全量拼接**进提示词（世界观等文件里的触发词标注是预留设计，本期未实现动态筛选）。
 想换成别的角色？替换 `prompts\` 里的文件即可，不用改代码。
 
 **💭 会看情绪发表情**
@@ -114,6 +114,12 @@ Key 要去 AI 服务商的官网注册后自行创建，例如：
 **🔧 能动手，不只动嘴**
 需要时会自己联网搜索（支持 Bing / DuckDuckGo / Tavily / Serper / Bing API / 博查 六种后端，可自动降级），
 拿到资料再回答。
+
+**🧩 四种工作模式**
+右上角可切换：`聊天`（纯对话，无任何工具，请求体不携带工具定义）、`工作`（通用工具全开，可绑定工作目录）、
+`编程`（面向代码目录的文件 / 命令工具集）、`学习`（对接 Obsidian Vault 的笔记读写检索）。
+每个模式有独立的对话历史与提示词分层，互不串台；有副作用的操作（写文件、跑命令）会先弹出审批条，
+倒计时内不回应即按拒绝处理（宁可拒绝，不静默放行）。
 
 **🖼️ 能看懂图片**
 换到视觉模型后，输入区会出现「图片」按钮。选好的图先挂在输入框上方，可以配文字一起发。
@@ -206,7 +212,8 @@ API Key 没填或填错了。打开右上角设置重新填写。
 <details>
 <summary><b>怎么清空聊天记忆</b></summary>
 
-删掉程序目录下的 `database\` 文件夹，下次启动会自动重建一个空库。
+删掉程序目录下的 `database\` 和 `memory\` 文件夹，下次启动会自动重建空库；
+只想清对话记录（不影响记忆）就删 `sessions\`。
 </details>
 
 <details>
@@ -228,8 +235,8 @@ API Key 没填或填错了。打开右上角设置重新填写。
 | `soul.md` | 人格核心：她是谁、怎么说话、如何表达情感 |
 | `tone-rules.md` | 语气规则 |
 | `system.md` / `talk_system.md` | 系统规则 |
-| `world.md` / `story.md` / `characters.md` | 世界观、经历、相关人物（按触发词注入） |
-| `Castorice.md` | 她自身的身世与本体条目（按触发词注入） |
+| `world.md` / `story.md` / `characters.md` | 世界观、经历、相关人物 |
+| `Castorice.md` | 她自身的身世与本体条目 |
 | `canon_quotes.md` | 原作台词，用来校准说话风格 |
 | `appellation.md` | 称谓统一映射 |
 
@@ -281,6 +288,46 @@ search:
 
 前两种（`bing_html` / `ddg_html`）是免费免密钥的网页搜索，`auto` 会依次尝试并在失败时自动降级。
 
+### 四模式与权限（第一期新增）
+
+```yaml
+mode: "chat"                   # 启动时进入的模式：chat | work | code | learn
+
+modes:                         # 各模式的工作目录绑定（空 = 未绑定，界面会提示）
+  work:
+    workdir: ""
+  code:
+    workdir: ""
+    sandbox: "workspace-write"
+  learn:
+    vault: ""                  # Obsidian Vault 根目录
+    sandbox: "workspace-write"
+
+permissions:
+  sandbox_default: "read-only" # read-only | workspace-write | danger-full-access
+  approval_policy: "ask"       # ask | never
+  command_allowlist: []        # 追加到内置只读命令白名单的命令
+
+memory:
+  engine: "embedding"          # embedding | wiki | summary
+  summary_threshold: 40
+  worldbook_enabled: true
+```
+
+**`modes.<name>.sandbox` 的生效优先级**（越具体越优先，非法值 warning 后回落）：
+
+1. `modes.<name>.sandbox` —— 该模式的显式配置；
+2. `permissions.sandbox_default` —— 全局缺省；
+3. 模式内置默认（work / code / learn 为 `workspace-write`，chat 为 `read-only`）。
+
+缺了这些节也能跑：老 `config.yaml` 启动时会按默认值自动补齐并给出提示
+（mode=chat / sandbox=read-only / approval=ask / engine=embedding）。
+
+> ⚠️ **安全边界声明**：工具的目录与命令限制是**策略级隔离**（Python 代码内的路径
+> 边界检查 + 命令白名单 + 审批网关），**不提供**进程、网络或文件系统级隔离，
+> 检查与执行之间的 TOCTOU（检查后状态改变）窗口也不在第一期的保证范围内。
+> 请只在可信的目录绑定与命令白名单下使用。
+
 ---
 
 ## 数据、备份与卸载
@@ -291,11 +338,14 @@ search:
 | :--- | :--- |
 | `config.yaml` | 你的设置，**含 API Key** |
 | `database\` | 对话记忆库（自动生成） |
+| `memory\` | 结构化记忆落盘（wiki / 摘要 / 世界书，自动生成） |
+| `sessions\` | 各模式的对话记录（自动生成，按模式分目录） |
 | `ui_settings.json` | 外观偏好（自动生成） |
 | `logs\app.log` | 运行日志，出问题时先看这里 |
 
 - **备份**：把整个文件夹复制走就行。
-- **清空记忆**：删掉 `database\`。
+- **清空记忆**：删掉 `database\` 和 `memory\`。
+- **清空对话记录**：删掉 `sessions\`。
 - **卸载**：把整个文件夹删掉，不留任何残留。
 
 > ⚠️ **分享给别人之前**，记得先把 `config.yaml` 里的 API Key 删掉或清空 ——
@@ -387,6 +437,8 @@ CastoriceAgent/
 ├── main.py                     程序入口：环境准备、日志、首次使用引导
 ├── ui.py                       界面：主窗口、设置窗口、气泡、表情面板、动画
 ├── ai.py                       AI 核心：配置、记忆库、提供商适配、工具、表情包
+├── castorice/                  四模式内核：模式注册表 / 会话日志 / agent 循环 /
+│                               权限审批 / 工具集 / 记忆引擎 / 渠道接口（castorice/channels/）
 ├── requirements.txt            依赖清单
 ├── example_config.yaml         配置模板（发布时用它占位）
 ├── config.yaml                 你的实际配置（已被 .gitignore 忽略）

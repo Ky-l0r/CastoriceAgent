@@ -85,6 +85,52 @@ def resolve_theme_mode(mode: str) -> str:
     return mode
 
 
+class UiSettings:
+    """
+    界面设置（ui_settings.json）的读写
+
+    同一个文件里既有显示模式（theme），也有界面模式（ui_mode），
+    因此所有写入都是「读-改-写」，避免覆盖彼此的键。
+    任何异常都静默降级：设置文件坏了不该让程序起不来。
+    """
+
+    THEME_KEY = "theme"
+    MODE_KEY = "ui_mode"
+
+    #: 用环境变量把设置文件指到别处（便携运行 / 多份配置并存时有用）
+    ENV_PATH = "CASTORICE_UI_SETTINGS"
+
+    @classmethod
+    def _file(cls) -> Path:
+        """设置文件路径（每次动态解析，兼容打包后的 exe 目录）"""
+        override = os.environ.get(cls.ENV_PATH)
+        if override:
+            return Path(override).expanduser()
+        return app_root() / "ui_settings.json"
+
+    @classmethod
+    def load(cls) -> Dict[str, Any]:
+        """读取整份设置；文件缺失或损坏时返回空字典"""
+        try:
+            data = json.loads(cls._file().read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    @classmethod
+    def save_values(cls, values: Dict[str, Any]) -> None:
+        """合并写入若干键（保留文件里已有的其它键）"""
+        data = cls.load()
+        data.update(values)
+        try:
+            cls._file().write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+
 class ThemeSettings:
     """显示模式设置的持久化（ui_settings.json，放在程序根目录旁边）"""
 
@@ -95,24 +141,60 @@ class ThemeSettings:
 
     @classmethod
     def load(cls) -> str:
-        try:
-            data = json.loads(cls._file().read_text(encoding="utf-8"))
-            mode = str(data.get("theme", ThemeMode.SYSTEM)).lower()
-            if mode in (ThemeMode.SYSTEM, ThemeMode.LIGHT, ThemeMode.DARK):
-                return mode
-        except Exception:
-            pass
+        raw = UiSettings.load().get(UiSettings.THEME_KEY, ThemeMode.SYSTEM)
+        mode = str(raw).lower()
+        if mode in (ThemeMode.SYSTEM, ThemeMode.LIGHT, ThemeMode.DARK):
+            return mode
         return ThemeMode.SYSTEM
 
     @classmethod
     def save(cls, mode: str) -> None:
-        try:
-            cls._file().write_text(
-                json.dumps({"theme": mode}, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        except Exception:
-            pass
+        UiSettings.save_values({UiSettings.THEME_KEY: mode})
+
+
+class ModeSettings:
+    """
+    界面模式（chat/work/code/learn）在本地的记忆
+
+    权威来源有两个：
+    1. 内核 config.yaml 的 `mode` 键（跨进程恢复的真正依据）；
+    2. ui_settings.json 的 ui_mode（内核不可用时的兜底，例如演示模式）。
+    读取顺序是「config.yaml → ui_settings.json → chat」，写入时两者都尽量更新。
+    """
+
+    DEFAULT = "chat"
+
+    @classmethod
+    def load(cls) -> str:
+        """读取上次使用的模式（非法值回退到 chat）"""
+        mode = str(UiSettings.load().get(UiSettings.MODE_KEY, "")).strip().lower()
+        return mode or cls.DEFAULT
+
+    @classmethod
+    def save(cls, mode: str) -> None:
+        """记住当前模式（供下次启动恢复）"""
+        name = str(mode or "").strip().lower()
+        if not name:
+            return
+        UiSettings.save_values({UiSettings.MODE_KEY: name})
+
+
+#: 界面模式的固定顺序与中文名（内核不可用时的兜底展示）
+FALLBACK_MODES: Tuple[Dict[str, str], ...] = (
+    {"name": "chat", "display_name": "聊天"},
+    {"name": "work", "display_name": "工作"},
+    {"name": "code", "display_name": "编程"},
+    {"name": "learn", "display_name": "学习"},
+)
+
+
+def normalize_mode_name(name: Any) -> str:
+    """把模式名归一化成合法值；未知值回退到 chat（失败安全，与内核同源）"""
+    candidates = {item["name"] for item in FALLBACK_MODES}
+    text = str(name or "").strip().lower()
+    if text in candidates:
+        return text
+    return ModeSettings.DEFAULT
 
 
 class _ColorsMeta(type):
@@ -188,6 +270,30 @@ class Colors(metaclass=_ColorsMeta):
         # 工具状态气泡
         "TOOL_BG": "#1F1A2C",
         "TOOL_TEXT": "#8A8299",
+        # 模式切换条（比标题栏深一档，形成层次）
+        "MODE_BAR_BG": "#4A28A8",
+        "MODE_TAB_BG_ACTIVE": "#FFFFFF",
+        "MODE_TAB_TEXT_ACTIVE": "#5B34C9",
+        "MODE_TAB_TEXT": "#D8CCFF",
+        "MODE_TAB_TEXT_HOVER": "#FFFFFF",
+        "MODE_TAB_BG_HOVER": "#6B41DA",
+        # 右侧信息面板（Code / Learn 目录绑定）
+        "PANEL_BG": "#1F1A2C",
+        "PANEL_BORDER": "#332C47",
+        "PANEL_TITLE": "#EFEBFA",
+        "PANEL_TEXT": "#BDB4CC",
+        "PANEL_MUTED": "#8A8299",
+        "PANEL_KEY_BG": "#241F33",
+        # 审批条（工具调用需要用户授权）
+        "APPROVAL_BG": "#2A2136",
+        "APPROVAL_BORDER": "#6D4AC4",
+        "APPROVAL_TITLE": "#F3EEFF",
+        "APPROVAL_TEXT": "#C7BEDB",
+        "APPROVAL_MUTED": "#8A8299",
+        "APPROVAL_ALLOW_BG": "#7C3AED",
+        "APPROVAL_ALLOW_TEXT": "#FFFFFF",
+        "APPROVAL_DENY_BG": "#3A3050",
+        "APPROVAL_DENY_TEXT": "#D9D2EA",
     }
 
     # 浅色（白色偏紫）
@@ -239,6 +345,30 @@ class Colors(metaclass=_ColorsMeta):
         # 工具状态气泡
         "TOOL_BG": "#F0EAFB",
         "TOOL_TEXT": "#6B5CA5",
+        # 模式切换条（紫色实底，与标题栏同族但更深）
+        "MODE_BAR_BG": "#7C4DE8",
+        "MODE_TAB_BG_ACTIVE": "#FFFFFF",
+        "MODE_TAB_TEXT_ACTIVE": "#6D28D9",
+        "MODE_TAB_TEXT": "#EDE6FC",
+        "MODE_TAB_TEXT_HOVER": "#FFFFFF",
+        "MODE_TAB_BG_HOVER": "#9A76F0",
+        # 右侧信息面板（Code / Learn 目录绑定）
+        "PANEL_BG": "#FFFFFF",
+        "PANEL_BORDER": "#E2DBF2",
+        "PANEL_TITLE": "#4A3F6B",
+        "PANEL_TEXT": "#6B5CA5",
+        "PANEL_MUTED": "#9C93B4",
+        "PANEL_KEY_BG": "#F7F4FD",
+        # 审批条（工具调用需要用户授权）
+        "APPROVAL_BG": "#F3EEFF",
+        "APPROVAL_BORDER": "#C4B5FD",
+        "APPROVAL_TITLE": "#4A3F6B",
+        "APPROVAL_TEXT": "#5B4B8A",
+        "APPROVAL_MUTED": "#8A80A6",
+        "APPROVAL_ALLOW_BG": "#7C3AED",
+        "APPROVAL_ALLOW_TEXT": "#FFFFFF",
+        "APPROVAL_DENY_BG": "#EDE6FC",
+        "APPROVAL_DENY_TEXT": "#4A3F6B",
     }
 
     _current = ThemeMode.SYSTEM  # 当前显示模式（system/light/dark）
@@ -289,6 +419,18 @@ class Sizes:
     # 用户发送的图片
     USER_IMAGE_SIZE = 220       # 聊天区图片显示边长上限
     ATTACH_THUMB_SIZE = 60      # 待发送缩略图边长
+    
+    # 模式切换条（标题栏下方的独立一条）
+    MODEBAR_HEIGHT = 34         # 模式条高度
+    MODE_TAB_HEIGHT = 24        # 模式按钮高度
+    MODE_TAB_PADDING = 12       # 模式按钮左右内边距
+    
+    # 右侧信息面板（Code / Learn 的目录绑定）
+    SIDE_PANEL_WIDTH = 236      # 面板宽度
+    
+    # 审批条（工具调用需要用户授权，显示在输入框上方）
+    APPROVAL_BUTTON_HEIGHT = 26  # 允许/拒绝按钮高度
+    APPROVAL_DETAIL_LIMIT = 160  # 参数摘要的最大字符数
     
     # 设置窗口
     SETTINGS_WIDTH = 480
@@ -1211,6 +1353,217 @@ class TitleBar(QWidget):
 
 
 # ============================================================================
+# 模式切换条（标题栏下方的 Chat / Work / Code / Learn）
+# ============================================================================
+
+class ModeTabButton(QPushButton):
+    """
+    模式切换条上的一个模式按钮（自绘，保证两套主题下配色一致）
+
+    自绘而不是用 QSS：模式条的底色来自标题栏色系，选中态是实心白底 + 紫色文字，
+    用 QSS 在深色/浅色两套调色板里容易出现对比度不足的字，自绘可以直接取
+    Colors.MODE_TAB_* 常量，与主题系统保持同一套来源。
+    """
+
+    def __init__(
+        self,
+        mode_name: str,
+        display_name: str,
+        parent: Optional[QWidget] = None
+    ) -> None:
+        super().__init__(display_name, parent)
+        self.mode_name = mode_name
+        self._hovered = False
+        self._active = False
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setFixedHeight(Sizes.MODE_TAB_HEIGHT)
+        self.setToolTip(f"切换到「{display_name}」模式")
+        self._refresh_size()
+
+    # ---- 状态 ----
+
+    def set_active(self, active: bool) -> None:
+        """设置选中态（选中按钮为实心白底）"""
+        if self._active == active:
+            return
+        self._active = active
+        self._refresh_size()
+        self.update()
+
+    def is_active(self) -> bool:
+        return self._active
+
+    def refresh_theme(self) -> None:
+        """主题切换后重绘"""
+        self.update()
+
+    def _refresh_size(self) -> None:
+        """按文字宽度定尺寸：选中态字号加粗，需要重新测量"""
+        font = QFont(Fonts.FAMILY, Fonts.SIZE_MAIN)
+        font.setBold(self._active)
+        metrics = QFontMetrics(font)
+        width = metrics.horizontalAdvance(self.text()) + Sizes.MODE_TAB_PADDING * 2
+        self.setFixedWidth(width)
+
+    # ---- 交互 ----
+
+    def enterEvent(self, event: Any) -> None:
+        self._hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event: Any) -> None:
+        self._hovered = False
+        self.update()
+        super().leaveEvent(event)
+
+    def paintEvent(self, event: Any) -> None:
+        """自绘圆角按钮：选中实心、悬停半亮、其余透明"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        radius = rect.height() / 2
+
+        if self._active:
+            background = QColor(Colors.MODE_TAB_BG_ACTIVE)
+            text_color = Colors.MODE_TAB_TEXT_ACTIVE
+        elif self._hovered:
+            background = QColor(Colors.MODE_TAB_BG_HOVER)
+            text_color = Colors.MODE_TAB_TEXT_HOVER
+        else:
+            background = None
+            text_color = Colors.MODE_TAB_TEXT
+
+        if background is not None:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(background)
+            painter.drawRoundedRect(rect, radius, radius)
+
+        font = QFont(Fonts.FAMILY, Fonts.SIZE_MAIN)
+        font.setBold(self._active)
+        painter.setFont(font)
+        painter.setPen(QColor(text_color))
+        painter.drawText(
+            self.rect(),
+            int(Qt.AlignmentFlag.AlignCenter),
+            self.text(),
+        )
+        painter.end()
+
+
+class ModeSwitchBar(QWidget):
+    """
+    顶部模式切换条
+
+    贴在标题栏正下方，与标题栏共用圆角窗口的同一块背景色系。
+    按钮组由 set_modes() 注入，选中态由 set_active_mode() 同步；
+    点击发出 mode_selected(模式名)，由 ChatWindow 负责真正的切换。
+    """
+
+    mode_selected = Signal(str)
+
+    def __init__(
+        self,
+        modes: Optional[List[Dict[str, Any]]] = None,
+        active: str = ModeSettings.DEFAULT,
+        parent: Optional[QWidget] = None
+    ) -> None:
+        super().__init__(parent)
+        self._buttons: Dict[str, ModeTabButton] = {}
+        self._active_mode = normalize_mode_name(active)
+
+        self.setFixedHeight(Sizes.MODEBAR_HEIGHT)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+
+        self._layout = QHBoxLayout(self)
+        self._layout.setContentsMargins(Sizes.TITLEBAR_MARGIN_H, 0, 8, 0)
+        self._layout.setSpacing(2)
+
+        # 当前模式的中文名提示（右侧留白处，不参与交互）
+        self._hint = QLabel("")
+        self._hint.setStyleSheet("background-color: transparent; border: none;")
+
+        self.set_modes(modes or list(FALLBACK_MODES))
+        self._layout.addStretch()
+        self._layout.addWidget(self._hint)
+        self.refresh_theme()
+
+    # ---- 构建与状态 ----
+
+    def set_modes(self, modes: List[Dict[str, Any]]) -> None:
+        """按内核给出的模式元数据重建按钮组（幂等：重复调用先清空）"""
+        for button in self._buttons.values():
+            self._layout.removeWidget(button)
+            button.setParent(None)
+            button.deleteLater()
+        self._buttons.clear()
+
+        insert_at = 0
+        for item in modes:
+            name = normalize_mode_name(item.get("name"))
+            label = str(item.get("display_name") or name)
+            if name in self._buttons:
+                continue
+            button = ModeTabButton(name, label, self)
+            button.clicked.connect(
+                lambda _checked=False, n=name: self.mode_selected.emit(n)
+            )
+            self._layout.insertWidget(insert_at, button)
+            insert_at += 1
+            self._buttons[name] = button
+
+        self.set_active_mode(self._active_mode)
+
+    def mode_names(self) -> List[str]:
+        """当前按钮组里的模式名（顺序即界面顺序）"""
+        return list(self._buttons.keys())
+
+    def button_for(self, mode: str) -> Optional[ModeTabButton]:
+        return self._buttons.get(normalize_mode_name(mode))
+
+    def active_mode(self) -> str:
+        return self._active_mode
+
+    def set_active_mode(self, mode: str) -> None:
+        """同步选中态（未知模式名保持原选中项不变）"""
+        name = normalize_mode_name(mode)
+        if name not in self._buttons:
+            return
+        self._active_mode = name
+        for key, button in self._buttons.items():
+            button.set_active(key == name)
+        self._update_hint()
+
+    def _update_hint(self) -> None:
+        button = self._buttons.get(self._active_mode)
+        self._hint.setText(button.text() if button is not None else "")
+
+    # ---- 主题 ----
+
+    def refresh_theme(self) -> None:
+        """主题切换后刷新按钮与提示文字"""
+        for button in self._buttons.values():
+            button.refresh_theme()
+        self._hint.setStyleSheet(f"""
+            QLabel {{
+                color: {Colors.MODE_TAB_TEXT};
+                font-size: 8pt;
+                background-color: transparent;
+                border: none;
+            }}
+        """)
+        self.update()
+
+    def paintEvent(self, event: Any) -> None:
+        """绘制模式条底色（深一档的紫，与标题栏形成层次但不抢眼）"""
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(Colors.MODE_BAR_BG))
+        painter.end()
+
+
+# ============================================================================
 # 表情包（贴纸）
 # ============================================================================
 
@@ -1749,6 +2102,398 @@ class AttachmentItem(QWidget):
                 background-color: {Colors.TITLEBAR_BG_HOVER};
             }}
         """)
+
+
+# ============================================================================
+# 右侧信息面板（Code / Learn 的目录绑定）
+# ============================================================================
+
+#: 面板上「未绑定」时的可读提示（每种模式各自说明要绑定什么）
+UNBOUND_HINTS: Dict[str, str] = {
+    "work": "目录：未绑定\n可直接在输入框里描述任务，绑定目录后工具才能读写文件。",
+    "code": "代码目录：未绑定\n点下面的按钮选一个目录，之后读写与命令都在它之内。",
+    "learn": "笔记库：未绑定\n点下面的按钮选一个 Obsidian Vault 目录，笔记会存进去。",
+    "chat": "聊天模式不需要绑定目录。",
+}
+
+
+class SidePanel(QWidget):
+    """
+    右侧信息面板：Code / Learn 模式的目录绑定入口
+
+    这是「侧栏而非弹窗」的选择：绑定目录属于模式的长期状态，
+    放在常驻面板上可以直接看到当前绑的是哪个目录；Chat 模式隐藏面板，
+    避免把工具相关的东西暴露给纯聊天用户（第一期验收条款之一）。
+    """
+
+    bind_requested = Signal(str)     # 请求绑定目录（模式名）
+    unbind_requested = Signal(str)   # 请求解绑目录（模式名）
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._mode = ModeSettings.DEFAULT
+        self.setFixedWidth(Sizes.SIDE_PANEL_WIDTH)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(6)
+
+        self._title = QLabel("")
+        self._title.setWordWrap(True)
+
+        self._sandbox_label = QLabel("")
+        self._sandbox_label.setWordWrap(True)
+
+        self._dir_label = QLabel("")
+        self._dir_label.setWordWrap(True)
+
+        self._hint_label = QLabel("")
+        self._hint_label.setWordWrap(True)
+
+        self._bind_button = QPushButton("绑定目录…")
+        self._bind_button.clicked.connect(self._on_bind_clicked)
+
+        self._unbind_button = QPushButton("解除绑定")
+        self._unbind_button.clicked.connect(self._on_unbind_clicked)
+
+        layout.addWidget(self._title)
+        layout.addWidget(self._make_divider())
+        layout.addWidget(self._sandbox_label)
+        layout.addWidget(self._dir_label)
+        layout.addWidget(self._hint_label)
+        layout.addWidget(self._bind_button)
+        layout.addWidget(self._unbind_button)
+        layout.addStretch()
+
+        self.refresh_theme()
+
+    # ---- 构建 ----
+
+    def _make_divider(self) -> QFrame:
+        divider = QFrame()
+        divider.setFixedHeight(1)
+        divider.setObjectName("sidePanelDivider")
+        return divider
+
+    # ---- 状态 ----
+
+    def set_mode_info(self, info: Optional[Dict[str, Any]]) -> None:
+        """
+        用模式元数据刷新面板
+
+        Args:
+            info: ai.AI.available_modes() 里的一项；None 表示内核不可用，
+                  此时只保留「未绑定」的可读提示，按钮禁用。
+        """
+        data = dict(info or {})
+        self._mode = normalize_mode_name(data.get("name") or self._mode)
+        display_name = str(data.get("display_name") or self._mode)
+        policy = data.get("workdir_policy") or {}
+        bindable = bool(data.get("bindable", policy.get("bindable", False)))
+        workdir = data.get("workdir") or ""
+        sandbox = str(data.get("sandbox") or policy.get("default_sandbox") or "")
+
+        self._title.setText(f"{display_name}模式")
+        self._sandbox_label.setText(f"沙箱：{sandbox}" if sandbox else "")
+        self._sandbox_label.setVisible(bool(sandbox))
+
+        if workdir:
+            self._dir_label.setText("已绑定：\n" + str(workdir))
+            self._dir_label.setToolTip(str(workdir))
+        else:
+            self._dir_label.setText(
+                UNBOUND_HINTS.get(self._mode, "目录：未绑定")
+            )
+            self._dir_label.setToolTip("")
+
+        if bindable:
+            self._hint_label.setText("提示：只能绑定到可信根（配置里登记的目录）之内。")
+        else:
+            self._hint_label.setText("")
+        self._hint_label.setVisible(bindable)
+
+        self._bind_button.setVisible(bindable)
+        self._bind_button.setEnabled(bindable)
+        self._bind_button.setText("更换目录…" if workdir else "绑定目录…")
+        self._unbind_button.setVisible(bindable and bool(workdir))
+        self._unbind_button.setEnabled(bindable and bool(workdir))
+
+    def mode(self) -> str:
+        return self._mode
+
+    def workdir_text(self) -> str:
+        """目录区当前显示的文字（供测试与可访问性检查读取）"""
+        return self._dir_label.text()
+
+    def hint_text(self) -> str:
+        """提示区当前显示的文字（绑定失败原因等）"""
+        return self._hint_label.text()
+
+    def show_message(self, text: str) -> None:
+        """在提示区显示一条临时信息（如绑定失败的原因）"""
+        self._hint_label.setText(str(text))
+        self._hint_label.setVisible(bool(text))
+
+    # ---- 交互 ----
+
+    def _on_bind_clicked(self) -> None:
+        self.bind_requested.emit(self._mode)
+
+    def _on_unbind_clicked(self) -> None:
+        self.unbind_requested.emit(self._mode)
+
+    # ---- 主题 ----
+
+    def refresh_theme(self) -> None:
+        """主题切换后刷新配色（面板底色用主题常量，不写死颜色）"""
+        self.setStyleSheet(f"""
+            SidePanel {{
+                background-color: {Colors.PANEL_BG};
+                border: 1px solid {Colors.PANEL_BORDER};
+                border-radius: 10px;
+            }}
+            QFrame#sidePanelDivider {{
+                background-color: {Colors.PANEL_BORDER};
+                border: none;
+            }}
+            QPushButton {{
+                background-color: {Colors.PANEL_KEY_BG};
+                color: {Colors.PANEL_TEXT};
+                border: 1px solid {Colors.PANEL_BORDER};
+                border-radius: 6px;
+                padding: 4px 8px;
+                font-size: 9pt;
+            }}
+            QPushButton:hover {{
+                border: 1px solid {Colors.HIGHLIGHT};
+            }}
+            QPushButton:disabled {{
+                color: {Colors.PANEL_MUTED};
+            }}
+        """)
+        self._title.setStyleSheet(self._label_style(Colors.PANEL_TITLE, bold=True))
+        self._sandbox_label.setStyleSheet(self._label_style(Colors.PANEL_MUTED))
+        self._dir_label.setStyleSheet(self._label_style(Colors.PANEL_TEXT))
+        self._hint_label.setStyleSheet(self._label_style(Colors.PANEL_MUTED))
+        self.update()
+
+    @staticmethod
+    def _label_style(color: str, bold: bool = False) -> str:
+        weight = "bold" if bold else "normal"
+        return (
+            "QLabel {"
+            f"color: {color};"
+            "background-color: transparent;"
+            "border: none;"
+            "font-size: 9pt;"
+            f"font-weight: {weight};"
+            "}"
+        )
+
+# ============================================================================
+# 审批条（工具调用需要用户授权）
+# ============================================================================
+
+def describe_permission_request(request: Any) -> str:
+    """把一次审批请求翻成一句人话（不 import 内核类型，按鸭子类型读取）。
+
+    读不到的字段一律跳过，绝不因为字段缺失而抛异常——它跑在展示路径上，
+    出问题只需要显示得含糊一点，而不是把审批窗口弄崩。
+    """
+    tool = str(getattr(request, "tool", "") or "未知工具")
+    arguments = getattr(request, "arguments", None) or {}
+    try:
+        detail = json.dumps(arguments, ensure_ascii=False, default=str)
+    except Exception:
+        detail = str(arguments)
+    if len(detail) > Sizes.APPROVAL_DETAIL_LIMIT:
+        detail = detail[:Sizes.APPROVAL_DETAIL_LIMIT] + "…"
+    return tool + " " + detail
+
+
+class ApprovalBar(QWidget):
+    """
+    审批条：有副作用的工具在真正执行前需要用户点「允许」或「拒绝」
+
+    为什么做成常驻区域而不是模态对话框：
+    * 审批由 **worker 线程**发起，主线程只是被投递通知。模态 exec() 会开启
+      嵌套事件循环，把「等待用户点击」和「worker 阻塞等待」缠在一起，
+      一旦用户关窗或超时，嵌套循环的退出路径极难保证不留悬挂状态；
+    * 常驻区域天然可测：offscreen 平台下没有真实用户，测试直接调用
+      respond() 就能确定性走完 allow / deny 两条路径。
+
+    Countdown 只做展示（让用户知道还有多久会自动拒绝），真正的超时判定
+    由内核 ApprovalBroker 的阻塞等待负责，二者不重复计时。
+    """
+
+    #: 用户点了允许（携带 request_id）
+    approved = Signal(str)
+    #: 用户点了拒绝 / 倒计时归零（携带 request_id）
+    denied = Signal(str)
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._request_id = ""
+        self._remaining = 0.0
+        self._seconds_total = 0
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(4)
+
+        self._title_label = QLabel("工具调用需要授权")
+        self._detail_label = QLabel("")
+        self._detail_label.setWordWrap(True)
+        self._countdown_label = QLabel("")
+
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(0, 0, 0, 0)
+        button_row.setSpacing(6)
+        self._allow_button = QPushButton("允许")
+        self._allow_button.setFixedHeight(Sizes.APPROVAL_BUTTON_HEIGHT)
+        self._allow_button.clicked.connect(self._on_allow_clicked)
+        self._deny_button = QPushButton("拒绝")
+        self._deny_button.setFixedHeight(Sizes.APPROVAL_BUTTON_HEIGHT)
+        self._deny_button.clicked.connect(self._on_deny_clicked)
+        button_row.addWidget(self._allow_button)
+        button_row.addWidget(self._deny_button)
+        button_row.addStretch()
+
+        layout.addWidget(self._title_label)
+        layout.addWidget(self._detail_label)
+        layout.addWidget(self._countdown_label)
+        layout.addLayout(button_row)
+
+        self._timer = QTimer(self)
+        self._timer.setInterval(200)
+        self._timer.timeout.connect(self._tick)
+
+        self.hide()
+        self.refresh_theme()
+
+    # ---- 生命周期 ----
+
+    def start(self, request: Any, request_id: str, timeout: float) -> None:
+        """开始等待某个请求的授权；重复调用会替换当前请求。"""
+        self._request_id = str(request_id)
+        self._seconds_total = max(1, int(round(float(timeout))))
+        self._remaining = max(0.0, float(timeout))
+        self._detail_label.setText(describe_permission_request(request))
+        self._update_countdown()
+        self.show()
+        if self._seconds_total > 0 and timeout > 0:
+            self._timer.start()
+
+    def cancel(self) -> None:
+        """收起审批条（请求已被别处答复，或整轮已结束）。"""
+        self._timer.stop()
+        self._request_id = ""
+        self._remaining = 0.0
+        self.hide()
+
+    def respond(self, allow: bool) -> bool:
+        """以编程方式答复当前请求（按钮回调与测试共用同一条路径）。"""
+        request_id = self._request_id
+        if not request_id:
+            return False
+        self.cancel()
+        if allow:
+            self.approved.emit(request_id)
+        else:
+            self.denied.emit(request_id)
+        return True
+
+    # ---- 状态 ----
+
+    def request_id(self) -> str:
+        """当前正在等待答复的 request_id（空闲时为空串）"""
+        return self._request_id
+
+    def is_waiting(self) -> bool:
+        return bool(self._request_id)
+
+    def countdown_text(self) -> str:
+        return self._countdown_label.text()
+
+    def detail_text(self) -> str:
+        return self._detail_label.text()
+
+    def _update_countdown(self) -> None:
+        if self._seconds_total <= 0:
+            self._countdown_label.setText("等待你的决定（不会自动超时）")
+            return
+        seconds = str(max(0, int(self._remaining + 0.999)))
+        self._countdown_label.setText(
+            "还剩 " + seconds + " 秒，超时后自动按拒绝处理"
+        )
+
+    def _tick(self) -> None:
+        """倒计时推进；归零即按拒绝处理（与内核超时的语义一致）。"""
+        self._remaining -= self._timer.interval() / 1000.0
+        if self._remaining <= 0:
+            self.respond(False)
+            return
+        self._update_countdown()
+
+    # ---- 交互 ----
+
+    def _on_allow_clicked(self) -> None:
+        self.respond(True)
+
+    def _on_deny_clicked(self) -> None:
+        self.respond(False)
+
+    # ---- 主题 ----
+
+    def refresh_theme(self) -> None:
+        """主题切换后刷新配色（全部取自 Colors，不写死颜色）。"""
+        self.setStyleSheet(f"""
+            ApprovalBar {{
+                background-color: {Colors.APPROVAL_BG};
+                border: 1px solid {Colors.APPROVAL_BORDER};
+                border-radius: 10px;
+            }}
+        """)
+        self._title_label.setStyleSheet(self._label_style(
+            Colors.APPROVAL_TITLE, bold=True))
+        self._detail_label.setStyleSheet(self._label_style(Colors.APPROVAL_TEXT))
+        self._countdown_label.setStyleSheet(self._label_style(Colors.APPROVAL_MUTED))
+        self._allow_button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {Colors.APPROVAL_ALLOW_BG};
+                color: {Colors.APPROVAL_ALLOW_TEXT};
+                border: none;
+                border-radius: 6px;
+                padding: 3px 14px;
+                font-size: 9pt;
+            }}
+        """)
+        self._deny_button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {Colors.APPROVAL_DENY_BG};
+                color: {Colors.APPROVAL_DENY_TEXT};
+                border: 1px solid {Colors.APPROVAL_BORDER};
+                border-radius: 6px;
+                padding: 3px 14px;
+                font-size: 9pt;
+            }}
+        """)
+        self.update()
+
+    @staticmethod
+    def _label_style(color: str, bold: bool = False) -> str:
+        weight = "bold" if bold else "normal"
+        return (
+            "QLabel {"
+            f"color: {color};"
+            "background-color: transparent;"
+            "border: none;"
+            "font-size: 9pt;"
+            f"font-weight: {weight};"
+            "}"
+        )
 
 
 # ============================================================================
@@ -2304,6 +3049,12 @@ class ChatWindow(QMainWindow):
     聊天主窗口
     """
     
+    #: 审批请求投递信号（worker 线程 -> 主线程）。
+    #: 参数是 (PermissionRequest, request_id)：内核类型用 object 承载，
+    #: 界面不强依赖 castorice 的类型定义（鸭子类型读取，见
+    #: describe_permission_request）。
+    approval_requested = Signal(object, str)
+    
     # 表情包标记：[表情:名称]，同时兼容中文方括号与全角冒号
     EMOJI_TAG_RE = re.compile(
         r"[\[【]\s*(?:表情包?|贴纸|emoji|sticker)\s*[:：]\s*([^\]】\n]{1,24}?)\s*[\]】]",
@@ -2326,6 +3077,13 @@ class ChatWindow(QMainWindow):
     MULTI_SPACE_RE = re.compile(r"[ \t]{2,}")
     # 暂存长度上限：超出的普通文本立即显示，避免正文被卡住
     EMOJI_BUFFER_LIMIT = 40
+    # 消息区最多保留的行数（超出后从最早的行开始回收）
+    MAX_MESSAGE_ROWS = 200
+    # 界面审批等待上限（秒）。内核的 DEFAULT_APPROVAL_TIMEOUT 是 120s，
+    # 那对坐在屏幕前的人来说太久了：等待期间 worker 线程是被阻塞的，
+    # 用户去开个会回来只会看到一条「超时」错误。60s 是 A+B 裁决值，
+    # 只在真实 GUI 路径设置；测试路径不注册应答者，因此不受它影响。
+    APPROVAL_TIMEOUT_S = 60.0
     # 关闭窗口时若线程仍未结束，先挂在这里保命（销毁运行中的 QThread 会崩溃）
     _orphan_workers: List["AIWorker"] = []
     
@@ -2362,8 +3120,24 @@ class ChatWindow(QMainWindow):
         self._settings_dialog: Optional[SettingsDialog] = None  # 设置窗口
         self._pending_images: List[str] = []      # 待发送的图片路径
         self._attachment_items: List[AttachmentItem] = []
+        # 模式（Chat / Work / Code / Learn）
+        self._mode_name: str = ModeSettings.DEFAULT   # 当前界面模式
+        self._mode_infos: List[Dict[str, Any]] = []    # 内核给出的模式元数据
+        self._mode_synced: bool = False                # 是否已与内核建立模式联系
+        self._local_workdirs: Dict[str, str] = {}      # 内核不可用时的目录记忆
+        self._mode_bar: Optional[ModeSwitchBar] = None
+        self._side_panel: Optional[SidePanel] = None
+        # 审批接线（应答者注册在 _init_ui 之后、用 hasattr 探测）
+        self._approval_bar: Optional[ApprovalBar] = None
+        self._approval_responder_installed: bool = False
+        # 跨线程投递：worker 线程 emit，Qt 自动排队到主线程执行槽函数
+        self.approval_requested.connect(self._on_approval_requested)
         
         self._init_ui()
+        
+        # 界面搭好后接上审批应答者：它需要信号已经连到槽函数，
+        # 否则 worker 线程投递过来的第一件事就会落空。
+        self._install_approval_responder()
     
     def _init_ui(self) -> None:
         """初始化UI"""
@@ -2374,6 +3148,9 @@ class ChatWindow(QMainWindow):
         # 先应用已保存的显示模式，再构建界面，避免首帧主题错误
         Colors.set_mode(self._theme_mode)
         
+        # 已保存的模式要在建界面之前读到，否则首帧会先亮起 Chat 再跳走
+        self._mode_name = normalize_mode_name(self._load_saved_mode())
+        
         self._setup_window_flags()
         self._setup_style()
         self._setup_palette()
@@ -2381,7 +3158,11 @@ class ChatWindow(QMainWindow):
         self._setup_title_bar()
         self._setup_message_area()
         self._setup_input_area()
+        self._setup_mode_bar()
         self._setup_timer()
+        
+        # 界面搭好后再与内核同步一次（失败时静默降级为纯界面模式）
+        self.refresh_modes()
     
     def _setup_style(self) -> None:
         """设置全局样式（背景不透明，颜色随当前主题解析）"""
@@ -2471,7 +3252,27 @@ class ChatWindow(QMainWindow):
         self._content_layout.setContentsMargins(10, 10, 10, 10)
         self._content_layout.setSpacing(10)
         
-        outer.addWidget(content, 1)
+        # 横向主体：对话区（左） + 信息面板（右）
+        ## 面板与消息区同一行，因此模式条 + 对话区 + 面板构成完整一屏；
+        ## 面板默认隐藏，只有可绑定目录的模式才占位（Chat 不显示）。
+        body = QWidget()
+        body.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self._body_widget = body
+        
+        self._body_layout = QHBoxLayout(body)
+        self._body_layout.setContentsMargins(0, 0, 0, 0)
+        self._body_layout.setSpacing(10)
+        
+        self._conversation_widget = content
+        self._body_layout.addWidget(content, 1)
+        
+        self._side_panel = SidePanel(body)
+        self._side_panel.bind_requested.connect(self._on_bind_workdir)
+        self._side_panel.unbind_requested.connect(self._on_unbind_workdir)
+        self._side_panel.hide()
+        self._body_layout.addWidget(self._side_panel, 0)
+        
+        outer.addWidget(body, 1)
     
     def _center_on_screen(self) -> None:
         """将窗口居中显示"""
@@ -2493,7 +3294,161 @@ class ChatWindow(QMainWindow):
             self._central_widget, title=self.windowTitle()
         )
         self._title_bar.settings_clicked.connect(self._on_settings_clicked)
-        self._outer_layout.insertWidget(0, self._title_bar)
+        self._outer_layout.insertWidget(0, self._title_bar)    
+    def _setup_mode_bar(self) -> None:
+        """设置模式切换条（紧贴标题栏下方，与标题栏同宽）"""
+        self._mode_bar = ModeSwitchBar(
+            list(FALLBACK_MODES), self._mode_name, self._central_widget
+        )
+        self._mode_bar.mode_selected.connect(self._on_mode_selected)
+        self._outer_layout.insertWidget(1, self._mode_bar)    
+    # ------------------------------------------------------------------------
+    # 审批接线（工具调用需要用户授权）
+    #
+    # 为什么必须接线：内核的默认审批策略是 ask，而 ApprovalBroker 在
+    # 「没有应答者」时的判定是 unavailable —— 按拒绝关闭。也就是说界面不接，
+    # Work/Code/Learn 下**每一个有副作用的工具**都会被静默拒绝，
+    # 文件写不出去、命令跑不起来，用户还看不到任何提示。
+    #
+    # 线程纪律（本节的硬约束）：
+    #   * 应答者由 **AIWorker 线程**调用，因此它只能做两件事：
+    #     broker.defer(request_id) 登记 + emit 信号投递主线程，然后 return None；
+    #   * 绝不在 worker 线程里创建、显示或 exec() 任何 Qt 控件——
+    #     Qt 的控件只能在主线程创建，跨线程碰控件是随机崩溃的经典来源；
+    #   * 真正的用户交互发生在主线程的槽函数里，答复通过
+    #     broker.resolve(request_id, decision) 唤醒 worker 的等待。
+    # ------------------------------------------------------------------------
+    
+    def _install_approval_responder(self) -> bool:
+        """
+        在真实 GUI 启动路径注册审批应答者
+
+        用 hasattr 探测上游接口而不是假定它存在：演示用的 MockBot、以及
+        任何早于 t4 的旧实现都没有 set_approval_responder（也没有
+        approval_broker），此时界面照常工作，只是不会有工具需要授权
+        （Chat 模式本来就没有可见工具）。
+
+        Returns:
+            是否成功接上（探测失败或注册抛异常时为 False，绝不向上抛）
+        """
+        if self._approval_responder_installed:
+            return True
+        setter = getattr(self._bot, "set_approval_responder", None)
+        if not callable(setter):
+            # 不强制：没有审批接口的 bot 仍然可以用界面（演示模式）
+            return False
+        try:
+            setter(self._on_permission_request)
+        except Exception:
+            return False
+        self._apply_approval_timeout()
+        self._approval_responder_installed = True
+        return True
+
+    def _apply_approval_timeout(self) -> bool:
+        """把界面审批的等待上限压到 APPROVAL_TIMEOUT_S（broker.timeout 可写）
+
+        内核默认 120s；界面路径用 60s，与审批条上的倒计时保持一致。
+        探测不到 broker / timeout 时静默跳过，不影响功能。
+        """
+        broker = getattr(self._bot, "approval_broker", None)
+        if broker is None:
+            return False
+        try:
+            if hasattr(broker, "timeout"):
+                broker.timeout = float(ChatWindow.APPROVAL_TIMEOUT_S)
+                return True
+        except Exception:
+            return False
+        return False
+
+    # ---- worker 线程侧（只登记 + 投递，不碰控件） ----
+
+    def _on_permission_request(self, request: Any, request_id: str = ""):
+        """审批应答者：**运行在 AIWorker 线程**
+
+        允许的写法只有一种：
+          1. 拿 broker，调 defer(request_id) 登记待决请求；
+          2. emit approval_requested 把 (request, request_id) 交给主线程；
+          3. return None —— 表示「等主线程 resolve」，broker 会阻塞等待，
+             超时即按 unavailable（拒绝）关闭。
+
+        任何一步失败都返回 None：宁可让内核按超时拒绝，也绝不在
+        worker 线程里放行一次未经用户确认的副作用。
+        """
+        broker = getattr(self._bot, "approval_broker", None)
+        if broker is None:
+            return None
+        try:
+            defer = getattr(broker, "defer", None)
+            if callable(defer):
+                defer(request_id)
+            else:
+                # 没有 defer 就没有等待机制：直接放弃（fail-closed）
+                return None
+            # 信号投递是队列式的：这里不会阻塞，也不会碰控件。
+            self.approval_requested.emit(request, str(request_id))
+        except Exception:
+            return None
+        return None
+
+    # ---- 主线程侧（真正与用户交互） ----
+
+    def _on_approval_requested(self, request: Any, request_id: str) -> None:
+        """主线程槽：在审批条上显示这次请求（控件只在这里创建/更新）"""
+        bar = self._approval_bar
+        if bar is None:
+            # 界面没建好就没有答复能力，让 broker 按超时拒绝
+            return
+        bar.start(request, request_id, ChatWindow.APPROVAL_TIMEOUT_S)
+
+    def _on_approval_allow(self, request_id: str) -> None:
+        """用户点了「允许」：只批准这一次（allowed-once，不记忆、不缓存）"""
+        self._resolve_approval(request_id, "allow")
+
+    def _on_approval_deny(self, request_id: str) -> None:
+        """用户点了「拒绝」或倒计时归零"""
+        self._resolve_approval(request_id, "deny")
+
+    def _resolve_approval(self, request_id: str, decision: str) -> bool:
+        """把答复送回内核的 broker；返回是否成功投递。
+
+        投递失败（例如请求已被别处以超时结束）不算错误：
+        broker.resolve 找不到待决 id 时返回 False，这条路径本来就是竞态。
+        """
+        broker = getattr(self._bot, "approval_broker", None)
+        resolver = getattr(broker, "resolve", None)
+        if not callable(resolver):
+            return False
+        try:
+            return bool(resolver(str(request_id), decision))
+        except Exception:
+            return False
+
+    def _approval_waiting(self) -> bool:
+        """是否有审批正在等待用户决定（供测试与守卫使用）"""
+        bar = self._approval_bar
+        return bool(bar is not None and bar.is_waiting())
+    
+    def _cancel_pending_approval(self) -> None:
+        """收起审批条并按拒绝答复——回复轮结束时调用
+
+        轮次结束时若还有悬空的审批条，说明答复已经不可能被消费
+        （worker 已经离开），此时必须显式拒绝并把条收起来，
+        否则它会一直挂在界面上骗用户点。
+        """
+        bar = self._approval_bar
+        if bar is None or not bar.is_waiting():
+            return
+        bar.respond(False)
+    
+    def approval_timeout(self) -> float:
+        """当前生效的审批等待上限（秒）"""
+        broker = getattr(self._bot, "approval_broker", None)
+        value = getattr(broker, "timeout", None)
+        if isinstance(value, (int, float)):
+            return float(value)
+        return float(ChatWindow.APPROVAL_TIMEOUT_S)
     
     # ------------------------------------------------------------------------
     # 显示模式（主题）
@@ -2562,6 +3517,14 @@ class ChatWindow(QMainWindow):
         # 标题栏
         self._title_bar.refresh_theme()
         
+        # 模式切换条、右侧面板与审批条
+        if self._mode_bar is not None:
+            self._mode_bar.refresh_theme()
+        if self._side_panel is not None:
+            self._side_panel.refresh_theme()
+        if self._approval_bar is not None:
+            self._approval_bar.refresh_theme()
+        
         # 消息区已有气泡
         for i in range(self._message_layout.count()):
             item = self._message_layout.itemAt(i)
@@ -2614,6 +3577,8 @@ class ChatWindow(QMainWindow):
         # 强制重绘（标题栏背景由 paintEvent 自绘）
         self.update()
         self._title_bar.update()
+        if self._mode_bar is not None:
+            self._mode_bar.update()
     
     def _setup_message_area(self) -> None:
         """设置消息显示区域"""
@@ -2658,6 +3623,12 @@ class ChatWindow(QMainWindow):
         self._attachment_layout.addStretch()
         self._attachment_bar.hide()
         layout.addWidget(self._attachment_bar)
+        
+        # 审批条（有副作用的工具在执行前需要用户授权，默认隐藏）
+        self._approval_bar = ApprovalBar(input_widget)
+        self._approval_bar.approved.connect(self._on_approval_allow)
+        self._approval_bar.denied.connect(self._on_approval_deny)
+        layout.addWidget(self._approval_bar)
         
         # 输入框（回车发送、Shift+Enter 换行由 eventFilter 处理，说明放在按钮提示里）
         self._input_text = QTextEdit()
@@ -2788,6 +3759,440 @@ class ChatWindow(QMainWindow):
         self._refresh_attachments()
     
 
+    # ------------------------------------------------------------------------
+    # 模式（Chat / Work / Code / Learn）
+    #
+    # 分工：
+    #   * 模式的权威状态在内核（config.yaml 的 mode 键 + castorice 的会话日志）；
+    #   * 界面只负责「显示哪一个模式、显示哪一份历史、显示哪些工具 UI」；
+    #   * 内核不可用时（例如离线演示），界面仍能切换并给出可读提示。
+    # ------------------------------------------------------------------------
+
+    def _load_saved_mode(self) -> str:
+        """读取上次使用的模式：内核 config.yaml 优先，其次 ui_settings.json"""
+        config = getattr(self._bot, "config_manager", None)
+        getter = getattr(config, "get", None)
+        if callable(getter):
+            try:
+                raw = getter("mode")
+            except Exception:
+                raw = None
+            if isinstance(raw, str) and raw.strip():
+                return normalize_mode_name(raw)
+        return normalize_mode_name(ModeSettings.load())
+
+    def current_mode(self) -> str:
+        """当前界面模式（chat | work | code | learn）"""
+        return self._mode_name
+
+    def mode_names(self) -> List[str]:
+        """模式切换条上的模式名（顺序即界面顺序）"""
+        return [item["name"] for item in self._mode_infos]
+
+    def mode_info(self, mode: Optional[str] = None) -> Dict[str, Any]:
+        """某模式的元数据（内核给出的优先，缺失时用内置兜底）"""
+        name = normalize_mode_name(mode or self._mode_name)
+        for item in self._mode_infos:
+            if normalize_mode_name(item.get("name")) == name:
+                merged = dict(item)
+                break
+        else:
+            merged = next(
+                (dict(item) for item in FALLBACK_MODES if item["name"] == name),
+                dict(FALLBACK_MODES[0]),
+            )
+        local = self._local_workdirs.get(name)
+        if local and not merged.get("workdir"):
+            merged["workdir"] = local
+        return merged
+
+    def mode_display_name(self, mode: Optional[str] = None) -> str:
+        """模式的中文名（界面文案用）"""
+        info = self.mode_info(mode)
+        return str(info.get("display_name") or info.get("name") or self._mode_name)
+
+    def mode_bindable(self, mode: Optional[str] = None) -> bool:
+        """该模式是否允许绑定目录（Chat 为 False，因此不显示目录绑定入口）"""
+        info = self.mode_info(mode)
+        if "bindable" in info:
+            return bool(info["bindable"])
+        policy = info.get("workdir_policy")
+        if isinstance(policy, dict) and "bindable" in policy:
+            return bool(policy["bindable"])
+        return normalize_mode_name(info.get("name")) != ModeSettings.DEFAULT
+
+    def mode_workdir(self, mode: Optional[str] = None) -> Optional[str]:
+        """该模式当前绑定的目录（未绑定返回 None）"""
+        value = self.mode_info(mode).get("workdir")
+        return str(value) if value else None
+
+    def visible_tools(self, mode: Optional[str] = None) -> List[str]:
+        """该模式下对模型可见的工具名；Chat 恒为空列表（不显示任何工具 UI）"""
+        name = normalize_mode_name(mode or self._mode_name)
+        if name == ModeSettings.DEFAULT:
+            return []
+        tools = self.mode_info(name).get("visible_tools")
+        if isinstance(tools, (list, tuple)):
+            return [str(item) for item in tools]
+        return []
+
+    def tools_visible(self, mode: Optional[str] = None) -> bool:
+        """该模式下是否显示工具调用提示行"""
+        return bool(self.visible_tools(mode))
+
+    # ---- 刷新与切换 ----
+
+    def refresh_modes(self) -> None:
+        """
+        与内核同步一次模式列表
+
+        内核不可用时退回内置的四种模式，界面依旧可切换（只是没有内核行为）。
+        这是「失败安全」的做法：宁可少给工具，也不要让界面卡住。
+        """
+        self._reload_mode_infos()
+        names = [item["name"] for item in self._mode_infos]
+        if self._mode_name not in names:
+            self._mode_name = names[0] if names else ModeSettings.DEFAULT
+        self._mode_synced = self._sync_kernel_mode()
+        if self._mode_bar is not None:
+            self._mode_bar.set_modes(self._mode_infos)
+            self._mode_bar.set_active_mode(self._mode_name)
+        self._apply_mode_visibility()
+
+    def _sync_kernel_mode(self) -> bool:
+        """
+        启动时把内核拉到界面记录的模式
+
+        为什么以界面为准：config.yaml 里可能根本没有 mode 键
+        （update_yaml_scalars 不会创建顶层新键），此时内核只会停在 chat，
+        而用户上次的选择只能从 ui_settings.json 读出来——若不对齐，
+        界面显示「学习」而内核还在 chat，点回「学习」也会被当成「没变化」。
+
+        Returns:
+            界面与内核是否已经一致
+        """
+        current = getattr(self._bot, "mode", None)
+        if not isinstance(current, str):
+            return False
+        if normalize_mode_name(current) == self._mode_name:
+            return True
+        return self._activate_kernel_mode(self._mode_name, persist=True)
+
+    def _reload_mode_infos(self) -> None:
+        """只刷新模式元数据缓存，不重建模式条按钮（切换模式时用）"""
+        self._mode_infos = self._fetch_mode_infos()
+
+    def _fetch_mode_infos(self) -> List[Dict[str, Any]]:
+        """取模式元数据列表（顺序固定为 chat/work/code/learn，未知模式追加在后）"""
+        provider = getattr(self._bot, "available_modes", None)
+        if callable(provider):
+            try:
+                raw = provider()
+            except Exception:
+                raw = None
+            if isinstance(raw, (list, tuple)):
+                infos = [
+                    dict(item) for item in raw
+                    if isinstance(item, dict) and item.get("name")
+                ]
+                if infos:
+                    return self._order_mode_infos(infos)
+        return [dict(item) for item in FALLBACK_MODES]
+
+    @staticmethod
+    def _order_mode_infos(infos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """按固定顺序重排模式（未知模式保持原有相对顺序追加在后）"""
+        order = [item["name"] for item in FALLBACK_MODES]
+        ordered = [
+            item for name in order for item in infos if item["name"] == name
+        ]
+        ordered.extend(item for item in infos if item["name"] not in order)
+        return ordered
+
+    def _on_mode_selected(self, mode: str) -> None:
+        """模式条上点了某个模式"""
+        self.switch_mode(mode)
+
+    def switch_mode(self, mode: str, *, persist: bool = True) -> bool:
+        """
+        切换模式（界面入口）
+
+        切换会：
+        1. 让内核切到该模式自己的会话（四个模式的对话因此互不串台）；
+        2. 清空当轮消息区，并从新会话的事件日志重建历史；
+        3. 提交旧会话的改动并按单写者约定关闭它——
+           内核每个 session_id 只允许一个写入方，不 close 会让会话无法再打开；
+        4. 刷新模式条选中态与右侧面板，并按新模式调整工具类 UI 的可见性。
+
+        Returns:
+            是否真的发生了切换（已在该模式、或回复进行中时返回 False）
+        """
+        target = normalize_mode_name(mode)
+        if target == self._mode_name and self._mode_synced:
+            return False
+        if not self._mode_switch_allowed():
+            return False
+
+        previous = self._mode_name
+        self._mode_name = target
+        self._commit_pending_session(previous)
+        activated = self._activate_kernel_mode(target, persist=persist)
+        self._mode_synced = activated
+        # 新模式可能有自己的工作目录绑定，元数据缓存要重新取一次
+        self._reload_mode_infos()
+
+        # 先收拾流式状态，再重建消息区，避免残留字符落进新会话
+        self._reset_stream_state()
+        self._clear_messages()
+        self._replay_session_history()
+
+        if self._mode_bar is not None:
+            self._mode_bar.set_active_mode(target)
+        self._apply_mode_visibility()
+        ModeSettings.save(target)
+        if not activated:
+            self._show_mode_notice(
+                f"已切换到「{self.mode_display_name(target)}」模式（未连接到 AI 内核，仅界面生效）"
+            )
+        return True
+
+    def _mode_switch_allowed(self) -> bool:
+        """回复进行中不允许切模式：工作线程正在写旧会话，切换会打乱状态"""
+        worker = self._worker
+        return not (worker is not None and worker.isRunning())
+
+    def _activate_kernel_mode(self, mode: str, *, persist: bool = True) -> bool:
+        """让内核切到目标模式；返回是否成功"""
+        switcher = getattr(self._bot, "set_mode", None)
+        if not callable(switcher):
+            return False
+        try:
+            switcher(mode, persist=persist)
+        except TypeError:
+            # 兼容不支持 persist 关键字的实现
+            try:
+                switcher(mode)
+            except Exception:
+                return False
+        except Exception:
+            return False
+        return True
+
+    def _commit_pending_session(self, mode: Optional[str] = None) -> None:
+        """
+        提交并释放某个模式的会话
+
+        三步：
+        1. flush —— 持久性屏障，未落盘的事件不该随着切换丢掉；
+        2. close —— 释放单写者登记（SessionStore 对同一份日志只允许一个写入方，
+           不释放的话「打开其它会话」会直接抛 SessionInUseError）；
+        3. 让内核忘掉这条缓存，下次激活该模式时重新从磁盘恢复。
+
+        任何一步失败都不阻断切换：界面必须始终可用，内核有自己的重试策略。
+        """
+        name = normalize_mode_name(mode or self._mode_name)
+        store = self._mode_session(name)
+        if store is None:
+            return
+        try:
+            if bool(getattr(store, "dirty", False)):
+                store.flush("mode-switch")
+        except Exception:
+            pass
+        try:
+            store.close()
+        except Exception:
+            pass
+        self._forget_kernel_session(name, store)
+
+    def _mode_session(self, mode: str) -> Any:
+        """取某模式的会话对象（演示模式或旧版 ai.py 返回 None）"""
+        sessions = getattr(self._bot, "sessions", None)
+        if isinstance(sessions, dict):
+            store = sessions.get(mode)
+            if store is not None and hasattr(store, "close"):
+                return store
+        store = getattr(self._bot, "session", None)
+        if store is None or not hasattr(store, "close"):
+            return None
+        return store
+
+    def _forget_kernel_session(self, mode: str, store: Any) -> None:
+        """
+        把已关闭的会话从内核的会话缓存里摘掉
+
+        内核按「模式名 → 会话」做缓存，关闭后若仍留在缓存里，
+        下次切回该模式会拿到一个已关闭的会话（写入直接报「会话已关闭」）。
+        摘除后内核会按 latest_session_id 重新打开最近一份日志，历史照样恢复。
+        只在缓存里确为同一个对象时才摘，避免误伤内核新建的会话。
+        """
+        sessions = getattr(self._bot, "_sessions", None)
+        if not isinstance(sessions, dict):
+            return
+        if sessions.get(mode) is store:
+            sessions.pop(mode, None)
+
+    def _reset_stream_state(self) -> None:
+        """清空流式解析与打字机状态"""
+        if self._typewriter_timer is not None:
+            self._typewriter_timer.stop()
+        self._typewriter_chars.clear()
+        self._emoji_parse_buffer = ""
+        self._ai_emoji_shown = 0
+        self._remove_loading_indicator()
+        self._finish_pending_tool_labels()
+        self._streaming_bubble = None
+        self._streaming_container = None
+        self._cancel_pending_approval()
+
+    def _clear_messages(self) -> None:
+        """清空消息区（切换模式与「清空聊天记录」共用）"""
+        layout = self._message_layout
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        self._loading_container = None
+        self._loading_dots = None
+        self._streaming_bubble = None
+        self._streaming_container = None
+        self._tool_labels.clear()
+
+    def _replay_session_history(self) -> None:
+        """
+        重新加载当前模式自己的会话历史
+
+        历史来自内核（从事件日志派生），因此四个模式的对话互不串台；
+        历史为空时消息区保持空白，不显示任何占位内容。
+        system 消息属于提示词而不是对话，跳过不显示。
+        """
+        for message in self._mode_history():
+            role = str(message.get("role") or "")
+            if role == "system":
+                continue
+            content = message.get("content")
+            if isinstance(content, list):
+                content = self._flatten_content(content)
+            text = str(content or "").strip()
+            if not text:
+                continue
+            self.add_message(text, is_user=(role == "user"))
+
+    def _mode_history(self) -> List[Dict[str, Any]]:
+        """当前模式的历史消息（只读；取不到时返回空列表）"""
+        getter = getattr(self._bot, "get_history", None)
+        if not callable(getter):
+            return []
+        try:
+            history = getter()
+        except Exception:
+            return []
+        if not isinstance(history, (list, tuple)):
+            return []
+        return [dict(item) for item in history if isinstance(item, dict)]
+
+    @staticmethod
+    def _flatten_content(content: List[Any]) -> str:
+        """把多模态内容的文本片段拼起来（图片只留一个数量占位）"""
+        parts: List[str] = []
+        images = 0
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "text" and item.get("text"):
+                parts.append(str(item["text"]))
+            elif item.get("type") == "image_url":
+                images += 1
+        text = " ".join(part.strip() for part in parts if part.strip())
+        if images:
+            text = (text + " " if text else "") + f"[图片 x {images}]"
+        return text.strip()
+
+    def _apply_mode_visibility(self) -> None:
+        """按当前模式调整工具类 UI 的可见性（Chat 一律不显示）"""
+        bindable = self.mode_bindable(self._mode_name)
+        panel = self._side_panel
+        if panel is not None:
+            panel.set_mode_info(self.mode_info(self._mode_name) if bindable else None)
+            panel.setVisible(bindable)
+        if self._mode_bar is not None:
+            self._mode_bar.set_active_mode(self._mode_name)
+        if not self.tools_visible(self._mode_name):
+            self._finish_pending_tool_labels()
+
+    def _show_mode_notice(self, text: str) -> None:
+        """在消息区顶部之外显示一条居中的浅色提示（模式反馈用）"""
+        label = QLabel(str(text))
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setWordWrap(True)
+        label.setStyleSheet(f"""
+            QLabel {{
+                color: {Colors.PANEL_MUTED};
+                background-color: transparent;
+                border: none;
+                font-size: 9pt;
+                padding: 2px 8px;
+            }}
+        """)
+        self._message_layout.addWidget(label)
+
+    # ---- 目录绑定 ----
+
+    def _on_bind_workdir(self, mode: str) -> None:
+        """面板上点了「绑定目录」：选目录后交给内核校验并记录"""
+        target = normalize_mode_name(mode or self._mode_name)
+        current = self.mode_workdir(target)
+        start_dir = current if current and os.path.isdir(current) else str(app_root())
+        chosen = QFileDialog.getExistingDirectory(
+            self, f"为「{self.mode_display_name(target)}」模式选择目录", start_dir
+        )
+        if not chosen:
+            return
+        self.bind_workdir(target, chosen)
+
+    def _on_unbind_workdir(self, mode: str) -> None:
+        """面板上点了「解除绑定」"""
+        self.bind_workdir(mode or self._mode_name, None)
+
+    def bind_workdir(self, mode: str, path: Optional[str]) -> bool:
+        """
+        绑定（path 为空表示解绑）某模式的目录
+
+        校验交给内核（只有可信根之内的路径才被接受）；内核不可用时只更新界面，
+        不改动任何文件。失败会把原因写回面板提示区，而不是静默吞掉。
+        """
+        target = normalize_mode_name(mode)
+        binder = getattr(self._bot, "bind_mode_workdir", None)
+        if callable(binder):
+            try:
+                binder(target, path)
+            except Exception as error:
+                message = self._workdir_error_text(error)
+                if self._side_panel is not None and self._side_panel.isVisible():
+                    self._side_panel.show_message(message)
+                return False
+        else:
+            self._local_workdirs[target] = str(path) if path else ""
+        self._reload_mode_infos()
+        self._apply_mode_visibility()
+        return True
+
+    @staticmethod
+    def _workdir_error_text(error: Exception) -> str:
+        """把内核的工作目录错误翻成一句可读提示"""
+        to_dict = getattr(error, "to_dict", None)
+        payload = None
+        if callable(to_dict):
+            try:
+                payload = to_dict()
+            except Exception:
+                payload = None
+        if isinstance(payload, dict) and payload.get("message"):
+            return str(payload["message"])
+        return f"绑定失败：{error}"
+
     def _on_input_changed(self) -> None:
         """输入内容变化：无文字且无图片，或 AI 回复中时禁用发送按钮"""
         can_send = self._input_text.isEnabled() and (
@@ -2897,10 +4302,19 @@ class ChatWindow(QMainWindow):
             self._settings_dialog.close()
             self._settings_dialog = None
         
+        # 关窗时若还有审批在等：先按拒绝答复再收条。
+        # 应答者本身不用注销——窗口销毁后信号发不出去，broker 会按超时拒绝，
+        # 而它等的是一个已经离开主线程的事件，不会留下悬挂控件。
+        self._cancel_pending_approval()
+        
         if self._worker is not None and self._worker.isRunning():
             self._worker.stop()
         
         self._release_worker()
+        
+        # 会话是单写者的：进程退出前必须提交并释放写入权，
+        # 否则下次启动打开同一份会话会被拒绝（SessionInUseError）。
+        self._commit_pending_session()
         
         super().closeEvent(event)
     
@@ -3125,7 +4539,26 @@ class ChatWindow(QMainWindow):
         
         self._message_layout.addWidget(container)
         self._animate_row_in(container)
+        self._trim_message_rows()
         return container
+    
+    def _trim_message_rows(self) -> None:
+        """
+        限制消息区行数，避免长时间使用后界面变卡
+
+        切换模式会重建消息区，但同一模式连续对话仍然会不断累积行；
+        这里按「按行裁剪」而不是按消息裁剪，因为一条消息可能占多行
+        （文字与表情图分行显示）。被裁掉的行只影响显示，不影响会话日志。
+        """
+        layout = self._message_layout
+        excess = layout.count() - ChatWindow.MAX_MESSAGE_ROWS
+        for _ in range(max(0, excess)):
+            item = layout.takeAt(0)
+            widget = item.widget() if item is not None else None
+            if widget is None:
+                continue
+            widget.setParent(None)
+            widget.deleteLater()
     
     def add_emoji_message(
         self,
@@ -3352,6 +4785,11 @@ class ChatWindow(QMainWindow):
     
     def _on_tool_event(self, name: str, status: str) -> None:
         """处理工具调用事件：显示/更新工具状态气泡"""
+        if not self.tools_visible():
+            # Chat 模式不显示工具调用提示行（验收条款）；
+            # 事件照常消费，避免上游认为没人处理。
+            self._finish_pending_tool_labels()
+            return
         if status == 'start':
             label = QLabel(f"🔧 正在调用 {name} …")
             label.setStyleSheet(f"""
@@ -3456,6 +4894,8 @@ class ChatWindow(QMainWindow):
         self._streaming_bubble = None
         self._streaming_container = None
         self._finish_pending_tool_labels()
+        # 整轮结束：悬空的审批条已经不会被消费，收起并按拒绝答复
+        self._cancel_pending_approval()
         
         # 恢复输入
         self._input_text.setEnabled(True)
@@ -3477,6 +4917,9 @@ class ChatWindow(QMainWindow):
         if self._streaming_bubble:
             self._streaming_bubble = None
             self._streaming_container = None
+        
+        # 出错时同样别把审批条留在界面上
+        self._cancel_pending_approval()
         
         self.add_message(f"错误：{error_msg}", is_user=False)
         
@@ -3694,7 +5137,13 @@ class MockConfigManager:
 
 
 class MockBot:
-    """模拟AI（含表情包事件，便于离线预览界面效果）"""
+    """
+    模拟AI（含表情包事件，便于离线预览界面效果）
+
+    它同时实现了一份最小的四模式接口，使界面在**没有真实内核**时
+    依然能完整走通模式切换、会话隔离与目录绑定（只是不产生真实动作）。
+    真实运行时这些接口来自 ai.AI。
+    """
     
     # 供演示的模拟回复（含内联表情包标记，表情名对应 Image/表情包 里的文件）
     _REPLIES = [
@@ -3702,10 +5151,19 @@ class MockBot:
         "收到啦，[表情:害羞] 我一直在听你说呢。",
         "唔……[表情:疑问] 你是认真的吗？",
     ]
+
+    # 演示模式不支持绑定的模式（与内核一致：Chat 模式不给工具与目录）
+    _NON_BINDABLE = ("chat",)
     
     def __init__(self) -> None:
         self._turn = 0
         self._config_manager = MockConfigManager()
+        self._mode = "chat"
+        self._workdirs: Dict[str, str] = {}
+        # 每个模式各自一份历史，演示「切换模式互不串台」
+        self._history: Dict[str, List[Dict[str, Any]]] = {
+            name: [] for name in ("chat", "work", "code", "learn")
+        }
     
     @property
     def provider_name(self) -> str:
@@ -3724,6 +5182,59 @@ class MockBot:
     def change_provider(self, *args: Any, **kwargs: Any) -> None:
         """演示模式无需切换"""
         return None
+
+    # ---- 四模式（最小实现，供界面离线演示） ----
+
+    @property
+    def mode(self) -> str:
+        return self._mode
+
+    def available_modes(self) -> List[Dict[str, Any]]:
+        """模式元数据（字段与 ai.AI.available_modes 对齐）"""
+        visible = {
+            "chat": [],
+            "work": ["get_current_time", "web_search"],
+            "code": ["read_file", "write_file", "run_command"],
+            "learn": ["search_notes", "read_note", "write_note"],
+        }
+        return [
+            {
+                "name": item["name"],
+                "display_name": item["display_name"],
+                "bindable": item["name"] not in self._NON_BINDABLE,
+                "workdir": self._workdirs.get(item["name"]) or None,
+                "sandbox": "read-only" if item["name"] == "chat" else "workspace-write",
+                "visible_tools": visible.get(item["name"], []),
+                "active": item["name"] == self._mode,
+            }
+            for item in FALLBACK_MODES
+        ]
+
+    def set_mode(self, mode: str, *, persist: bool = True) -> None:
+        """切换模式（演示模式不写磁盘）"""
+        name = normalize_mode_name(mode)
+        self._mode = name
+        self._history.setdefault(name, [])
+
+    def bind_mode_workdir(self, mode: str, path: Optional[str] = None) -> str:
+        """绑定目录：Chat 模式拒绝（与内核同一套语义）"""
+        name = normalize_mode_name(mode)
+        if name in self._NON_BINDABLE:
+            raise ValueError("模式 " + repr(name) + " 不支持绑定工作目录")
+        if path in (None, ""):
+            self._workdirs.pop(name, None)
+            return ""
+        normalized = os.path.normpath(str(Path(str(path)).expanduser()))
+        self._workdirs[name] = normalized
+        return normalized
+
+    def workdir(self, mode: Optional[str] = None) -> Optional[str]:
+        name = normalize_mode_name(mode or self._mode)
+        return self._workdirs.get(name)
+
+    def get_history(self) -> List[Dict[str, Any]]:
+        """当前模式的历史（各模式独立）"""
+        return list(self._history.get(self._mode, []))
     
     def get_response_stream(self, text: str, images: Optional[List[str]] = None):
         import time
@@ -3733,9 +5244,12 @@ class MockBot:
             + image_note
         )
         self._turn += 1
+        history = self._history.setdefault(self._mode, [])
+        history.append({"role": "user", "content": text})
         for char in response:
             yield ('text', char)
             time.sleep(0.05)  # 模拟打字效果
+        history.append({"role": "assistant", "content": response})
         yield ('done', response)
 
 

@@ -16,6 +16,15 @@ config.yaml
 # 对话记忆数据库：里面是你们的聊天记录
 database/
 
+# 结构化记忆落盘（wiki / 摘要 / 世界书）与各模式会话记录：
+# sessions_dir 与 DEFAULT_ROOT 都是相对路径，落点为进程 CWD，
+# 从仓库根启动（python main.py / 测试）时会在这里创建
+memory/
+sessions/
+
+# AgentTeams 协作状态（本地工具产物）
+.agent-teams/
+
 # 运行日志：可能包含对话内容
 logs/
 

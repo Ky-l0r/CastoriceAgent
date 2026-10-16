@@ -10,6 +10,8 @@ import base64
 import random
 import html as html_module
 import logging
+import contextlib
+import threading
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Any, Union, Sequence, Callable, Tuple
@@ -21,6 +23,26 @@ import chromadb
 from chromadb.api.models.Collection import Collection
 from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
+
+import castorice
+import castorice.tools as ctools
+import castorice.tools.web as tools_web
+from castorice import (
+    HarnessLoop,
+    Mode,
+    ModeRegistry,
+    PermissionDecision,
+    PermissionRequest,
+    SessionProjection,
+    SessionStore,
+    StopReason,
+    ToolSpec,
+    WorkdirError,
+    build_harness_registry,
+    resolve_mode_name,
+)
+from castorice import permissions as cpermissions
+from castorice import providers as cproviders
 
 
 # ============================================================================
@@ -281,12 +303,22 @@ class PromptManager:
     """
     
     DEFAULT_PROMPTS_DIR = "prompts"
+
+    #: 模式化提示词分层目录（由 castorice.Mode.system_prompt_sections 选择）
+    MODES_SUBDIR = "modes"
+
+    #: 兼容别名（02-architecture.md §2.1 用的是 prompt_sections）
+    MODES_ALIAS = ("talk", "chat")
     
     def __init__(self, prompts_dir: str = DEFAULT_PROMPTS_DIR):
 
         self.prompts_dir = Path(prompts_dir)
         self._prompt: Optional[str] = None
+        self._sections: Dict[str, str] = {}
         self._load_prompts()
+
+    def _sections_dir(self) -> Path:
+        return self.prompts_dir / self.MODES_SUBDIR
     
     def _load_prompts(self) -> None:
         """加载所有提示词文件"""
@@ -307,15 +339,77 @@ class PromptManager:
                     print(f"警告: 无法读取提示词文件 {filepath}: {e}")
         
         self._prompt = "\n\n".join(prompt_parts)
-    
-    def get_prompt(self, memory_context: Optional[str] = None) -> str:
+        self._load_sections()
 
+    def _load_sections(self) -> None:
+        """加载 prompts/modes/ 下的模式化提示词分层。
+
+        这一层是「提示词分层」的落点：基础提示词（即本目录下的 *.md）
+        保持不变，模式专属段落按需追加。目录不存在时静默降级为「无分层」，
+        旧仓库结构不需要任何改动即可运行。
+        """
+        self._sections = {}
+        sections_dir = self._sections_dir()
+        if not sections_dir.is_dir():
+            return
+        for filepath in sorted(sections_dir.iterdir()):
+            if filepath.suffix.lower() not in ('.md', '.txt'):
+                continue
+            try:
+                content = filepath.read_text(encoding="utf-8").strip()
+            except Exception as e:
+                print(f"警告: 无法读取模式提示词 {filepath}: {e}")
+                continue
+            if content:
+                self._sections[filepath.stem.lower()] = content
+
+    @property
+    def sections(self) -> Dict[str, str]:
+        """可用的模式提示词分层（名称 -> 内容）"""
+        return dict(self._sections)
+
+    def get_section(self, name: str) -> str:
+        """按名取一个分层；不存在返回空串（模式名与文件名不一致时不报错）"""
+        return self._sections.get(str(name).lower(), "")
+
+    def get_prompt(
+        self,
+        memory_context: Optional[str] = None,
+        mode: Optional["Mode"] = None,
+    ) -> str:
+        """组装系统提示词：基础提示词 + 该模式的提示词分层 (+ 记忆上下文)
+
+        Args:
+            memory_context: 追加到末尾的记忆上下文
+            mode: 模式对象；其 system_prompt_sections 决定追加哪些分层
+        """
         prompt = self._prompt or ""
+
+        if mode is not None:
+            prompt += self.compose_sections(
+                getattr(mode, 'system_prompt_sections', ()) or ()
+            )
         
         if memory_context:
             prompt += f"\n\n【联想到的相关记忆】：\n{memory_context}"
         
         return prompt
+
+    def compose_sections(self, names: Sequence[str]) -> str:
+        """把若干分层名拼成一段文本；空名与缺失名一律跳过"""
+        parts: List[str] = []
+        seen = set()
+        for name in names or ():
+            key = str(name).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            content = self._sections.get(key)
+            if content:
+                parts.append(content)
+        if not parts:
+            return ""
+        return "\n\n" + "\n\n".join(parts)
     
     @property
     def prompt(self) -> str:
@@ -641,7 +735,11 @@ class LLMProviderFactory:
 @dataclass
 class Tool:
     """
-    工具定义
+    工具定义（向后兼容的最小形态）
+
+    castorice.tools.ToolSpec 是它的增强版（多出 read_only / modes / kind /
+    result_limit 等元数据与构造期校验）。ToolRegistry 在注册时做一次适配，
+    因此老代码继续用 Tool 也不会失去新的策略能力。
 
     Args:
         name: 工具名称（模型调用时使用）
@@ -653,33 +751,79 @@ class Tool:
     description: str
     parameters: Dict[str, Any]
     function: Callable[..., str]
+    read_only: bool = False
+    requires_approval: Optional[bool] = None
+    parallel_safe: bool = True
+    result_limit: int = ctools.DEFAULT_RESULT_LIMIT
+    modes: Optional[Tuple[str, ...]] = None
+
+    def to_spec(self) -> "ctools.ToolSpec":
+        """适配成 castorice.tools.ToolSpec（注册表内部的统一形态）。"""
+        modes = self.modes or tuple(sorted(ctools.DEFAULT_TOOL_MODES))
+        return ctools.ToolSpec(
+            name=self.name,
+            description=self.description,
+            parameters=dict(self.parameters or {}),
+            handler=self.function,
+            read_only=bool(self.read_only),
+            requires_approval=self.requires_approval,
+            parallel_safe=bool(self.parallel_safe),
+            result_limit=int(self.result_limit),
+            modes=frozenset(modes),
+        )
 
 
 class ToolRegistry:
     """
     工具注册表：注册、描述、调用工具
+
+    内部持有 castorice.tools.ToolSpec（带元数据与构造期校验），对外保持
+    与旧实现完全一致的 register / to_openai_specs / call 三个方法，
+    并新增 specs() / kernel_specs() / by_source() 供内核与界面读取。
+
+    构造期校验（重名 / 坏 schema / 未知模式）由 ctools.ToolSpec 与
+    ctools.ToolRegistry 负责，错误在注册时立刻抛出而不是静默忽略。
     """
 
-    def __init__(self) -> None:
-        self._tools: Dict[str, Tool] = {}
+    def __init__(self, tools: Optional[Sequence["Tool"]] = None) -> None:
+        self._registry = ctools.ToolRegistry()
+        for tool in tools or ():
+            self.register(tool)
 
-    def register(self, tool: Tool) -> None:
-        """注册一个工具"""
-        self._tools[tool.name] = tool
+    def register(self, tool: "Tool", *, replace_existing: bool = True) -> "Tool":
+        """注册一个工具（同名默认覆盖，保持旧行为；传 False 则抛错）"""
+        spec = tool.to_spec() if isinstance(tool, Tool) else tool
+        self._registry.register(spec, replace_existing=replace_existing)
+        return tool
+
+    def register_spec(self, spec: "ctools.ToolSpec",
+                      *, replace_existing: bool = True) -> "ctools.ToolSpec":
+        """直接注册内核形态的工具描述（castorice.tools 用）。"""
+        return self._registry.register(spec, replace_existing=replace_existing)
 
     def to_openai_specs(self) -> List[Dict[str, Any]]:
         """生成 OpenAI function calling 格式的工具列表"""
-        return [
-            {
-                'type': 'function',
-                'function': {
-                    'name': t.name,
-                    'description': t.description,
-                    'parameters': t.parameters,
-                }
-            }
-            for t in self._tools.values()
-        ]
+        return self._registry.to_openai_specs()
+
+    def specs(self) -> List["ctools.ToolSpec"]:
+        """内核形态的工具描述列表（带 read_only / modes / kind 等元数据）"""
+        return self._registry.all()
+
+    def kernel_specs(self) -> List["ToolSpec"]:
+        """castorice.modes.ToolSpec 列表（ModeRegistry 直接消费）"""
+        return self._registry.kernel_specs()
+
+    def by_source(self, source: str) -> List["ctools.ToolSpec"]:
+        return self._registry.by_source(source)
+
+    def names(self) -> List[str]:
+        return self._registry.names()
+
+    def __contains__(self, name: Any) -> bool:
+        return str(name) in self._registry
+
+    def __len__(self) -> int:
+        return len(self._registry)
 
     def call(self, name: str, arguments: Dict[str, Any]) -> str:
         """
@@ -692,14 +836,7 @@ class ToolRegistry:
         Returns:
             工具执行结果（字符串）；失败时返回错误信息
         """
-        tool = self._tools.get(name)
-        if tool is None:
-            return f"错误: 未知工具 {name}，可用工具: {', '.join(self._tools)}"
-        try:
-            result = tool.function(**arguments)
-            return str(result)
-        except Exception as e:
-            return f"错误: 调用工具 {name} 失败: {e}"
+        return self._registry.call(name, arguments)
 
 
 # ----------------------------------------------------------------------------
@@ -713,383 +850,57 @@ def tool_get_current_time() -> str:
 
 
 # ----------------------------------------------------------------------------
-# 搜索系统（多后端、配置驱动、自动降级）
+# 联网工具（六后端 + 自动降级）——实现已迁到 castorice/tools/web.py
+# ----------------------------------------------------------------------------
+#
+# 迁移原则（01-gap-matrix.md 第 6 节 / R18）：六个后端名与 auto 的优先级
+# 一字不改，ai.py 侧保留同名再导出，保证旧引用（ai.SearchManager、
+# ai._html_to_text、ai.BingHTMLSearch 等）与既有行为都不失效。
+# 新增的 web_fetch 与「外部内容不可信」前缀由 castorice/tools/ 提供。
+
+_UA = tools_web._UA
+_html_to_text = tools_web._html_to_text
+SearchBackend = tools_web.SearchBackend
+BingHTMLSearch = tools_web.BingHTMLSearch
+DDGHTMLSearch = tools_web.DDGHTMLSearch
+TavilySearch = tools_web.TavilySearch
+SerperSearch = tools_web.SerperSearch
+BingAPISearch = tools_web.BingAPISearch
+BochaSearch = tools_web.BochaSearch
+SearchManager = tools_web.SearchManager
+format_search_results = tools_web.format_search_results
+WebSearchTool = tools_web.WebSearchTool
+WebFetchTool = tools_web.WebFetchTool
+
+
+# ----------------------------------------------------------------------------
+# 内置工具注册表（构造期校验 + 能力元数据）
 # ----------------------------------------------------------------------------
 
-_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/120.0 Safari/537.36"
-)
-
-
-def _html_to_text(html: str, max_len: int = 500) -> str:
-    """把 HTML 粗略提取为纯文本（去掉脚本/样式/标签）"""
-    text = re.sub(r"<script.*?</script>", " ", html, flags=re.S | re.I)
-    text = re.sub(r"<style.*?</style>", " ", text, flags=re.S | re.I)
-    text = re.sub(r"<!--.*?-->", " ", text, flags=re.S)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = html_module.unescape(text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text[:max_len]
-
-
-class SearchBackend:
-    """搜索后端基类"""
-    name = "base"
-
-    def __init__(self, api_key: str = "", base_url: str = ""):
-        self.api_key = api_key
-        self.base_url = base_url
-
-    def search(self, query: str, max_results: int) -> List[Dict[str, str]]:
-        raise NotImplementedError("子类必须实现 search 方法")
-
-
-class BingHTMLSearch(SearchBackend):
-    """Bing 网页搜索（HTML 解析，无需 key）"""
-    name = "bing_html"
-
-    @staticmethod
-    def parse_html(html: str, max_results: int) -> List[Dict[str, str]]:
-        results = []
-        # 每个结果块: <li class="b_algo"> <h2><a href="URL">标题</a></h2> <p>摘要</p>
-        for block in re.findall(r'<li class="b_algo".*?</li>', html, re.S):
-            m = re.search(
-                r'<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
-                block, re.S
-            )
-            if not m:
-                continue
-            url = m.group(1)
-            title = re.sub(r"<[^>]+>", "", m.group(2)).strip()
-            sm = re.search(r'<p[^>]*>(.*?)</p>', block, re.S)
-            snippet = re.sub(r"<[^>]+>", "", sm.group(1)).strip() if sm else ""
-            results.append({
-                "title": title, "url": url, "snippet": snippet,
-            })
-            if len(results) >= max_results:
-                break
-        return results
-
-    def search(self, query: str, max_results: int) -> List[Dict[str, str]]:
-        import requests
-        resp = requests.get(
-            "https://www.bing.com/search",
-            params={
-                "q": query, "setlang": "zh-hans",
-                "cc": "CN", "count": max_results,
-            },
-            headers={"User-Agent": _UA},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        return self.parse_html(resp.text, max_results)
-
-
-class DDGHTMLSearch(SearchBackend):
-    """DuckDuckGo 网页搜索（HTML 解析，无需 key，作为兜底）"""
-    name = "ddg_html"
-
-    @staticmethod
-    def parse_html(html: str, max_results: int) -> List[Dict[str, str]]:
-        results = []
-        pattern = re.compile(
-            r'<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
-            re.S
-        )
-        for m in pattern.finditer(html):
-            link = m.group(1)
-            title = re.sub(r"<[^>]+>", "", m.group(2)).strip()
-            # DuckDuckGo 的结果链接是重定向，提取真实地址
-            parsed = urlparse(html_module.unescape(link))
-            real_url = link
-            if parsed.netloc == "duckduckgo.com" and parsed.path.startswith("/l/"):
-                uddg = parse_qs(parsed.query).get("uddg")
-                if uddg:
-                    real_url = unquote(uddg[0])
-            elif link.startswith("//"):
-                real_url = "https:" + link
-            results.append({"title": title, "url": real_url, "snippet": ""})
-            if len(results) >= max_results:
-                break
-        return results
-
-    def search(self, query: str, max_results: int) -> List[Dict[str, str]]:
-        import requests
-        resp = requests.get(
-            "https://html.duckduckgo.com/html/",
-            params={"q": query},
-            headers={"User-Agent": _UA},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        return self.parse_html(resp.text, max_results)
-
-
-class TavilySearch(SearchBackend):
-    """Tavily（专为 LLM 设计的搜索 API，直接返回正文摘要）"""
-    name = "tavily"
-
-    def search(self, query: str, max_results: int) -> List[Dict[str, str]]:
-        import requests
-        if not self.api_key:
-            raise RuntimeError("未配置 Tavily api_key")
-        resp = requests.post(
-            "https://api.tavily.com/search",
-            json={
-                "api_key": self.api_key,
-                "query": query,
-                "max_results": max_results,
-                "search_depth": "basic",
-            },
-            timeout=15,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return [
-            {
-                "title": r.get("title", ""),
-                "url": r.get("url", ""),
-                "snippet": (r.get("content") or "")[:300],
-            }
-            for r in data.get("results", [])
-        ]
-
-
-class SerperSearch(SearchBackend):
-    """Serper.dev（Google 搜索结果 API）"""
-    name = "serper"
-
-    def search(self, query: str, max_results: int) -> List[Dict[str, str]]:
-        import requests
-        if not self.api_key:
-            raise RuntimeError("未配置 Serper api_key")
-        resp = requests.post(
-            "https://google.serper.dev/search",
-            headers={"X-API-KEY": self.api_key, "Content-Type": "application/json"},
-            json={"q": query, "num": max_results},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return [
-            {
-                "title": r.get("title", ""),
-                "url": r.get("link", ""),
-                "snippet": r.get("snippet", ""),
-            }
-            for r in data.get("organic", [])
-        ]
-
-
-class BingAPISearch(SearchBackend):
-    """Bing Web Search API（Azure，免费额度）"""
-    name = "bing_api"
-
-    def search(self, query: str, max_results: int) -> List[Dict[str, str]]:
-        import requests
-        if not self.api_key:
-            raise RuntimeError("未配置 Bing API key")
-        resp = requests.get(
-            "https://api.bing.microsoft.com/v7.0/search",
-            params={"q": query, "count": max_results},
-            headers={"Ocp-Apim-Subscription-Key": self.api_key},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return [
-            {
-                "title": r.get("name", ""),
-                "url": r.get("url", ""),
-                "snippet": r.get("snippet", ""),
-            }
-            for r in (data.get("webPages") or {}).get("value", [])
-        ]
-
-
-class BochaSearch(SearchBackend):
-    """博查（国内可用的中文搜索 API，专为 LLM agent 设计）"""
-    name = "bocha"
-
-    def search(self, query: str, max_results: int) -> List[Dict[str, str]]:
-        import requests
-        if not self.api_key:
-            raise RuntimeError("未配置 Bocha api_key")
-        resp = requests.post(
-            "https://api.bochaai.com/v1/web-search",
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            json={"query": query, "count": max_results, "summary": True},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        pages = (data.get("data") or {}).get("webPages") or {}
-        return [
-            {
-                "title": r.get("name", ""),
-                "url": r.get("url", ""),
-                "snippet": r.get("summary") or r.get("snippet", ""),
-            }
-            for r in pages.get("value", [])
-        ]
-
-
-class SearchManager:
-    """
-    搜索管理器：按配置选择后端，失败自动降级；可选抓取结果网页正文
-
-    配置项（config.yaml 的 search 节，api_key 也可用环境变量 SEARCH_API_KEY）：
-        provider: auto | tavily | serper | bing_api | bocha | bing_html | ddg_html
-        api_key: 使用 key 型后端时填写
-        max_results: 默认返回条数（默认 5）
-        fetch_content: 是否抓取结果页面正文（默认 true）
-        fetch_top_n: 抓取前 N 条正文（默认 2）
-    """
-
-    _KEY_BACKENDS = {
-        "tavily": TavilySearch,
-        "serper": SerperSearch,
-        "bing_api": BingAPISearch,
-        "bocha": BochaSearch,
-    }
-    _HTML_BACKENDS = {
-        "bing_html": BingHTMLSearch,
-        "ddg_html": DDGHTMLSearch,
-    }
-
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        config = config or {}
-        self.max_results = max(1, int(config.get("max_results", 5) or 5))
-        self.fetch_content = bool(config.get("fetch_content", True))
-        self.fetch_top_n = max(0, int(config.get("fetch_top_n", 2) or 2))
-        self._backends = self._build_backends(config)
-
-    def _build_backends(self, config) -> List[SearchBackend]:
-        api_key = config.get("api_key") or os.environ.get("SEARCH_API_KEY", "")
-        base_url = config.get("base_url") or ""
-        provider = (config.get("provider") or "auto").lower()
-
-        if provider in self._KEY_BACKENDS:
-            return [self._KEY_BACKENDS[provider](api_key, base_url)]
-        if provider in self._HTML_BACKENDS:
-            return [self._HTML_BACKENDS[provider]()]
-
-        # auto：有 key 时 key 型优先，HTML 型兜底
-        backends: List[SearchBackend] = []
-        if api_key:
-            for cls in (TavilySearch, SerperSearch, BingAPISearch, BochaSearch):
-                backends.append(cls(api_key, base_url))
-        backends.append(BingHTMLSearch())
-        backends.append(DDGHTMLSearch())
-        return backends
-
-    def search(
-        self, query: str, max_results: Optional[int] = None
-    ) -> List[Dict[str, str]]:
-        """依次尝试各后端，返回第一条成功的非空结果"""
-        limit = max(1, max_results or self.max_results)
-        errors = []
-        for backend in self._backends:
-            try:
-                results = backend.search(query, limit)
-                if results:
-                    return self._enrich(results, limit)
-            except Exception as e:
-                errors.append(f"{backend.name}: {e}")
-        if errors:
-            raise RuntimeError("；".join(errors))
-        return []
-
-    def _enrich(
-        self, results: List[Dict[str, str]], limit: int
-    ) -> List[Dict[str, str]]:
-        """给前 fetch_top_n 条结果抓取网页正文，提升信息量"""
-        enriched = []
-        for i, r in enumerate(results[:limit]):
-            item = dict(r)
-            if self.fetch_content and i < self.fetch_top_n:
-                item["content"] = self._fetch_content(r["url"])
-            enriched.append(item)
-        return enriched
-
-    def _fetch_content(self, url: str) -> str:
-        try:
-            import requests
-            resp = requests.get(
-                url, headers={"User-Agent": _UA},
-                timeout=8, allow_redirects=True,
-            )
-            resp.raise_for_status()
-            return _html_to_text(resp.text, max_len=600)
-        except Exception:
-            return ""
-
-
-def format_search_results(results: List[Dict[str, str]]) -> str:
-    """把搜索结果格式化为给模型看的文本"""
-    lines = []
-    for i, r in enumerate(results, 1):
-        lines.append(f"{i}. {r.get('title', '')}\n   {r.get('url', '')}")
-        snippet = (r.get("snippet") or "").strip()
-        if snippet:
-            lines.append(f"   简介: {snippet[:300]}")
-        content = (r.get("content") or "").strip()
-        if content:
-            lines.append(f"   正文摘要: {content[:600]}")
-    return "\n".join(lines)
-
-
-class WebSearchTool:
-    """web_search 工具的可调用对象（携带搜索配置）"""
-
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        self._manager = SearchManager(config)
-
-    def __call__(self, query: str, max_results: int = 5) -> str:
-        try:
-            results = self._manager.search(query, max_results)
-        except Exception as e:
-            return f"错误: 搜索失败（{e}）"
-        if not results:
-            return f"未找到与「{query}」相关的搜索结果。"
-        return format_search_results(results)
-
-
 def create_builtin_tools(
-    search_config: Optional[Dict[str, Any]] = None
+    search_config: Optional[Dict[str, Any]] = None,
+    *,
+    tools_config: Optional[Dict[str, Any]] = None,
+    context: Optional["ctools.ToolContext"] = None,
+    mcp: Optional["ctools.McpRegistry"] = None,
 ) -> ToolRegistry:
-    """创建内置工具注册表"""
+    """按配置创建内置工具注册表。
+
+    兼容旧的单参数调用（只传 search 配置）；额外的关键字参数让装配侧注入
+    工具上下文（工作区 / 沙箱 / 权限网关）与 MCP 登记表。
+
+    返回的 ai.ToolRegistry 内部是 ctools.ToolSpec，因此每个工具都带有
+    read_only / requires_approval / parallel_safe / modes / result_limit
+    元数据，权限网关与内核据此裁决。
+    """
     registry = ToolRegistry()
-    
-    registry.register(Tool(
-        name="get_current_time",
-        description="查询当前的日期和时间（含星期几）。当用户问现在几点、今天几号等时使用。",
-        parameters={"type": "object", "properties": {}, "additionalProperties": False},
-        function=tool_get_current_time,
-    ))
-    registry.register(Tool(
-        name="web_search",
-        description=(
-            "在互联网上搜索最新信息，返回标题、链接、摘要以及部分网页正文。"
-            "当用户询问实时、新闻、未知知识时使用。"
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "搜索关键词"},
-                "max_results": {"type": "integer", "description": "返回结果数量，默认5"},
-            },
-            "required": ["query"],
-            "additionalProperties": False,
-        },
-        function=WebSearchTool(search_config or {}),
-    ))
-    
+    built = ctools.build_default_registry(
+        {"search": search_config or {}, "tools": tools_config or {}},
+        context=context,
+        mcp=mcp,
+    )
+    for spec in built.all():
+        registry.register_spec(spec, replace_existing=True)
     return registry
 
 
@@ -1441,7 +1252,9 @@ class AI:
         chroma_dir: str = "database",
         collection_name: str = "memories",
         provider_name: Optional[str] = None,
-        image_dir: str = "Image"
+        image_dir: str = "Image",
+        sessions_dir: str = "sessions",
+        mode: Optional[str] = None
     ):  
         
         # 初始化日志
@@ -1460,9 +1273,19 @@ class AI:
         self._provider_name = provider_name or self.config_manager.get_active_provider()
         self._setup_provider()
         
-        # 初始化工具系统（传入搜索配置）
+        # 工具执行上下文（工作区 / 沙箱 / 权限网关），先于工具注册表建立：
+        # 工具闭包在调用时读它，因此绑定目录变化后无需重建工具。
+        self._tool_context = self._build_tool_context()
+
+        # MCP 扩展接入点（第一期只登记，不建立传输）
+        self._mcp_registry = ctools.McpRegistry()
+
+        # 初始化工具系统（传入搜索配置与工具上下文）
         self.tool_registry = create_builtin_tools(
-            self.config_manager.get('search', {})
+            self.config_manager.get('search', {}),
+            tools_config=self.config_manager.get('tools') or {},
+            context=self._tool_context,
+            mcp=self._mcp_registry,
         )
         
         # 初始化表情包系统（扫描 Image 目录 + 读取 emoji 配置）
@@ -1470,12 +1293,325 @@ class AI:
         
         # 初始化对话历史（消息可包含 content=None 与 tool_calls，故用 Any 值）
         self._messages: List[Dict[str, Any]] = []
-        self._reset_messages()
+
+        # 四模式内核（模式注册表 / 会话事件日志 / agent 主循环）
+        self._init_harness(sessions_dir)
+
+        # 按 config.yaml 的 mode 字段（可用 mode 参数覆盖）选择模式；
+        # 切换即激活该模式自己的会话，因此四个模式的对话历史天然相互隔离
+        self.set_mode(mode or self._config_mode(), persist=False)
         
         self.logger.info(
             f"AI聊天机器人初始化完成 (提供商: {self._provider_name}, "
+            f"模式: {self._mode_name}, 内核: castorice {castorice.__version__}, "
             f"表情包: {self.emoji_catalog.count} 个 @ {self.emoji_catalog.image_dir})"
         )
+
+    #: 只读工具（兼容保留）：真正的判定已交给 castorice/permissions.py 的
+    #: PermissionGateway，它按每个 ToolSpec 的 read_only 元数据裁决；
+    #: 这张表仍然放行同名工具，用于兼容旧路径与「网关不可用」时的降级。
+    READONLY_TOOLS = frozenset({
+        'get_current_time', 'web_search', 'web_fetch',
+        'read_file', 'list_dir', 'glob_files', 'grep_files',
+        'search_notes', 'read_note', 'list_reminders', 'system_info',
+    })
+
+    def _build_tool_context(self) -> "ctools.ToolContext":
+        """构造工具执行上下文（工作区 / 沙箱 / 可信根）。"""
+        modes_config = self.config_manager.get('modes') or {}
+        workspace = ""
+        if isinstance(modes_config, dict):
+            for key in ('code', 'work', 'learn'):
+                node = modes_config.get(key)
+                if isinstance(node, dict):
+                    workspace = node.get('workdir') or node.get('vault') or ""
+                    if workspace:
+                        break
+        workspace = workspace or self.config_manager.get('workdir') or str(Path.cwd())
+        # 此处 _mode_registry 还没建立（工具上下文先于 _init_harness 构造），
+        # 因此只能取「与模式无关」的全局配置；随后 _sync_permission_context
+        # 会用 resolve_sandbox(模式) 把它校正成该模式的实际生效值。
+        # 配置非法时回落 read-only（故障安全：宁可拒绝，不可放行）。
+        return ctools.ToolContext(
+            workspace=str(workspace),
+            cwd=os.getcwd(),
+            sandbox=self._config_sandbox_default() or cpermissions.SANDBOX_READ_ONLY,
+            mode='chat',
+            roots=tuple(self._workdir_sources().get('roots') or ()),
+        )
+
+    def _init_harness(self, sessions_dir: str) -> None:
+        """装配四模式内核：模式注册表 → 权限桥 → 会话 → agent 主循环
+
+        依赖方向永远是 ai.py → castorice/（红线 D）；内核只拿到 provider、
+        工具执行入口与权限桥，不知道 UI 的存在。
+        """
+        self.sessions_dir = Path(sessions_dir)
+        self._sessions: Dict[str, SessionStore] = {}
+
+        # 每个工具声明自己可见的模式（Chat 永不在内），因此 ModelRegistry 的
+        # 构造期校验按「工具的 modes 声明」裁剪，而不是按全局工具表。
+        self._mode_registry = self._build_mode_registry()
+        self._mode_name = self._config_mode()
+        self._bind_configured_workdirs()
+
+        self._permissions = self._init_permissions()
+        self._kernel_tools = _KernelTools(
+            self.tool_registry, self._mode_registry.all_tools(),
+            gateway=self._permissions, mode=self._mode_name)
+        self._harness = HarnessLoop(
+            session=self._placeholder_session(),
+            provider=self._provider,
+            modes=self._mode_registry,
+            tools=self._kernel_tools,
+            permissions=self._permissions,
+            max_iterations=self.MAX_ITERATIONS,
+            logger=self.logger,
+        )
+        self._session = self._harness.session
+        self._session_projection = SessionProjection(self._session)
+
+    def _build_mode_registry(self) -> "ModeRegistry":
+        """按每个工具声明的 modes 构造模式注册表。
+
+        ModelRegistry 的构造期校验要求「模式声明的工具名必须已注册」，
+        因此这里按工具自己的 modes 声明把工具名裁进对应模式：这样 Learn 的
+        笔记工具不会出现在 Code 的工具表里，而 Chat 的可见集合恒为空。
+        """
+        allowed: Dict[str, set] = {}
+        for spec in self.tool_registry.specs():
+            for mode_name in spec.modes:
+                allowed.setdefault(str(mode_name), set()).add(spec.name)
+
+        # N1（t12/t15）根因修复：builtin_modes(known_tools=...) 的入参语义
+        # 是「当前已注册的工具名」（见 castorice/modes.py builtin_modes），
+        # 过去这里传的是 set(KNOWN_MODES) | set(allowed)——纯模式名集合，
+        # 导致 LEARN_ALLOWED 与它的交集恒空、learn 退化为 deny-ALL
+        # （整表禁用），deny-ALL 又放行了拒绝表之外的提醒/音乐等工具。
+        # 正确来源就是注册表里全部已注册工具名；allowed 只是每个工具声明
+        # 自己可见模式的镜像，不再参与裁剪。
+        declared = frozenset(
+            spec.name for spec in self.tool_registry.specs())
+        assert not (declared & set(ctools.KNOWN_MODES)), (
+            "工具名与模式名出现重名，builtin_modes 的裁剪语义会被破坏")
+        modes = []
+        for mode in castorice.builtin_modes(declared):
+            names = tuple(sorted(allowed.get(mode.name, set()) & set(mode.tool_allowlist)))
+            if mode.name == "chat":
+                modes.append(mode)
+                continue
+            modes.append(
+                mode if names == tuple(sorted(mode.tool_allowlist))
+                else type(mode)(
+                    name=mode.name,
+                    display_name=mode.display_name,
+                    tool_allowlist=names,
+                    system_prompt_sections=mode.system_prompt_sections,
+                    workdir_policy=mode.workdir_policy,
+                    tool_policy=(
+                        mode.tool_policy if names
+                        else castorice.ToolPolicy(allow=None,
+                                                  deny=castorice.ALL_TOOLS_DENIED)
+                    ),
+                    supports_vision_input=mode.supports_vision_input,
+                )
+            )
+        return ModeRegistry(
+            tools=self.tool_registry.kernel_specs(),
+            modes=modes,
+            sources=self._workdir_sources(),
+        )
+
+    def _config_mode(self) -> str:
+        """读取 config.yaml 的 mode 字段（缺失 / 非法一律回退到 chat）"""
+        return resolve_mode_name(
+            self.config_manager.get('mode'),
+            self._mode_registry.names(),
+        )
+
+    def _workdir_sources(self) -> Dict[str, Any]:
+        """可信根目录来源：配置里的显式根 + 程序当前目录"""
+        sources: Dict[str, Any] = {}
+        modes_config = self.config_manager.get('modes') or {}
+        for key in ('code', 'learn', 'work'):
+            node = modes_config.get(key) if isinstance(modes_config, dict) else None
+            if isinstance(node, dict):
+                for field in ('workdir', 'vault'):
+                    if node.get(field):
+                        sources.setdefault('roots', []).append(node[field])
+        for extra in ('workdir', 'code_root', 'vault'):
+            if self.config_manager.get(extra):
+                sources.setdefault('roots', []).append(self.config_manager.get(extra))
+        sources.setdefault('roots', []).append(str(Path.cwd()))
+        return sources
+
+    def _bind_configured_workdirs(self) -> None:
+        """把 config.yaml 里的 modes.* 目录绑定到对应模式（越界即忽略）"""
+        modes_config = self.config_manager.get('modes') or {}
+        if not isinstance(modes_config, dict):
+            return
+        for name, node in modes_config.items():
+            if not isinstance(node, dict) or not self._mode_registry.has(name):
+                continue
+            for field in ('workdir', 'vault'):
+                if node.get(field):
+                    try:
+                        self._mode_registry.bind_workdir(name, node[field])
+                    except WorkdirError as e:
+                        self.logger.warning(f"忽略越界的工作目录配置 {name}.{field}: {e}")
+                    break
+
+    def _config_sandbox_default(self) -> Optional[str]:
+        """读取 permissions.sandbox_default（未配置 / 非法时返回 None）。
+
+        非法的配置值不能直接塞进 Mode：WorkdirPolicy.__post_init__ 会对未知
+        沙箱模式抛 ValueError，那会把「配置写错」升级成「程序起不来」。
+        这里只做校验并返回 None，由 resolve_sandbox 负责 warning + 回落。
+        """
+        raw = self.config_manager.get("permissions.sandbox_default")
+        if raw in (None, ""):
+            return None
+        value = str(raw).strip()
+        if value not in cpermissions.SANDBOX_MODES:
+            self.logger.warning(
+                f"permissions.sandbox_default={value!r} 不是合法沙箱模式，已忽略；"
+                f"可选: {sorted(cpermissions.SANDBOX_MODES)}"
+            )
+            return None
+        return value
+
+    def resolve_sandbox(self, mode: Any = None) -> str:
+        """某个模式**实际生效**的沙箱模式（单点权威）。
+
+        解析优先级（越具体越优先，对齐 DSH 的
+        `explicit ?? fold(events) ?? default`）：
+
+        1. modes.<name>.sandbox —— 该模式的显式配置，最具体；
+        2. permissions.sandbox_default —— 全局缺省，语义上就是「默认值」，
+           因此让更具体的模式级配置赢过它；
+        3. 模式内置默认（Mode.workdir_policy.default_sandbox）。
+
+        非法配置值一律 warning 后回落到下一级，**不抛异常**：配置写错不该
+        让程序起不来（WorkdirPolicy.__post_init__ 对未知模式会抛 ValueError，
+        所以未经校验的值绝不能塞进 Mode）。
+
+        返回值同时被网关、available_modes 面板、会话投影与工具上下文使用，
+        任何一处单独取内置默认值都会造成「网关按配置跑、面板显示内置值」
+        的不一致，因此全部读取点必须走这个函数。
+
+        Args:
+            mode: 模式名、Mode 对象，或 None（当前模式）
+        """
+        resolved_mode = self._resolve_mode_object(mode)
+        name = resolved_mode.name
+        builtin = resolved_mode.workdir_policy.default_sandbox
+
+        # 1) 模式级显式配置（最具体）
+        node = self._mode_config_node(name)
+        per_mode = node.get("sandbox") if isinstance(node, dict) else None
+        if per_mode not in (None, ""):
+            value = str(per_mode).strip()
+            if value in cpermissions.SANDBOX_MODES:
+                return value
+            self.logger.warning(
+                f"modes.{name}.sandbox={value!r} 不是合法沙箱模式，已忽略；"
+                f"可选: {sorted(cpermissions.SANDBOX_MODES)}"
+            )
+
+        # 2) 全局缺省
+        configured = self._config_sandbox_default()
+        if configured:
+            return configured
+
+        # 3) 模式内置默认
+        return builtin
+
+    def _resolve_mode_object(self, mode: Any = None) -> "Mode":
+        """把「模式名 / Mode 对象 / None」统一解析成注册表里的 Mode。
+
+        注意不能直接走 _mode_object：它只接受模式名，收到 Mode 对象时
+        resolve_mode_name 会判定非法并回退到 chat，导致 available_modes
+        这类「已经在遍历 Mode」的调用方拿到 chat 的沙箱值。
+        """
+        if isinstance(mode, Mode):
+            return self._mode_registry.get(mode.name)
+        if mode is None:
+            return self._mode_registry.get(self._mode_name)
+        return self._mode_object(mode)
+
+    def _mode_config_node(self, name: str) -> Dict[str, Any]:
+        """config.yaml 里 modes.<name> 这一节（缺失或类型不对时返回空 dict）。"""
+        modes_config = self.config_manager.get("modes") or {}
+        if not isinstance(modes_config, dict):
+            return {}
+        node = modes_config.get(str(name))
+        return node if isinstance(node, dict) else {}
+
+    def _init_permissions(self) -> "cpermissions.PermissionGateway":
+        """装配统一权限审批网关（castorice/permissions.py）。
+
+        判定顺序：单调 guard → 未知工具 → 模式可见性 → 路径边界 →
+        命令白名单 → read-only 沙箱 → 审批（ask / never / unavailable）。
+
+        审批应答者默认**没有注入**：ask 会解析成 unavailable 并按拒绝关闭
+        （fail-closed）。界面侧接上之后才能产生真正的 allow
+        （见 AI.set_approval_responder）。
+        """
+        config = self.config_manager.get('permissions') or {}
+        if not isinstance(config, dict):
+            config = {}
+        mode_command_allowlist = {
+            mode.name: tuple(mode.workdir_policy.command_allowlist)
+            for mode in self._mode_registry.all_modes()
+        }
+        gateway = cpermissions.PermissionGateway(
+            config,
+            tool_specs=self.tool_registry.specs(),
+            mode=self._mode_name,
+            roots=list(self._workdir_sources().get('roots') or ()),
+            sandbox=self.resolve_sandbox(self._mode_name),
+            mode_command_allowlist=mode_command_allowlist,
+            visibility=lambda mode, tool: self._mode_registry.is_visible(mode, tool),
+            logger=self.logger,
+        )
+        # 旧的只读白名单作为一条单调 guard：即使网关配置被写坏，
+        # 旧路径的只读工具依然放行，而有副作用的工具依然要过审批。
+        gateway.guard(self._readonly_guard)
+        return gateway
+
+    @staticmethod
+    def _readonly_guard(request: PermissionRequest) -> Optional[str]:
+        """单调 guard：只读工具永不因 guard 被拒（返回 None 表示放行）。"""
+        return None
+
+    def _placeholder_session(self) -> SessionStore:
+        """为 HarnessLoop 提供的**初始会话**，随后被 _build_session 复用。
+
+        为什么需要它：HarnessLoop 构造时必须已有一个可用的 SessionStore
+        （要读写 header / revision / 检查点），但正式会话要等 set_mode()
+        经 _activate_mode_session 到 _build_session 才确定。
+
+        为什么不直接写进 _sessions：那样会让 set_mode 里
+        name-not-in-self._sessions 的判定为假，从而**跳过首次激活**
+        （进而跳过 _sync_permission_context，工具出口模式会停在 chat）。
+
+        为什么不能创建后丢弃：同一个 session_id 被登记两次写者时，第二次
+        会抛 SessionInUseError。旧实现正是这样每构造一个 AI 实例就永久泄漏
+        一条 _ACTIVE_WRITERS 登记，并让同一 sessions_dir 下的**重建实例
+        直接构造失败**。这里改为暂存在 _pending_session 上，由 _build_session
+        在模式匹配时**复用**，因此每个实例只登记一次。
+        """
+        session_id = None
+        try:
+            session_id = SessionStore.latest_session_id(self.sessions_dir, self._mode_name)
+        except OSError:
+            session_id = None
+        store = SessionStore(
+            self.sessions_dir, self._mode_name, session_id=session_id,
+            cwd=self._workdir_for_session(),
+        )
+        self._pending_session = store
+        return store
     
     # agent 循环最大迭代次数（防止无限调用工具）
     MAX_ITERATIONS = 8
@@ -1543,20 +1679,100 @@ class AI:
             )
 
     def _setup_provider(self) -> None:
-        """设置LLM提供商"""
+        """设置LLM提供商（并把内核循环切到新 provider）
+
+        既有 OpenAICompatibleProvider 与 LLMProviderFactory 的行为完全不变；
+        这里额外按厂商能力表解析能力，并据此决定工具协议级别
+        （native / json / text），供系统提示词注入与请求体裁剪使用。
+        """
         provider_config = self.config_manager.get_provider_config(self._provider_name)
         self._provider = LLMProviderFactory.create_provider(
             self._provider_name,
             provider_config
         )
+        # 能力适配层（castorice/providers）：只做「能力 -> 协议」的判定，
+        # 不改动 provider 本身的调用方式，因此不产生行为回归。
+        try:
+            self._capabilities = cproviders.resolve_capabilities(
+                self._provider_name, provider_config)
+            self._tool_protocol = self._capabilities.protocol(tools_requested=True)
+        except Exception as e:
+            self._capabilities = None
+            self._tool_protocol = cproviders.TOOL_PROTOCOL_NATIVE
+            self.logger.warning(f"能力表解析失败，按 native 协议继续: {e}")
+        harness = getattr(self, '_harness', None)
+        if harness is not None:
+            # provider 自持 model（见 OpenAICompatibleProvider._setup_client），
+            # 因此不把 model 塞进请求体，避免两处来源互相覆盖。
+            harness.provider = self._provider
     
-    def _build_system_prompt(self, memory_context: Optional[str] = None) -> str:
-        """构建系统提示词：固定部分（基础提示词 + 工具说明 + 表情包规则），不拼接记忆"""
-        # 记忆已改放到 user 消息中（见 get_response_stream），系统提示词保持不变以节省 token
-        prompt = self.prompt_manager.get_prompt()
+    def _build_system_prompt(
+        self,
+        memory_context: Optional[str] = None,
+        mode: Optional[str] = None,
+    ) -> str:
+        """构建系统提示词：基础提示词 + 模式分层 + 工具说明 + 表情包规则
+
+        记忆已改放到 user 消息中（见 get_response_stream），系统提示词保持稳定
+        以节省 token。模式分层由 Mode.system_prompt_sections 决定；
+        Chat 模式下没有可见工具，因此**不注入工具使用说明**。
+        """
+        resolved_mode = self._mode_object(mode)
+        prompt = self.prompt_manager.get_prompt(mode=resolved_mode)
         if self.emoji_catalog:
             prompt += self._build_emoji_instructions()
-        return prompt + self.TOOL_INSTRUCTIONS + self.TIME_INSTRUCTIONS
+        return (
+            prompt
+            + self._build_tool_instructions(resolved_mode)
+            + self._build_tool_protocol_instructions(resolved_mode)
+            + self.TIME_INSTRUCTIONS
+        )
+
+    def _visible_tool_specs(self, mode: Optional["Mode"] = None) -> List[Dict[str, Any]]:
+        """当前模式对模型可见的工具 schema（Chat 恒为空列表）。"""
+        return self._mode_registry.to_openai_specs(self._mode_object(mode))
+
+    def _build_tool_protocol_instructions(self, mode: Optional["Mode"] = None) -> str:
+        """按厂商能力决定工具协议：native 无需额外文本，json 注入 JSON 约定。
+
+        这是目标 7「分级降级」在提示词侧的落点：不支持 function calling 的
+        模型改走 castorice.providers.json_protocol 的提示词内 JSON 约定；
+        没有可见工具时不注入任何文本。
+        """
+        protocol = getattr(self, '_tool_protocol', cproviders.TOOL_PROTOCOL_NATIVE)
+        if protocol != cproviders.TOOL_PROTOCOL_JSON:
+            return ""
+        specs = self._visible_tool_specs(mode)
+        if not specs:
+            return ""
+        return cproviders.build_json_protocol_instructions(specs)
+
+    def _build_tool_instructions(self, mode: Optional["Mode"] = None) -> str:
+        """按模式可见工具生成工具使用说明；无可见工具时返回空串"""
+        visible = self.mode_registry.visible_tool_names(self._mode_object(mode))
+        if not visible:
+            return ""
+        if {"get_current_time", "web_search"} & set(visible):
+            return self.TOOL_INSTRUCTIONS
+        listed = "\n".join(f"- {name}" for name in visible)
+        return (
+            "\n\n【工具使用说明】\n"
+            "你是一个具备行动能力的智能助手，本轮可以调用以下工具：\n"
+            f"{listed}\n"
+            "使用规则：\n"
+            "1. 当问题需要实时信息或本地文件内容时，先调用工具，再根据结果组织回答；\n"
+            "2. 一次思考中可并行调用多个不相关的工具；\n"
+            "3. 不要编造工具返回的内容，如实转述结果；\n"
+            "4. 没有出现在上面的工具就是本轮不可用的，不要尝试调用。"
+        )
+
+    def _mode_object(self, mode: Optional[str] = None) -> "Mode":
+        """把模式名解析成注册表里的 Mode 对象（未知值回退到 chat）"""
+        name = resolve_mode_name(
+            mode if mode is not None else self._mode_name,
+            self.mode_registry.names(),
+        )
+        return self.mode_registry.get(name)
 
     def _build_emoji_instructions(self) -> str:
         """按当前 Image 目录内容生成表情包规则说明"""
@@ -1715,9 +1931,13 @@ class AI:
         cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
         return cleaned.strip()
 
-    def _reset_messages(self) -> None:
-        """重置对话历史"""
-        system_prompt = self._build_system_prompt()
+    def _reset_messages(
+        self,
+        memory_context: Optional[str] = None,
+        mode: Optional[str] = None,
+    ) -> None:
+        """重置对话历史（只重建 system 头，不动会话事件日志）"""
+        system_prompt = self._build_system_prompt(memory_context, mode=mode)
         self._messages = [
             {'role': 'system', 'content': system_prompt}
         ]
@@ -1799,59 +2019,46 @@ class AI:
                 memory_prefix = f"【相关记忆】\n{memory_context}\n\n"
             
             user_message = time_prefix + memory_prefix + (user_input or "")
-            self._messages.append(
-                self._build_user_message(user_message, images)
-            )
-            
-            tool_specs = self.tool_registry.to_openai_specs()
+            # user 消息由 ai.py 组装（保留【当前时间】/【相关记忆】前缀的原有位置），
+            # 内核负责记录事件、检查点、工具可见性裁决与逐轮状态。
+            kernel_user_message = self._build_user_message(user_message, images)
+            self._harness.set_system_prompt(self._build_system_prompt(mode=self._mode_name))
+            self._harness.seed_history(self._messages)
             full_reply = ""
-            
-            # 3. agent 循环
-            for _ in range(self.MAX_ITERATIONS):
-                text, tool_calls = self._provider.chat_completion(
-                    self._messages,
-                    stream=True,
-                    tools=tool_specs
+
+            # 3. agent 循环（castorice.harness.HarnessLoop）
+            #    内核产出的 ('done', ...) 不直接转发：表情包事件必须落在 done
+            #    之前，而 done 必须恰好一次且在最后（红线 5.1 铁律 2）。
+            # turn() 标记「当前在 harness 轮次内」：期间工具调用已由内核做过
+            # 完整判定（含审批），执行出口不再重复判定，避免同一次调用弹两次
+            # 审批、破坏 allowed-once 语义。直接调用（无此标记）会自己走
+            # 完整判定——这是「所有有副作用的调用必须先过网关」的兜底。
+            with self._kernel_tools.turn():
+                for kind, payload in self._harness.run_stream(kernel_user_message):
+                    if kind == 'text':
+                        full_reply += payload
+                        yield (kind, payload)
+                    elif kind == 'done':
+                        full_reply = payload
+                    else:
+                        yield (kind, payload)
+
+            # 3.1 把内核维护的历史同步回 AI._messages（保持旧读法的语义）。
+            #     内核保证了工具调用与结果成对（结果补全见
+            #     HarnessLoop._complete_missing_results），但历史可能被外部
+            #     改写（如切提供商时的 keep_history），所以这里再做一次自检：
+            #     OpenAI 接口在存在孤立 tool_calls 时会直接返回 400，
+            #     缺 tool_call_id 的工具消息必须被记下来而不是静默带出去。
+            self._messages = self._harness.history()
+            orphan_tool_messages = [
+                message for message in self._messages
+                if message.get('role') == 'tool' and not message.get('tool_call_id')
+            ]
+            if orphan_tool_messages:
+                self.logger.warning(
+                    f"历史里有 {len(orphan_tool_messages)} 条工具消息缺少 "
+                    f"tool_call_id，下一轮请求可能被模型接口拒绝"
                 )
-                
-                if text:
-                    full_reply += text
-                    yield ('text', text)
-                
-                if not tool_calls:
-                    break  # 没有工具调用 -> 最终回答
-                
-                # 4. 记录 assistant 的工具调用消息
-                self._messages.append({
-                    'role': 'assistant',
-                    'content': text or None,
-                    'tool_calls': tool_calls,
-                })
-                
-                # 5. 依次执行工具，把结果作为 tool 消息放回历史
-                for call in tool_calls:
-                    name = call['function']['name']
-                    yield ('tool', {'name': name, 'status': 'start'})
-                    
-                    try:
-                        arguments = json.loads(
-                            call['function']['arguments'] or '{}'
-                        )
-                        result = self.tool_registry.call(name, arguments)
-                    except Exception as e:
-                        result = f"错误: 解析或调用工具 {name} 失败: {e}"
-                    
-                    yield ('tool', {'name': name, 'status': 'done'})
-                    self._messages.append({
-                        'role': 'tool',
-                        'tool_call_id': call['id'],
-                        'content': result,
-                    })
-            else:
-                # 达到步数上限仍未结束
-                note = "\n\n（已达到处理步数上限，以上是当前进展。）"
-                full_reply += note
-                yield ('text', note)
             
             # 6. 表情包：每条回复固定附带一个（模型没自己发标记时由这里补上）
             sticker = self._pick_emoji_for_reply(full_reply)
@@ -1860,9 +2067,14 @@ class AI:
                 self.logger.info(f"附带表情包: {sticker.file_name}")
                 yield ('emoji', {'name': sticker.name, 'path': sticker.path})
             
-            # 7. 保存 assistant 回复到历史（去掉表情包标记，历史保持纯文本）
+            # 7. 历史里的助手回复保持纯文本（去掉表情包标记）。
+            #    内核已经把助手发言记进会话日志，这里只做「就地把最后一条
+            #    助手消息改成纯文本」，避免同一条回复在历史里出现两次。
             plain_reply = self._strip_emoji_tags(full_reply)
-            self._messages.append({'role': 'assistant', 'content': plain_reply})
+            if self._messages and self._messages[-1].get('role') == 'assistant':
+                self._messages[-1]['content'] = plain_reply
+            else:
+                self._messages.append({'role': 'assistant', 'content': plain_reply})
             
             # 8. 保存对话到记忆（只发图片时用占位文本）
             user_desc = query or f"[图片×{len(images)}]"
@@ -1923,8 +2135,11 @@ class AI:
         self.logger.info(f"已切换到提供商: {provider_name}")
     
     def clear_history(self) -> None:
-        """清空对话历史"""
+        """清空对话历史（只清当前模式；其他模式的会话保持不变）"""
         self._reset_messages()
+        if getattr(self, '_harness', None) is not None:
+            self._harness.reset_history()
+            self._harness.seed_history(self._messages)
         self.emoji_session.reset()
         self.logger.info("对话历史已清空")
     
@@ -1953,14 +2168,55 @@ class AI:
         """清空所有记忆"""
         self.memory_manager.clear()
         self.logger.info("所有记忆已清空")
+
+    def close(self) -> None:
+        """释放本实例持有的会话（单写者登记）。
+
+        为什么需要它：SessionStore 在构造时按会话文件路径登记单写者，
+        `close()` 才解除登记。同一个 sessions_dir 下要再建一个 AI 实例
+        （重建、测试连续构造、切换配置后重载）时，前一个实例必须先释放，
+        否则新实例会在打开最近日志时撞上 SessionInUseError。
+
+        幂等：可重复调用；也支持 `with AI(...) as bot:` 的写法。
+        """
+        released: List[str] = []
+        for name, store in list(getattr(self, "_sessions", {}).items()):
+            try:
+                store.close()
+                released.append(str(name))
+            except Exception as e:  # pragma: no cover - 释放失败不该阻断退出
+                self.logger.warning(f"释放会话 {name} 失败: {e}")
+        pending = getattr(self, "_pending_session", None)
+        if pending is not None and not getattr(pending, "closed", False):
+            try:
+                pending.close()
+                released.append("pending")
+            except Exception as e:  # pragma: no cover
+                self.logger.warning(f"释放初始会话失败: {e}")
+        self._pending_session = None
+        if released:
+            self.logger.info("已释放会话: " + ", ".join(released))
+
+    def __enter__(self) -> "AI":
+        return self
+
+    def __exit__(self, *exc_info: Any) -> None:
+        self.close()
     
     def get_history(self) -> List[Dict[str, Any]]:
         """
         获取对话历史
-        
+
+        历史由 agent 内核维护（每条消息都对应会话日志里的事件），
+        这里返回同一份历史的副本。
+
         Returns:
             对话历史列表
         """
+        if getattr(self, '_harness', None) is not None:
+            history = self._harness.history()
+            if history:
+                return [dict(message) for message in history]
         return self._messages.copy()
     
     def get_memory_count(self) -> int:
@@ -1975,6 +2231,10 @@ class AI:
     @property
     def messages(self) -> List[Dict[str, Any]]:
         """获取对话历史（只读）"""
+        if getattr(self, '_harness', None) is not None:
+            history = self._harness.history()
+            if history:
+                return [dict(message) for message in history]
         return self._messages.copy()
     
     @property
@@ -1982,10 +2242,466 @@ class AI:
         """获取当前提供商名称"""
         return self._provider_name
 
+    # ========================================================================
+    # 四模式内核对外接口（t3 新增）
+    #
+    # 变更约定：t4/t6/t7 只允许**增加**实现，不得修改这里的签名与事件语义
+    # （见 docs/refactor/02-architecture.md 第 5 节「ai.py 的接缝」）。
+    # ========================================================================
+
+    @property
+    def harness(self) -> "HarnessLoop":
+        """agent 主循环（castorice.harness.HarnessLoop）"""
+        return self._harness
+
+    @property
+    def harness_loop(self) -> "HarnessLoop":
+        """harness 的别名（对外文档用的是 harness / harness_loop 两个叫法）"""
+        return self._harness
+
+    @property
+    def mode_registry(self) -> "ModeRegistry":
+        """模式注册表（工具可见性裁决与构造期校验都在这里）"""
+        return self._mode_registry
+
+    @property
+    def modes(self) -> "ModeRegistry":
+        """模式注册表的别名（供 bot.app.modes 这种读法）"""
+        return self._mode_registry
+
+    @property
+    def session(self) -> "SessionStore":
+        """当前模式的会话事件日志（按模式隔离）"""
+        return self._session
+
+    @property
+    def sessions(self) -> Dict[str, "SessionStore"]:
+        """已打开的会话（模式名 -> SessionStore），可检查各模式的恢复状态"""
+        return dict(self._sessions)
+
+    def session_for_mode(self, mode: str) -> "SessionStore":
+        """取得某模式的会话（不存在则为其打开一个，供 t7 的会话隔离检查）"""
+        name = resolve_mode_name(mode, self._mode_registry.names())
+        if name not in self._sessions:
+            self._build_session(name)
+        return self._sessions[name]
+
+    @property
+    def projection(self) -> "SessionProjection":
+        """当前模式的前端投影（UI 只读快照，不重放事件日志）"""
+        return self._session_projection
+
+    @property
+    def app(self):
+        """组合根视图。
+
+        t3 的内置组合根就是 AI 自身（一个类装齐 provider / 会话 / 模式 / 权限 /
+        harness）；t10 会把装配抽到 castorice/app.py 的 build_app()，
+        届时这里返回那个 App 对象，UI 侧读法（bot.app.mode / bot.app.session /
+        bot.app.projection）保持不变。
+        """
+        return self
+
+    @property
+    def mode(self) -> str:
+        """当前模式名（chat | work | code | learn）"""
+        return self._mode_name
+
+    @property
+    def mode_display_name(self) -> str:
+        """当前模式的中文名（界面用）"""
+        return self._mode_object().display_name
+
+    def available_modes(self) -> List[Dict[str, Any]]:
+        """所有模式的可展示元数据（t7 的模式切换条直接消费）"""
+        return [
+            {
+                'name': mode.name,
+                'display_name': mode.display_name,
+                'tool_allowlist': list(mode.tool_allowlist),
+                'visible_tools': self._mode_registry.visible_tool_names(mode),
+                'system_prompt_sections': list(mode.system_prompt_sections),
+                'workdir_policy': {
+                    'bindable': mode.workdir_policy.bindable,
+                    # 两个字段都走单点权威解析：default_sandbox 表示「实际
+                    # 生效值」（配置优先），builtin_sandbox 保留模式的出厂值，
+                    # 面板需要区分「配置覆盖了」与「用的是内置默认」时读它。
+                    'default_sandbox': self.resolve_sandbox(mode),
+                    'builtin_sandbox': mode.workdir_policy.default_sandbox,
+                    'command_allowlist': list(mode.workdir_policy.command_allowlist),
+                },
+                'workdir': self._mode_registry.workdir(mode),
+                'sandbox': self.resolve_sandbox(mode),
+                'bindable': mode.workdir_policy.bindable,
+                'supports_vision_input': mode.supports_vision_input,
+                'active': mode.name == self._mode_name,
+            }
+            for mode in self._mode_registry.all_modes()
+        ]
+
+    def set_mode(
+        self,
+        mode: str,
+        *,
+        persist: bool = True,
+        activate: bool = True,
+    ) -> None:
+        """切换模式。
+
+        * 未知模式名回退到 chat（失败安全：宁可少给工具，不可多给工具）；
+        * persist 为真时写回 config.yaml 的 mode 键（键不存在时
+          update_yaml_scalars 会静默跳过，不影响切换本身）；
+        * 切换会**激活该模式自己的会话**，因此四个模式的对话历史相互隔离；
+        * 模式切换以「追加一条带来源的消息」告知模型，**不改写系统提示词的
+          基础部分**（对齐 P19，保持 KV 前缀稳定）。
+
+        Args:
+            mode: 目标模式名
+            persist: 是否写回 config.yaml
+            activate: 是否激活目标模式的会话（False 只改名字，内部用）
+        """
+        name = resolve_mode_name(mode, self._mode_registry.names())
+        if name != mode:
+            self.logger.info(f"未知模式 {mode!r}，回退到 {name}")
+        changed = name != self._mode_name or name not in self._sessions
+        if persist and name != self._mode_name:
+            try:
+                self.config_manager.set_values({('mode',): name})
+            except Exception as e:
+                # 键不存在 / 配置只读都不应打断切换
+                self.logger.warning(f"模式未写入 config.yaml: {e}")
+        self._mode_name = name
+        if activate and changed:
+            self._activate_mode_session(name)
+            self.emoji_session.reset()
+            self.logger.info(f"已切换到模式: {name}")
+
+    def switch_session_mode(self, mode: str, *, persist: bool = True) -> None:
+        """显式切换模式的别名（语义与 set_mode 相同，便于界面侧读代码）"""
+        self.set_mode(mode, persist=persist, activate=True)
+
+    def bind_mode_workdir(self, mode: str, path: Optional[str] = None) -> str:
+        """为某个模式绑定根目录（Code=可信代码目录，Learn=Obsidian Vault）。
+
+        Args:
+            mode: 模式名
+            path: 根目录；留空表示解绑
+
+        Returns:
+            规范化后的根目录（解绑时为空串）
+
+        Raises:
+            WorkdirError: 模式不可绑定，或路径越界。异常对象的 to_dict()
+                给出结构化错误（code / message / path / root）。
+        """
+        name = resolve_mode_name(mode, self._mode_registry.names())
+        normalized = self._mode_registry.bind_workdir(name, path)
+        if name == self._mode_name:
+            self._refresh_mode_session_context()
+        self.logger.info(f"模式 {name} 的工作目录: {normalized or '（未绑定）'}")
+        return normalized
+
+    def workdir(self, mode: Optional[str] = None) -> Optional[str]:
+        """某模式当前绑定的工作目录（默认当前模式）"""
+        return self._mode_registry.workdir(self._mode_object(mode))
+
+    def tool_visible(self, name: str, mode: Optional[str] = None) -> bool:
+        """某个工具在当前（或指定）模式下是否对模型可见（t8 的检查入口）"""
+        return self._mode_registry.is_visible(self._mode_object(mode), name)
+
+    def visible_tools(self, mode: Optional[str] = None) -> List[str]:
+        """当前（或指定）模式下可见的工具名列表；Chat 恒为空列表"""
+        return self._mode_registry.visible_tool_names(self._mode_object(mode))
+
+    @property
+    def registered_tools(self) -> List["ToolSpec"]:
+        """内核已注册的工具描述符"""
+        return self._mode_registry.all_tools()
+
+    @property
+    def last_stop_reason(self) -> Optional["StopReason"]:
+        """上一轮的显式终止原因（对齐 P15；未跑过任何一轮时为 None）"""
+        return self._harness.stop_reason
+
+    @property
+    def last_outcome(self):
+        """上一轮的结果对象（stop_reason / steps / error / used_tools）"""
+        return self._harness.outcome()
+
+    # ---- 内部：会话与模式装配 ----
+
+    def _build_session(self, name: str) -> "SessionStore":
+        """为某个模式打开会话（优先复用初始会话，其次恢复磁盘上最近的一会话）"""
+        pending = getattr(self, "_pending_session", None)
+        if (pending is not None
+                and not getattr(pending, "closed", False)
+                and getattr(pending, "mode", None) == name):
+            # 复用 _init_harness 建好的初始会话：避免同一 session_id 被登记
+            # 两次写者（旧实现在这里泄漏登记并让重建实例直接失败）。
+            self._pending_session = None
+            self._sessions[name] = pending
+            return pending
+        session_id = None
+        try:
+            session_id = SessionStore.latest_session_id(self.sessions_dir, name)
+        except OSError:
+            session_id = None
+        store = SessionStore(
+            self.sessions_dir, name, session_id=session_id, cwd=self._workdir_for_session()
+        )
+        self._sessions[name] = store
+        return store
+
+    def _workdir_for_session(self) -> Optional[str]:
+        """会话不可变的工作目录（对齐 DSH 的 SessionHeader.cwd）"""
+        return os.getcwd()
+
+    def _activate_mode_session(self, name: str) -> None:
+        """把内核切换到某个模式的会话，并把历史恢复进 self._messages"""
+        store = self._sessions.get(name) or self._build_session(name)
+        self._session = store
+        self._session_projection = SessionProjection(store)
+        self._harness.session = store
+        self._harness.projection = self._session_projection
+        self._harness.set_mode(name)
+        self._session_projection.update(
+            sandbox_mode=self.resolve_sandbox(name),
+            notify=False,
+        )
+
+        # 权限网关 / 工具上下文跟随模式切换：沙箱与工作区都来自该模式
+        self._sync_permission_context(name)
+
+        restored = store.derive_messages()
+        if restored:
+            self._messages = restored
+            if not any(m.get('role') == 'system' for m in self._messages):
+                self._messages.insert(0, {
+                    'role': 'system',
+                    'content': self._build_system_prompt(),
+                })
+        else:
+            self._reset_messages()
+        self._harness.seed_history(self._messages)
+
+    def _sync_permission_context(self, name: Optional[str] = None) -> None:
+        """把权限网关与工具上下文切到某个模式的沙箱 / 工作区。
+
+        失败安全：任何异常都不改变「默认 read-only」这一结论，
+        因此最坏情况是工具被拒绝，而不是被放行。
+        """
+        mode_name = name or self._mode_name
+        mode = self._mode_registry.get(mode_name)
+        workdir = self._mode_registry.workdir(mode) or self._tool_context.workspace
+        sandbox = self.resolve_sandbox(mode_name)
+        gateway = getattr(self, '_permissions', None)
+        if gateway is not None:
+            try:
+                gateway.configure(mode=mode_name, workdir=workdir, sandbox=sandbox)
+            except Exception as e:
+                self.logger.warning(f"权限上下文更新失败，维持原沙箱设置: {e}")
+        # 工具执行出口的模式必须一起跟随：ToolRuntime.call 用 self.mode 构造
+        # 二次复查请求，漏掉这一步会让 Work/Code/Learn 的工具全部被按 chat
+        # 的可见性规则拒掉（"工具 read_file 在模式 chat 下不可见"）。
+        kernel_tools = getattr(self, '_kernel_tools', None)
+        if kernel_tools is not None:
+            try:
+                kernel_tools.set_mode(mode_name)
+            except Exception as e:
+                self.logger.warning(f"工具出口模式更新失败，维持原模式: {e}")
+        # 前端投影也必须同步：它是 UI 判断「当前沙箱」的唯一来源，
+        # 漏掉这一步会让配置改完之后面板仍显示旧值（网关按新配置跑、
+        # 面板显示旧值的更糟不一致）。
+        projection = getattr(self, '_session_projection', None)
+        if projection is not None:
+            try:
+                projection.update(sandbox_mode=sandbox, notify=False)
+            except Exception as e:
+                self.logger.warning(f"会话投影更新失败，维持原沙箱展示: {e}")
+        context = getattr(self, '_tool_context', None)
+        if context is not None:
+            context.workspace = str(workdir or "")
+            context.mode = mode_name
+            context.sandbox = sandbox
+            context.roots = tuple(self._workdir_sources().get('roots') or ())
+            context.session_id = getattr(self._harness.session, 'session_id', '')
+            context.gateway = gateway
+            context.policy = (
+                gateway.path_policy if gateway is not None
+                else cpermissions.PathPolicy(
+                    roots=context.roots,
+                    workspace=context.workspace or None,
+                    sandbox=sandbox,
+                )
+            )
+
+    # ---- 权限网关的对外接口（t7 的审批窗口消费） ----
+
+    @property
+    def tools_mode(self) -> str:
+        """内核工具执行出口当前使用的模式（只读，供界面检查与测试断言）。
+
+        正常情况下它与 AI.mode、harness.mode_name、permissions.mode 一致；
+        四者不一致就意味着工具会在执行出口被按错误模式拒掉。
+        """
+        kernel_tools = getattr(self, '_kernel_tools', None)
+        if kernel_tools is None:
+            return self._mode_name
+        return str(getattr(kernel_tools, 'mode', self._mode_name))
+
+    @property
+    def permissions(self) -> "cpermissions.PermissionGateway":
+        """统一权限审批网关（判定 allow | ask | deny | unavailable）。"""
+        return self._permissions
+
+    def permission_check(
+        self,
+        tool: str,
+        arguments: Optional[Dict[str, Any]] = None,
+        *,
+        mode: Optional[str] = None,
+    ) -> str:
+        """单次判定某个工具在当前（或指定）模式下的结论词（供界面预检）。"""
+        return self._permissions.check(tool, arguments, mode=mode or self._mode_name)
+
+    def permission_decision(
+        self,
+        tool: str,
+        arguments: Optional[Dict[str, Any]] = None,
+        *,
+        mode: Optional[str] = None,
+    ) -> "PermissionDecision":
+        """单次判定的完整结果（含 reason 与结构化 info.code）。"""
+        return self._permissions.decide(tool, arguments, mode=mode or self._mode_name)
+
+    def set_approval_responder(self, callback: Optional[Callable[..., Any]]) -> None:
+        """注入审批应答者。
+
+        callback(request, request_id) 可以同步返回 allow/deny，也可以先调用
+        broker.defer(request_id) 把请求投递到主线程、再返回 None
+        （worker 侧阻塞等待，超时即按拒绝关闭）。
+        """
+        self._permissions.set_ask_callback(callback)
+
+    @property
+    def approval_broker(self) -> "cpermissions.ApprovalBroker":
+        return self._permissions.broker
+
+    def permission_audit(self) -> List[Dict[str, Any]]:
+        """审批审计事件（只读，UI 可展示；不进模型可见文本）。"""
+        return [entry.to_dict() for entry in self._permissions.audit_log()]
+
+    # ---- 厂商能力（目标 7） ----
+
+    @property
+    def capabilities(self) -> Optional["cproviders.ModelCapabilities"]:
+        """当前提供商的模型能力（未知厂商回落 custom 默认值）。"""
+        return getattr(self, '_capabilities', None)
+
+    @property
+    def tool_protocol(self) -> str:
+        """当前生效的工具协议级别：native | json | text。"""
+        return getattr(self, '_tool_protocol', cproviders.TOOL_PROTOCOL_NATIVE)
+
+    def provider_capabilities(
+        self, provider_name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """某个提供商的能力摘要（供设置界面展示与诊断）。"""
+        name = provider_name or self._provider_name
+        try:
+            config = self.config_manager.get_provider_config(name)
+        except ValueError:
+            config = {}
+        caps = cproviders.resolve_capabilities(name, config)
+        payload = caps.to_dict()
+        payload.update({
+            'provider': name,
+            'protocol': caps.protocol(tools_requested=True),
+            'vendor': cproviders.vendor_key(name),
+        })
+        return payload
+
+    def _refresh_mode_session_context(self) -> None:
+        """工作目录变化后，刷新内核记录的工作目录并重新告知模型（P19）"""
+        store = self._harness.session
+        header = store.header
+        self._harness.announced_reset()
+        store.header = type(header)(
+            session_id=header.session_id,
+            mode=header.mode,
+            cwd=self._mode_registry.workdir(self._mode_object()) or self._workdir_for_session(),
+            created_at=header.created_at,
+            format_version=header.format_version,
+        )
+        # 权限网关与工具上下文同步到新的工作目录（越界绑定已在 bind_mode_workdir 拒绝）
+        self._sync_permission_context()
+
 
 # ============================================================================
 # 工厂函数
 # ============================================================================
+
+class _KernelTools:
+    """把 ai.ToolRegistry 适配成内核需要的「schema + 执行入口」对象。
+
+    内核只认识两件事：all_tools() -> [ToolSpec]（决定并行安全与结果上限）
+    与 call(name, arguments) -> str（真正执行）。这里做一次适配，让 castorice/
+    不需要认识 ai.Tool（红线 D：内核不得 import ai）。
+    """
+
+    def __init__(self, registry: "ToolRegistry", specs: Sequence["ToolSpec"],
+                 gateway: Optional["cpermissions.PermissionGateway"] = None,
+                 mode: str = "chat") -> None:
+        self._registry = registry
+        self._specs = list(specs)
+        # 真正执行走 castorice.tools.ToolRuntime：它在调用 handler 之前再走
+        # 一次**策略维度**的权限复查（deny/unavailable 一律拦下，ask 交给
+        # harness 的完整判定），因此任何执行路径都无法跳过网关。
+        #: harness 轮次内标记：harness 在派发前已经做过完整判定（含审批），
+        #: 标记为真时出口不再重复走一遍完整判定（否则同一次调用会弹两次审批，
+        #: 破坏 allowed-once 语义）；标记为假（直接调用）时出口自己走完整判定。
+        self._turn_lock = threading.Lock()
+        self._turn_depth = 0
+        self._runtime = ctools.ToolRuntime(
+            registry._registry, gateway, mode=mode, enforce=gateway is not None,
+            already_authorized=self._in_harness_turn)
+
+    def all_tools(self) -> List["ToolSpec"]:
+        return list(self._specs)
+
+    @property
+    def mode(self) -> str:
+        """执行出口当前按哪个模式复查权限（转发 ToolRuntime.mode）。
+
+        这是「工具执行出口的模式」唯一可信来源：它必须与 AI.mode、
+        harness.mode_name、gateway.mode 保持一致，否则内核工具会在执行出口
+        被按错误模式的可见性规则拒掉。
+        """
+        return self._runtime.mode
+
+    def set_mode(self, mode: str) -> None:
+        self._runtime.set_mode(mode)
+
+    # ---- harness 轮次标记 ----
+
+    @contextlib.contextmanager
+    def turn(self):
+        """标记「当前处于 harness 轮次内」：期间的工具调用已由内核判定过。"""
+        with self._turn_lock:
+            self._turn_depth += 1
+        try:
+            yield
+        finally:
+            with self._turn_lock:
+                self._turn_depth = max(0, self._turn_depth - 1)
+
+    def _in_harness_turn(self) -> bool:
+        with self._turn_lock:
+            return self._turn_depth > 0
+
+    def call(self, name: str, arguments: Dict[str, Any]) -> str:
+        return self._runtime.call(name, dict(arguments or {}))
+
 
 class AIFactory:
     """
