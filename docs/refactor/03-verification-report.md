@@ -607,3 +607,77 @@ tests/test_memory_modes.py 单跑 **127 passed**（t14 的 117 例零回归 + t1
 - 测试：全量 738 passed / 1 skipped；护栏 38 passed；
 - 文档：docs/refactor/01-gap-matrix.md（t3 验收原文）、03-verification-report.md（t12/t18 各轮结论）。
 
+
+
+# 第二期集成验证报告（t7 · verification round 4，承接 p2t1/p2t2/p2t3/p2t4）
+
+验证人：reviewer2（独立复验，未参与第二期实现）。判据全部为分离条件下取得，未使用 git diff / None 期望哈希等无效判据。
+
+## 1. verify 命令与退出码
+
+| command | exitCode | 输出摘要 |
+| --- | --- | --- |
+| python -m pytest tests/ -q | 0 | 818 passed, 1 skipped, 1 warning, 212.57s（基线 738+1 未跌破；含第二期新增：R19-1 回归 2、触发词注入 24、NapCat 渠道 25、调度器 29） |
+| python -c "import main; print('main ok')" | 0 | main ok |
+| python -c "import castorice.channels.napcat; print('channel ok')" | 0 | channel ok |
+
+## 2. 起始状态与【运行前清理】
+
+- 跑全量前核对仓库根：无 memory/ 目录、无 sessions/ 目录（fs.existsSync 双查均为 false），相对路径落 CWD 的老问题本轮未复现；
+- git status：第二期改动为 M ai.py / M tests/test_modes.py / 新增 castorice/channels/napcat.py、castorice/scheduler.py、castorice/notify.py、tests 三个新文件、docs/refactor/06-scheduler.md；护栏 10 文件无一在改动列表内。
+
+## 3. 护栏基线比对（sha256 逐一核对，10/10 一致）
+
+tests/conftest.py、tests/README.md、tests/test_backward_compat.py、tests/test_offline_guarantees.py、tests/test_yaml_update.py、tests/test_config_manager.py、tests/test_emoji.py、tests/test_html_to_text.py、pytest.ini、conftest.py —— 全部与本任务书给出的 10 个权威哈希逐字节一致。
+
+harness.py 签名级核对：git diff castorice/harness.py 为空，且工作区文件内容与 HEAD 逐字节相等（git show HEAD:castorice/harness.py 比对为同一串）——签名级比对为空，两条硬约束（不改核心签名）成立。
+
+## 4. R19-1 闭环 —— 已闭环
+
+分离条件实测（真实 ai.AI 装配，fake provider，全部目录隔离在临时 root）：
+
+- chat：tool_visible("get_current_time")=False，system prompt 不含 "get_current_time"、不含 "web_search"、不含第 3 条（"也可以调用"），基础时间说明（"时间信息"）仍在；
+- work / code / learn：tool_visible("get_current_time")=True，第 3 条完整拼入（"需要更精确的时间时也可以调用 get_current_time 工具"），基础时间说明仍在；
+- 分离不变式：第 3 条拼接 ⟺ get_current_time 可见，四模式全部成立；TIME_INSTRUCTIONS 行为对 work/code/learn 无回归。
+- 回归测试：tests/test_modes.py 的 test_ai_chat_system_prompt_has_no_time_tool_instruction / test_ai_tool_mode_system_prompt_keeps_time_tool_instruction 复跑 2 passed。
+
+## 5. 触发词注入闭环 —— 已闭环（含独立量化）
+
+- 确定性：selection_report("白厄") == selection_report("白厄")（同输入同结果）；24 条 tests/test_prompt_triggers.py 全部复跑通过；
+- 未命中最小核心集：miss（"帮我看看这段代码怎么写"）selected=24545 字节，非空且只含常驻部分；
+- 量化节省：全量 76230 字节（>70KB 口径成立）；命中（"白厄和万敌在翁法罗斯的往事"）selected=31638 字节（saved_ratio≈0.585）；未命中 selected=24545 字节（saved_ratio≈0.678）；均显著小于 76KB；
+- 缺省兼容：无 prompts 节时 get_prompt() 与全量拼接逐字节相等（legacy == pm.prompt 实测 True，76230 字节）；旧位置签名可用；enabled:False 与完全缺 config 的行为一致（test_disabled_by_default_matches_full 等）。
+
+## 6. QQ 渠道闭环 —— 已闭环
+
+- 全链路（tests/test_channels_napcat.py::test_message_dispatch_end_to_end 复跑通过）：FakeOneBotServer（真 websocket 服务，127.0.0.1 回环绑定，Bearer 鉴权校验 + 错 token close(4001)）→ channel.start() 鉴权通过 → 服务端 push 私聊消息 → bot 收到 "ping" → 自动回复 send_private_msg 落到 server.actions，文本逐字核对；
+- 恒 2 元组事件流：test_on_message_event_stream_shape；长文本分段 test_long_text_chunked；异常翻译 ('done', 文本) test_on_message_translates_exception_to_done；
+- 断线重连：test_reconnect_after_server_drop（服务端主动 drop，指数退避后重连成功）；消息幂等去重：test_duplicate_message_id_dropped + test_dedup_on_on_message_directly；fail-fast：test_start_fail_fast_on_refused_connection / test_start_rejects_bad_token（get_login_info 真在线验证）；
+- 本轮独立复跑 8 条关键用例全过；25 条全量在 pytest 总报告内全过。
+
+## 7. 主动聊天闭环 —— 两条 DSH 硬约定逐条验证通过
+
+- 约定①只补发最近一次错过的时点：test_three_missed_daily_points_deliver_once（daily 错过 6/1、6/2、6/3 三个 8:00，run_due 只发 1 条且 due==6/3 8:00 即最近时点）+ test_every_seconds_missed_burst_delivers_once（600s 周期错过 3 个周期只发最近 1 时点）+ test_last_sent_at_prevents_redelivery + test_failed_delivery_retries_same_point + test_persisted_last_sent_survives_restart；
+- 约定②投递在 flush 之后提交：test_flush_failure_means_no_delivery（fail_flush 替身下 desktop.calls==[] 且 qq.sent==[]，双目标零投递，fail-closed）+ test_delivery_happens_after_flush（order 列表事件序：flush:proactive-delivery 先于 deliver:desktop 与 deliver:qq）；
+- proactive 可区分：test_run_stream_source_schedule_records_proactive（真实 HarnessLoop，provider=None，source="proactive" 合成触发语落盘，冷读恢复 SessionStore 后 payload.source=='proactive' 可找回，真实用户消息不带该标记）+ test_proactive_distinguishable_in_derive；
+- 双投递证据：test_desktop_target_delivered_via_notifier（title/body/target_id 逐字断言）+ test_qq_target_delivered_with_normalized_outbound（OutboundMessage.chat_id=="12345678" 归一化）+ test_both_targets_delivered_count（deliveries==2）；
+- 渠道离线降级两策略均有用例：test_desktop_strategy_falls_back / test_skip_strategy_logs_and_skips / test_qq_send_failure_triggers_fallback_too；
+- 本轮独立复跑 11 条核心用例全过；29 条全量在 pytest 总报告内全过。
+- 瑕疵记录（不影响结论）：test_scheduler_proactive.py:302 出现恒真断言 assert order[0] == order[0]，属冗余判据；有效判据在同文件 303-304 行（flush 索引 < 两条投递索引），建议实现方顺手清理。
+
+## 8. 四模式回归 —— 通过
+
+- 可见集合数值断言（用 ai.create_builtin_tools() 的 19 工具全集构建 registry）：learn=8 / work=19 / code=16 / chat=0，与冻结基线一致；tests/test_modes.py 的 test_chat_has_no_visible_tools_at_all / test_other_modes_do_have_visible_tools 复跑通过；
+- 审批三条路径：allow（reason 为空、无正文）/ deny（人类可读文本含"拒绝写入""工作区"）/ ask-无应答者（"应答者"文本 + CODE_APPROVAL_NO_RESPONDER）——三条路径文本互异（空 / 拒绝写入… / 应答者…）；test_permissions.py 相关 6 条复跑通过；
+- 不落盘：PermissionBridge 源码无 open(/write_text/.write(/json.dump/sqlite 调用（inspect.getsource 静态核查）；审计只写日志且不进模型可见文本（test_audit_never_leaks_into_model_visible_text 通过）。
+
+## 9. 判据写法自查
+
+- 归因类断言（R19-1）：分离条件 = chat 与 work 分别构造、各自断言工具可见性与 prompt 字样，非单边推断；
+- 跨实例不按 id 直比：proactive 可区分用冷读恢复内容比对，不比对 SessionStore 实例 id；
+- 未使用 git diff 作为测试判据（harness.py 一致性核对属交付物完整性核对，另有逐字节内容比对佐证）；
+- 无 None 期望哈希：护栏 10 文件全部给出权威值并逐一比对。
+
+## 10. 结论
+
+第二期四条实现线（R19-1、触发词注入、QQ 渠道、主动聊天）独立验证全部通过；第一期基线（护栏 10 文件 sha256、818>738 全绿）无回归。一处低优先级瑕疵（调度器测试中的恒真断言）已记录，不阻塞。

@@ -978,6 +978,27 @@ def test_ai_chat_system_prompt_has_no_tool_section(bot_factory):
     assert "工具使用说明" not in system_prompt
 
 
+def test_ai_chat_system_prompt_has_no_time_tool_instruction(bot_factory):
+    """R19-1 回归：Chat 模式无可见工具，system prompt 不得出现工具名字样。
+
+    TIME_INSTRUCTIONS 的第 3 条「也可以调用 get_current_time 工具」只能拼进
+    真的可见 get_current_time 的模式；Chat 的 prompt 保留基础两条时间说明。
+    """
+    bot, _root = bot_factory()
+    system_prompt = bot.get_history()[0]["content"]
+    assert "get_current_time" not in system_prompt
+    assert "web_search" not in system_prompt
+    assert "时间信息" in system_prompt  # 基础时间说明仍然注入
+    assert "也可以调用" not in system_prompt  # 第 3 条未拼接
+
+
+def test_ai_tool_mode_system_prompt_keeps_time_tool_instruction(bot_factory):
+    """可见 get_current_time 的模式（work）拼入第 3 条工具指引。"""
+    bot, _root = bot_factory(mode="work")
+    system_prompt = bot.get_history()[0]["content"]
+    assert "需要更精确的时间时也可以调用 get_current_time 工具" in system_prompt
+
+
 def test_ai_set_mode_switches_and_persists_to_config(bot_factory):
     bot, root = bot_factory()
     bot.set_mode("work")

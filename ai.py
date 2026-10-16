@@ -295,11 +295,154 @@ class ConfigManager:
 # 提示词管理
 # ============================================================================
 
+class PromptModule:
+    """一个基础提示词文件（prompts/*.md）解析后的形态。
+
+    条目级触发词标注（worldbook 风格）：
+
+        ## 条目标题
+        - 触发词: 词1, 词2, 词3
+        - 常驻: 否
+        - 内在价值: 80
+        - 优先级: 150
+        - 连带触发词: 另一条目
+        （正文……）
+
+    解析规则（与 README「触发词注入」一节一致）：
+    - 以 "## " 开头的行开启一个条目，直到下一个 "## " 或文件结束；
+    - 条目头部各行识别 触发词 / 常驻 / 优先级 字段（内在价值与
+      连带触发词仅记录，不参与注入决策）；
+    - 没有任何条目级触发词标注的文件整体视为常驻模块（缺省安全：
+      identity / soul / tone 这类纯常驻文件无需任何标注）；
+    - 触发词大小写不敏感（英文），按子串匹配用户消息。
+    """
+
+    #: 条目头部里会被解析的字段行
+    _TRIGGER_RE = re.compile(r"^\s*-\s*触发词\s*[:：]\s*(.*)$")
+    _RESIDENT_RE = re.compile(r"^\s*-\s*常驻\s*[:：]\s*(.*)$")
+    _PRIORITY_RE = re.compile(r"^\s*-\s*优先级\s*[:：]\s*(\d+)\s*$")
+    _HEADING_RE = re.compile(r"^##\s+")
+
+    def __init__(self, name: str, content: str):
+        self.name = name
+        self.content = content
+        self.header = content
+        self.entries: List[Dict[str, Any]] = []
+        self._parse_entries()
+
+    # -- 解析 -----------------------------------------------------------------
+
+    def _parse_entries(self) -> None:
+        """把文件切成「文件头 + 条目列表」；无条目标注时保持整段常驻。"""
+        lines = self.content.split("\n")
+        heading_indexes = [
+            i for i, line in enumerate(lines) if self._HEADING_RE.match(line)
+        ]
+        if not heading_indexes:
+            return  # 整个文件是常驻模块
+        self.header = "\n".join(lines[:heading_indexes[0]]).strip()
+
+        bounds = heading_indexes + [len(lines)]
+        for start, stop in zip(bounds, bounds[1:]):
+            block = lines[start:stop]
+            title = block[0].lstrip("# ").strip()
+            triggers: List[str] = []
+            resident: Optional[bool] = None
+            priority = 0
+            body_start = 1
+            for offset in range(1, len(block)):
+                line = block[offset]
+                hit = self._TRIGGER_RE.match(line)
+                if hit:
+                    triggers = [
+                        word.strip()
+                        for word in re.split(r"[,，、]", hit.group(1))
+                        if word.strip()
+                    ]
+                    body_start = offset + 1
+                    continue
+                hit = self._RESIDENT_RE.match(line)
+                if hit:
+                    resident = hit.group(1).strip().lower() in (
+                        "是", "true", "yes", "1")
+                    body_start = offset + 1
+                    continue
+                hit = self._PRIORITY_RE.match(line)
+                if hit:
+                    priority = int(hit.group(1))
+                    body_start = offset + 1
+                    continue
+                if line.strip() and not line.lstrip().startswith("-"):
+                    break  # 头部结束，进入正文
+            body = "\n".join(block[body_start:]).strip()
+            # 「常驻: 是」的条目随模块常驻注入，不参与触发词筛选
+            content = "## " + title
+            if body:
+                content = content + "\n" + body
+            self.entries.append({
+                "title": title,
+                "triggers": tuple(triggers),
+                "resident": resident is True,
+                "priority": priority,
+                "content": content,
+            })
+
+        # 文件里出现过「触发词」标注才算条目化模块；否则全部还原为常驻
+        # （防止只写了标题结构、忘了写触发词的文件被整体漏掉）
+        if self.entries and not any(e["triggers"] for e in self.entries):
+            self.entries = []
+            self.header = self.content
+
+    # -- 查询 -----------------------------------------------------------------
+
+    @property
+    def is_entry_based(self) -> bool:
+        """是否为条目化模块（有触发词标注、可按条目筛选）。"""
+        return bool(self.entries)
+
+    def resident_content(self) -> str:
+        """常驻部分：文件头 + 标记为「常驻: 是」的条目。"""
+        parts = [self.header] if self.header else []
+        parts.extend(
+            entry["content"] for entry in self.entries if entry["resident"]
+        )
+        return "\n\n".join(part for part in parts if part)
+
+    def matched_entries(self, message: str) -> List[Dict[str, Any]]:
+        """按用户消息命中条目；返回按优先级降序的条目快照（确定性）。
+
+        排序键写进快照（priority / _hits / _order），供跨文件统一排序：
+        优先级降序 -> 命中触发词数降序 -> 文件内出现顺序（稳定排序）。
+        """
+        haystack = (message or "").lower()
+        if not haystack:
+            return []
+        matched: List[Dict[str, Any]] = []
+        for index, entry in enumerate(self.entries):
+            if entry["resident"] or not entry["triggers"]:
+                continue
+            count = sum(
+                1 for word in entry["triggers"] if word.lower() in haystack
+            )
+            if count:
+                snapshot = dict(entry)
+                snapshot["_hits"] = count
+                snapshot["_order"] = index
+                matched.append(snapshot)
+        matched.sort(key=lambda e: (-e["priority"], -e["_hits"], e["_order"]))
+        return matched
+
+
 class PromptManager:
     """
     提示词管理器
     
     负责加载和管理AI提示词模板。
+
+    触发词注入（第二期）：基础提示词文件可按条目携带触发词标注，
+    get_prompt(user_message=...) 只注入常驻部分与命中条目；
+    不传 user_message（或 config 的 prompts.enabled 未开启）时保持
+    全量拼接的旧行为，旧配置零改动即可运行。
     """
     
     DEFAULT_PROMPTS_DIR = "prompts"
@@ -309,12 +452,30 @@ class PromptManager:
 
     #: 兼容别名（02-architecture.md §2.1 用的是 prompt_sections）
     MODES_ALIAS = ("talk", "chat")
+
+    #: config.yaml prompts 节的缺省值：关闭动态筛选 = 现全量拼接
+    DEFAULT_DYNAMIC_CONFIG: Dict[str, Any] = {
+        "enabled": False,
+        "resident_modules": [],   # 空 = 按文件自身标注自动判定
+        "max_entries": 0,         # 0 = 不限制单轮注入的命中条目数
+    }
     
-    def __init__(self, prompts_dir: str = DEFAULT_PROMPTS_DIR):
+    def __init__(
+        self,
+        prompts_dir: str = DEFAULT_PROMPTS_DIR,
+        config: Optional[Dict[str, Any]] = None,
+    ):
 
         self.prompts_dir = Path(prompts_dir)
         self._prompt: Optional[str] = None
         self._sections: Dict[str, str] = {}
+        self._modules: List[PromptModule] = []
+        self._dynamic: Dict[str, Any] = dict(self.DEFAULT_DYNAMIC_CONFIG)
+        if isinstance(config, dict):
+            self._dynamic.update({
+                key: value for key, value in config.items()
+                if key in self.DEFAULT_DYNAMIC_CONFIG
+            })
         self._load_prompts()
 
     def _sections_dir(self) -> Path:
@@ -327,6 +488,7 @@ class PromptManager:
             return
         
         prompt_parts = []
+        modules: List[PromptModule] = []
         
         for filepath in sorted(self.prompts_dir.iterdir()):
             if filepath.suffix.lower() in ['.md', '.txt']:
@@ -335,10 +497,13 @@ class PromptManager:
                         content = f.read().strip()
                         if content:
                             prompt_parts.append(content)
+                            modules.append(
+                                PromptModule(filepath.name, content))
                 except Exception as e:
                     print(f"警告: 无法读取提示词文件 {filepath}: {e}")
         
         self._prompt = "\n\n".join(prompt_parts)
+        self._modules = modules
         self._load_sections()
 
     def _load_sections(self) -> None:
@@ -376,14 +541,18 @@ class PromptManager:
         self,
         memory_context: Optional[str] = None,
         mode: Optional["Mode"] = None,
+        user_message: Optional[str] = None,
     ) -> str:
         """组装系统提示词：基础提示词 + 该模式的提示词分层 (+ 记忆上下文)
 
         Args:
             memory_context: 追加到末尾的记忆上下文
             mode: 模式对象；其 system_prompt_sections 决定追加哪些分层
+            user_message: 本轮用户消息。为 None（或动态筛选未开启）时使用
+                全量拼接的旧行为；非 None 且 prompts.enabled=True 时只注入
+                常驻部分与命中条目（触发词注入，第二期 t2）。
         """
-        prompt = self._prompt or ""
+        prompt = self._select_base_prompt(user_message)
 
         if mode is not None:
             prompt += self.compose_sections(
@@ -394,6 +563,90 @@ class PromptManager:
             prompt += f"\n\n【联想到的相关记忆】：\n{memory_context}"
         
         return prompt
+
+    # -- 触发词注入（第二期 t2） ------------------------------------------------
+
+    @property
+    def dynamic_enabled(self) -> bool:
+        """触发词筛选是否开启（config.yaml 的 prompts.enabled）。"""
+        return bool(self._dynamic.get("enabled"))
+
+    def _resident_names(self) -> List[str]:
+        """常驻模块名单：配置覆盖优先，否则按文件标注自动判定。"""
+        configured = self._dynamic.get("resident_modules") or []
+        if configured:
+            wanted = {str(name).strip().lower() for name in configured}
+            return [
+                module.name for module in self._modules
+                if module.name.lower() in wanted
+            ]
+        return [module.name for module in self._modules if not module.is_entry_based]
+
+    def _select_base_prompt(self, user_message: Optional[str]) -> str:
+        """按 user_message 决定基础提示词的形态。
+
+        - 未开启筛选或 user_message 为 None：全量拼接（旧行为，逐字节一致）；
+        - 开启筛选：常驻模块 + 命中条目，按 (优先级, 命中数, 文件顺序) 排序；
+          命中条目数超过 max_entries（>0 时）按该序截断。
+          常驻集恒非空兜底：若配置把常驻名单写空且没有可判定模块，
+          退回完整第一模块，保证不出现空提示词。
+        """
+        if not self.dynamic_enabled or user_message is None:
+            return self._prompt or ""
+        resident_names = set(self._resident_names())
+        # resident_modules 显式点名时是「完全替换」：名单外的非条目化模块
+        # 不再自动视为常驻（用户明确选了核心集）；条目化模块仍按条目筛选。
+        explicit_resident = bool(self._dynamic.get("resident_modules"))
+        parts: List[str] = []
+        matched: List[Dict[str, Any]] = []
+        for module in self._modules:
+            if module.name in resident_names:
+                content = module.content
+            elif explicit_resident and not module.is_entry_based:
+                content = ""  # 名单外的纯常驻文件被显式排除
+            else:
+                content = module.resident_content()
+                matched.extend(module.matched_entries(user_message))
+            if content:
+                parts.append(content)
+        if matched:
+            # 跨文件统一排序：优先级降序 -> 命中数降序 -> (文件序, 条目序)
+            # （各文件的 matched_entries 已带 priority/_hits/_order 排序键）
+            limit = self._dynamic.get("max_entries") or 0
+            if limit and limit > 0:
+                matched = matched[:int(limit)]
+            parts.extend(entry["content"] for entry in matched)
+        if not parts and self._modules:
+            parts.append(self._modules[0].content)  # 兜底：绝不返回空提示词
+        self.last_selection = {
+            "resident": sorted(resident_names),
+            "matched": [entry["title"] for entry in matched],
+            "selected_bytes": sum(len(part.encode("utf-8")) for part in parts),
+            "full_bytes": len((self._prompt or "").encode("utf-8")),
+        }
+        return "\n\n".join(parts)
+
+    def selection_report(self, message: str) -> Dict[str, Any]:
+        """量化一次消息的筛选效果（不改变任何状态，纯查询）。
+
+        返回 dict：resident / matched / selected_bytes / full_bytes / saved_bytes
+        与 saved_ratio（0~1，越大说明本轮省得越多）。确定性：同消息同结果。
+        """
+        prompt = self._select_base_prompt(message)
+        stats = dict(getattr(self, "last_selection", {}))
+        full = int(stats.get("full_bytes") or 0)
+        selected = int(stats.get("selected_bytes")
+                       or len(prompt.encode("utf-8")))
+        report = {
+            "resident": stats.get("resident", []),
+            "matched": stats.get("matched", []),
+            "selected_bytes": selected,
+            "full_bytes": full,
+            "saved_bytes": max(full - selected, 0),
+        }
+        report["saved_ratio"] = (
+            round(report["saved_bytes"] / full, 4) if full else 0.0)
+        return report
 
     def compose_sections(self, names: Sequence[str]) -> str:
         """把若干分层名拼成一段文本；空名与缺失名一律跳过"""
@@ -1263,8 +1516,10 @@ class AI:
         # 初始化配置管理器
         self.config_manager = ConfigManager(config_path)
         
-        # 初始化提示词管理器
-        self.prompt_manager = PromptManager(prompts_dir)
+        # 初始化提示词管理器（触发词注入配置走 config.yaml 的 prompts 节，
+        # 缺省关闭 = 全量拼接旧行为，旧配置零改动可跑）
+        self.prompt_manager = PromptManager(
+            prompts_dir, config=self.config_manager.get('prompts') or {})
         
         # 初始化记忆管理器
         self.memory_manager = MemoryManager(chroma_dir, collection_name)
@@ -1628,14 +1883,19 @@ class AI:
         "3. 不要编造工具返回的内容，如实转述结果。"
     )
 
-    # 注入系统提示词的时间说明
+    # 注入系统提示词的时间说明（基础两条，所有模式共用）
     TIME_INSTRUCTIONS = (
         "\n\n【时间信息】\n"
         "1. 每条用户消息开头的【当前时间】就是这条消息发出时的真实本地日期与时间，"
         "回答「现在几点 / 今天几号 / 今天星期几」这类问题时以它为准，不要凭空猜测或说过时的时间；\n"
         "2. 【相关记忆】里每条记忆都以 [日期 时间] 开头，表示那件事发生的时刻，"
-        "可以据此判断事情的先后顺序与相隔多久；\n"
-        "3. 需要更精确的时间时也可以调用 get_current_time 工具。"
+        "可以据此判断事情的先后顺序与相隔多久。"
+    )
+
+    # 时间说明的补充条目：仅当该模式可见 get_current_time 时才拼接
+    # （R19-1：Chat 模式无任何可见工具，system prompt 不得出现工具名字样）
+    TIME_TOOL_INSTRUCTION = (
+        "\n3. 需要更精确的时间时也可以调用 get_current_time 工具。"
     )
 
     # 表情包说明模板（{catalog} 处填入可用贴纸列表）
@@ -1710,22 +1970,32 @@ class AI:
         self,
         memory_context: Optional[str] = None,
         mode: Optional[str] = None,
+        user_message: Optional[str] = None,
     ) -> str:
         """构建系统提示词：基础提示词 + 模式分层 + 工具说明 + 表情包规则
 
         记忆已改放到 user 消息中（见 get_response_stream），系统提示词保持稳定
         以节省 token。模式分层由 Mode.system_prompt_sections 决定；
         Chat 模式下没有可见工具，因此**不注入工具使用说明**。
+        user_message 非空且触发词筛选开启时，基础提示词只注入常驻部分
+        与命中条目（prompts.enabled，第二期 t2）；缺省保持全量拼接。
         """
         resolved_mode = self._mode_object(mode)
-        prompt = self.prompt_manager.get_prompt(mode=resolved_mode)
+        prompt = self.prompt_manager.get_prompt(
+            mode=resolved_mode, user_message=user_message)
         if self.emoji_catalog:
             prompt += self._build_emoji_instructions()
+        time_instructions = self.TIME_INSTRUCTIONS
+        if "get_current_time" in self._mode_registry.visible_tool_names(
+                resolved_mode):
+            # 只有该模式真的可见 get_current_time，才注入第 3 条工具指引
+            # （R19-1：Chat 的 system prompt 不得含 get_current_time 字样）
+            time_instructions += self.TIME_TOOL_INSTRUCTION
         return (
             prompt
             + self._build_tool_instructions(resolved_mode)
             + self._build_tool_protocol_instructions(resolved_mode)
-            + self.TIME_INSTRUCTIONS
+            + time_instructions
         )
 
     def _visible_tool_specs(self, mode: Optional["Mode"] = None) -> List[Dict[str, Any]]:
@@ -2022,7 +2292,25 @@ class AI:
             # user 消息由 ai.py 组装（保留【当前时间】/【相关记忆】前缀的原有位置），
             # 内核负责记录事件、检查点、工具可见性裁决与逐轮状态。
             kernel_user_message = self._build_user_message(user_message, images)
-            self._harness.set_system_prompt(self._build_system_prompt(mode=self._mode_name))
+            system_prompt = self._build_system_prompt(
+                mode=self._mode_name, user_message=user_input)
+            self._harness.set_system_prompt(system_prompt)
+            # 本轮 system 头必须真正生效：seed_history 带来的旧 system 会压住
+            # 内核的 _prepare_history 插入逻辑，因此在种子前先替换/补插 system 头
+            # （与 _reset_messages 的语义一致；触发词注入依赖每轮按消息刷新）。
+            if self._messages and self._messages[0].get('role') == 'system':
+                self._messages[0]['content'] = system_prompt
+            else:
+                self._messages.insert(
+                    0, {'role': 'system', 'content': system_prompt})
+            if self.prompt_manager.dynamic_enabled and user_input:
+                stats = getattr(self.prompt_manager, "last_selection", None)
+                if stats:
+                    self.logger.info(
+                        f"触发词注入: 常驻={len(stats['resident'])}个模块 "
+                        f"命中条目={len(stats['matched'])} "
+                        f"本轮提示词 {stats['selected_bytes']}B / "
+                        f"全量 {stats['full_bytes']}B")
             self._harness.seed_history(self._messages)
             full_reply = ""
 
