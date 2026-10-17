@@ -12,7 +12,7 @@
     "dev": "vite",
     "dev:electron": "vite build --config vite.config.ts && cross-env VITE_DEV=1 electron .",
     "build:renderer": "vite build",
-    "build": "tsc -p tsconfig.json --noEmit && vite build && tsc -p tsconfig.main.json && tsc -p tsconfig.preload.json",
+    "build": "tsc -p tsconfig.json --noEmit && vite build && tsc -p tsconfig.main.json && tsc -p tsconfig.preload.json && node scripts/flatten-main-dist.js",
     "start": "electron .",
     "check:renderer": "tsc -p tsconfig.json --noEmit",
     "check:main": "tsc -p tsconfig.main.json --noEmit",
@@ -39,6 +39,7 @@
     "radix-ui": "^1.6.7",
     "react": "^19.2.8",
     "react-dom": "^19.3.0",
+    "ws": "^8.22.0",
     "zustand": "^5.0.10"
   }
 }

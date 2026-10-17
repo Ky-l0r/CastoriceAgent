@@ -233,9 +233,17 @@ export function Composer({ docked }: ComposerProps) {
         transition={{ type: "spring", stiffness: 170, damping: 22 }}
       >
         <Avatar size={84} />
-        <p className="mb-6 mt-4 text-lg font-medium" style={{ color: "var(--c-bubble-text)" }}>
-          {greeting()}
-        </p>
+        <div className="mb-6 mt-4 flex items-end gap-1">
+          <p className="text-lg font-medium" style={{ color: "var(--c-bubble-text)" }}>
+            {greeting()}
+          </p>
+          <img
+            src="/castorice-assets/welcome-chibi.png"
+            alt=""
+            draggable={false}
+            className="h-20 w-auto select-none mix-blend-multiply dark:mix-blend-screen"
+          />
+        </div>
         <motion.div layout className="w-full max-w-2xl">
           {inner}
           <StatusStrip />
