@@ -1,63 +1,143 @@
-import { FilePlus2, Wrench, Sparkles, Cpu, Settings, UserRound } from "lucide-react";
+import {
+  SquarePen,
+  Settings,
+  PanelLeftClose,
+  PanelLeftOpen,
+  MessageSquare,
+} from "lucide-react";
+import { useBridgeStore } from "../store/bridge-store";
+import { AVATAR_URL } from "../lib/assets";
 
 /**
- * 左侧窄导航图标列（参考图 1 观感）：
- * 新建对话 / 工具 / 技能 / 模型 + 底部设置与用户头像。
- * 本任务只做欢迎页/聊天流的入口观感；工具/技能/设置页由后续任务展开
- * （点击目前是无操作的占位，悬浮有 title 提示）。
+ * 左侧栏：会话列表（可折叠）。
+ *
+ * 数据来源：sessions（sessions.list RPC，后端 SessionStore.list_sessions）。
+ * 后端未实现该 RPC 时列表为空，只显示「新建对话」入口——不阻塞主流程。
+ * 折叠状态存在 store 里，纯本地偏好。
  */
 export function SideNav({
-  avatarUrl,
   onNewChat,
   onOpenSettings,
 }: {
-  avatarUrl?: string;
   onNewChat: () => void;
-  /** 打开设置中心（t4）；点击头像同样进入设置页的用户档案分类。 */
   onOpenSettings?: () => void;
 }) {
+  const sessions = useBridgeStore((s) => s.sessions);
+  const activeId = useBridgeStore((s) => s.activeSessionId);
+  const collapsed = useBridgeStore((s) => s.sidebarCollapsed);
+  const toggle = useBridgeStore((s) => s.toggleSidebar);
+
   const item =
-    "flex h-10 w-10 items-center justify-center rounded-xl transition-colors cursor-pointer hover:bg-[var(--c-nav-active-bg)] text-[var(--c-nav-text)] hover:text-[var(--c-nav-text-hover)]";
+    "flex h-9 w-9 items-center justify-center rounded-[var(--r-sm)] transition-colors text-[var(--c-nav-text)] hover:bg-[var(--c-nav-active-bg)] hover:text-[var(--c-nav-text-hover)]";
+
+  if (collapsed) {
+    return (
+      <nav
+        className="flex h-full w-14 shrink-0 flex-col items-center justify-between border-r py-3"
+        style={{ borderColor: "var(--c-divider)", background: "var(--c-surface-bg)" }}
+      >
+        <div className="flex flex-col items-center gap-2">
+          <button type="button" className={item} title="展开侧栏" onClick={toggle}>
+            <PanelLeftOpen size={18} strokeWidth={1.8} />
+          </button>
+          <button type="button" className={item} title="新建对话" onClick={onNewChat}>
+            <SquarePen size={18} strokeWidth={1.8} />
+          </button>
+        </div>
+        <div className="flex flex-col items-center gap-2">
+          <button type="button" className={item} title="设置" onClick={onOpenSettings}>
+            <Settings size={18} strokeWidth={1.8} />
+          </button>
+          <button
+            type="button"
+            className="h-8 w-8 overflow-hidden rounded-full border transition-opacity hover:opacity-80"
+            style={{ borderColor: "var(--c-avatar-border)" }}
+            title="用户档案"
+            onClick={onOpenSettings}
+          >
+            <img src={AVATAR_URL} alt="" className="h-full w-full object-cover" />
+          </button>
+        </div>
+      </nav>
+    );
+  }
+
   return (
     <nav
-      className="flex h-full w-16 shrink-0 flex-col items-center justify-between border-r py-4"
-      style={{ borderColor: "var(--c-input-border)", background: "var(--c-window-bg)" }}
+      className="flex h-full w-60 shrink-0 flex-col border-r"
+      style={{ borderColor: "var(--c-divider)", background: "var(--c-surface-bg)" }}
     >
-      <div className="flex flex-col items-center gap-3">
-        <button type="button" className={item} title="新建对话" onClick={onNewChat}>
-          <FilePlus2 size={19} strokeWidth={1.8} />
-        </button>
-        <button type="button" className={item} title="工具（建设中）">
-          <Wrench size={19} strokeWidth={1.8} />
-        </button>
-        <button type="button" className={item} title="技能（建设中）">
-          <Sparkles size={19} strokeWidth={1.8} />
-        </button>
-        <button type="button" className={item} title="模型（建设中）">
-          <Cpu size={19} strokeWidth={1.8} />
-        </button>
-      </div>
-      <div className="flex flex-col items-center gap-3">
+      <div className="flex items-center gap-2 px-3 py-3">
         <button
           type="button"
-          className={item}
-          title="设置"
+          onClick={onNewChat}
+          className="flex flex-1 items-center gap-2 rounded-[var(--r-sm)] px-2.5 py-2 text-[13px] font-medium transition-colors hover:bg-[var(--c-nav-active-bg)]"
+          style={{ color: "var(--c-nav-text-hover)" }}
+        >
+          <SquarePen size={15} strokeWidth={1.8} />
+          新建对话
+        </button>
+        <button type="button" className={item} title="折叠侧栏" onClick={toggle}>
+          <PanelLeftClose size={16} strokeWidth={1.8} />
+        </button>
+      </div>
+
+      <div
+        className="px-4 pb-1 text-[11px] font-semibold uppercase tracking-wider"
+        style={{ color: "var(--c-muted)" }}
+      >
+        最近对话
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+        {sessions.length === 0 ? (
+          <div className="px-2 py-3 text-[12px] leading-relaxed" style={{ color: "var(--c-muted)" }}>
+            还没有历史对话
+          </div>
+        ) : (
+          sessions.map((s) => {
+            const isActive = s.id === activeId;
+            return (
+              <button
+                key={s.id}
+                type="button"
+                className="group mb-0.5 flex w-full items-center gap-2 rounded-[var(--r-sm)] px-2.5 py-2 text-left text-[13px] transition-colors hover:bg-[var(--c-nav-active-bg)]"
+                style={{
+                  background: isActive ? "var(--c-nav-active-bg)" : "transparent",
+                  color: isActive ? "var(--c-nav-text-hover)" : "var(--c-nav-text)",
+                }}
+                title={s.title}
+              >
+                <MessageSquare size={14} strokeWidth={1.8} className="shrink-0 opacity-70" />
+                <span className="min-w-0 flex-1 truncate">{s.title}</span>
+              </button>
+            );
+          })
+        )}
+      </div>
+
+      <div
+        className="flex items-center justify-between gap-2 border-t px-3 py-2.5"
+        style={{ borderColor: "var(--c-divider)" }}
+      >
+        <button
+          type="button"
+          className="flex items-center gap-2 rounded-[var(--r-sm)] px-1.5 py-1 text-[13px] transition-colors hover:bg-[var(--c-nav-active-bg)]"
+          style={{ color: "var(--c-nav-text)" }}
           onClick={onOpenSettings}
         >
-          <Settings size={19} strokeWidth={1.8} />
+          <Settings size={16} strokeWidth={1.8} />
+          设置
         </button>
-        <div
-          className="flex h-10 w-10 cursor-pointer items-center justify-center overflow-hidden rounded-full border transition-colors hover:opacity-80"
-          style={{ background: "var(--c-avatar-bg)", borderColor: "var(--c-avatar-border)" }}
+        <button
+          type="button"
+          className="h-8 w-8 overflow-hidden rounded-full border transition-opacity hover:opacity-80"
+          style={{ borderColor: "var(--c-avatar-border)", background: "var(--c-avatar-bg)" }}
           title="用户档案"
           onClick={onOpenSettings}
         >
-          {avatarUrl ? (
-            <img src={avatarUrl} alt="头像" className="h-full w-full object-cover" />
-          ) : (
-            <UserRound size={18} className="text-[var(--c-nav-text)]" />
-          )}
-        </div>
+          <img src={AVATAR_URL} alt="" className="h-full w-full object-cover" />
+        </button>
       </div>
     </nav>
   );

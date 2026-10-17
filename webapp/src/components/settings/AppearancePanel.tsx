@@ -5,6 +5,7 @@ import {
   type AppearanceSettings,
   type ThemeMode,
 } from "../../lib/settings-api";
+import { useBridgeStore } from "../../store/bridge-store";
 import {
   GhostButton,
   SectionTitle,
@@ -44,10 +45,6 @@ export function AppearancePanel() {
     return () => clearTimeout(timer);
   }, [settings]);
 
-  if (!settings) {
-    return <div className="p-6 text-sm" style={{ color: "var(--c-muted)" }}>加载中…</div>;
-  }
-
   const update = (patch: Partial<AppearanceSettings>) =>
     setSettings((prev) => (prev ? { ...prev, ...patch } : prev));
 
@@ -60,11 +57,25 @@ export function AppearancePanel() {
     update({ theme: mode });
   };
 
-  // 外观变量实时预览：挂在根元素上，聊天页组件直接消费同名变量。
-  const root = document.documentElement;
-  root.style.setProperty("--app-bubble-radius", settings.bubbleRadius + "px");
-  root.style.setProperty("--app-line-height", String(settings.lineHeight));
-  root.style.setProperty("--app-section-gap", settings.sectionGap + "px");
+  // 外观变量实时预览：同步进 store，由 App 根组件统一挂到 documentElement。
+  // 这样离开设置页后预览仍然生效（原来只在面板挂载期间生效）。
+  //
+  // 注意：这个 effect 必须在下面的「加载中」提前 return **之前**声明。
+  // 放在 return 之后会让首帧（settings 为 null）与后续帧的 hook 数量不一致，
+  // React 会直接抛 error #310 并白屏。
+  useEffect(() => {
+    if (!settings) return;
+    useBridgeStore.getState().setAppearance({
+      bubbleRadius: settings.bubbleRadius,
+      lineHeight: settings.lineHeight,
+      sectionGap: settings.sectionGap,
+      bubbles: settings.bubbles,
+    });
+  }, [settings]);
+
+  if (!settings) {
+    return <div className="p-6 text-sm" style={{ color: "var(--c-muted)" }}>加载中…</div>;
+  }
 
   return (
     <div>

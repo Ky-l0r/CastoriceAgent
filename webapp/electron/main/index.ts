@@ -147,6 +147,16 @@ function createMainWindow(): void {
     }
   });
 
+  // 最大化状态广播：渲染层的图标切换与「最大化时不加圆角」布局都依赖它。
+  // 双击标题栏 / 系统快捷键（Win+↑）也要能同步，所以监听窗口事件而非只靠按钮。
+  const pushWindowState = () => {
+    broadcast("window:maximized-changed", mainWindow?.isMaximized() ?? false);
+  };
+  mainWindow.on("maximize", pushWindowState);
+  mainWindow.on("unmaximize", pushWindowState);
+  mainWindow.on("enter-full-screen", pushWindowState);
+  mainWindow.on("leave-full-screen", pushWindowState);
+
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
@@ -212,6 +222,13 @@ function registerIpc(): void {
   // 窗口控制（自绘标题栏直通；close 行为见 closeToTray 配置）。
   ipcMain.on("window:minimize", () => mainWindow?.minimize());
   ipcMain.on("window:hide", () => mainWindow?.hide());
+  // 最大化/还原：无边框窗口必须自绘按钮（系统标题栏不存在）。
+  ipcMain.on("window:toggle-maximize", () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMaximized()) mainWindow.unmaximize();
+    else mainWindow.maximize();
+  });
+  ipcMain.handle("window:is-maximized", () => mainWindow?.isMaximized() ?? false);
 
   // 关闭行为读写（t5：设置中心「关闭时最小化到托盘」开关的后端）。
   ipcMain.handle("window:get-close-action", () => closeToTray);

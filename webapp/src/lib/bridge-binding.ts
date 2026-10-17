@@ -73,6 +73,31 @@ async function bootstrapOnce(): Promise<void> {
     /* fail-open */
   }
 
+  // 会话列表（侧栏「最近对话」；后端未实现该 RPC 时保持空列表）。
+  try {
+    const listing = (await invoke("sessions.list")) as {
+      sessions?: {
+        id?: string;
+        mode?: string;
+        title?: string;
+        updatedAt?: number;
+        messageCount?: number;
+      }[];
+      active?: string;
+    };
+    const sessions = (listing.sessions ?? []).map((s) => ({
+      id: String(s.id ?? ""),
+      mode: String(s.mode ?? ""),
+      title: String(s.title ?? "新对话"),
+      updatedAt: s.updatedAt,
+      messageCount: s.messageCount,
+    })).filter((s) => s.id);
+    useBridgeStore.getState().setSessions(sessions);
+    if (listing.active) useBridgeStore.getState().setActiveSession(String(listing.active));
+  } catch {
+    /* fail-open：无会话列表也能新建对话 */
+  }
+
   // 界面设置（theme / thinking 档位；fail-closed 默认值）。
   try {
     const settings = (await invoke("ui_settings.get")) as {
@@ -83,6 +108,20 @@ async function bootstrapOnce(): Promise<void> {
     if (typeof s.thinkingLevel === "string" && s.thinkingLevel) {
       useBridgeStore.getState().setThinkingLevel(s.thinkingLevel);
     }
+    if (typeof s.style === "string" && s.style) {
+      useBridgeStore.getState().setStyle(s.style);
+    }
+    // 外观偏好（缺省项保持默认，不做 fail-closed 清零）。
+    const num = (v: unknown, min: number, max: number, fb: number) => {
+      const n = typeof v === "number" ? v : Number(v);
+      return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fb;
+    };
+    useBridgeStore.getState().setAppearance({
+      bubbleRadius: num(s.bubbleRadius, 0, 32, 16),
+      lineHeight: num(s.lineHeight, 1.2, 2.2, 1.6),
+      sectionGap: num(s.sectionGap, 8, 40, 16),
+      bubbles: s.bubbles === undefined ? true : Boolean(s.bubbles),
+    });
   } catch {
     /* fail-closed：保持默认 dark */
   }
@@ -174,6 +213,17 @@ export function bridgeActions() {
         });
       } catch {
         /* 同上 */
+      }
+    },
+    /** 语气风格（本地立即生效 + ui_settings.set 落库）。 */
+    setStyle: async (style: string) => {
+      useBridgeStore.getState().setStyle(style);
+      try {
+        await window.castorice.invoke("ui_settings.set", {
+          updates: { style },
+        });
+      } catch {
+        /* 落库失败不影响本次预览 */
       }
     },
   };

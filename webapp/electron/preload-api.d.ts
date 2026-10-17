@@ -14,9 +14,13 @@ export interface CastoriceBridgeApi {
   onConnectionState(
     listener: (state: "connecting" | "ready" | "reconnecting" | "offline") => void,
   ): () => void;
-  /** 窗口控制：最小化 / 隐藏到托盘（自绘标题栏用）。 */
+  /** 窗口控制：最小化 / 隐藏到托盘 / 最大化切换（自绘标题栏用）。 */
   minimize(): void;
   hide(): void;
+  toggleMaximize(): void;
+  isMaximized(): Promise<boolean>;
+  /** 订阅最大化状态变化（按钮 / 双击标题栏 / 系统快捷键）；返回退订函数。 */
+  onMaximizedChanged(listener: (maximized: boolean) => void): () => void;
   /** 订阅主窗口内通知横幅（WebNotifier 主动聊天投递）；返回退订函数。 */
   onNotification(
     listener: (payload: { title: string; body: string; target_id: string }) => void,

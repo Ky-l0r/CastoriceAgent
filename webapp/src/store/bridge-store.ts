@@ -15,16 +15,40 @@ export type ConnectionPhase = "connecting" | "ready" | "reconnecting" | "offline
 
 export type ModeName = "chat" | "work" | "code" | "learn";
 
+export const MODE_NAMES: ModeName[] = ["chat", "work", "code", "learn"];
+
 export interface ModeInfo {
   name: string;
   display_name?: string;
+  /** 后端 available_modes() 给出的能力描述（可选，用于模式说明）。 */
+  sandbox?: string;
+  workdir?: string;
+  bindable?: boolean;
+  supports_vision_input?: boolean;
 }
 
 export type ThemeMode = "dark" | "light";
 
+/** 外观偏好（ui_settings.json 的 Web 视图；设置中心外观页可调）。 */
+export interface AppearanceSettings {
+  bubbleRadius: number;
+  lineHeight: number;
+  sectionGap: number;
+  bubbles: boolean;
+}
+
+export const APPEARANCE_DEFAULTS: AppearanceSettings = {
+  bubbleRadius: 16,
+  lineHeight: 1.6,
+  sectionGap: 16,
+  bubbles: true,
+};
+
 export interface UiSettings {
   theme: ThemeMode;
   thinkingLevel: string;
+  /** 语气风格（默认 / 温柔 / 简洁 / 毒舌 / 学术）。 */
+  style?: string;
 }
 
 export interface ApprovalDetail {
@@ -58,6 +82,16 @@ export interface TranscriptEntry {
   streaming?: boolean;
 }
 
+/** 会话列表条目（SessionsPanel 渲染用）。 */
+export interface SessionSummary {
+  id: string;
+  mode: string;
+  /** 显示标题（首条用户消息截断，后端或前端派生）。 */
+  title: string;
+  updatedAt?: number;
+  messageCount?: number;
+}
+
 interface BridgeStore {
   phase: ConnectionPhase;
   busy: boolean;
@@ -69,8 +103,13 @@ interface BridgeStore {
   vision: boolean;
   /** 深浅主题（ui_settings.get；fail-closed 默认 dark）。 */
   theme: ThemeMode;
-  /** thinking 档位占位（低/中/高）。 */
+  /** thinking 档位（低/中/高）。 */
   thinkingLevel: string;
+  /** 语气风格。 */
+  style: string;
+  /** 外观偏好（气泡圆角 / 行距 / 段间距 / 气泡开关）。 */
+  appearance: AppearanceSettings;
+
   /** 审批卡当前展示的请求（null = 无待决审批）。 */
   approval: ApprovalDetail | null;
   /** 会话是否已开始（首条用户消息后输入框下沉）。 */
@@ -78,17 +117,38 @@ interface BridgeStore {
   /** 主窗口内横幅队列（notification 事件）。 */
   banners: NotificationBanner[];
 
+  /** 侧栏会话列表。 */
+  sessions: SessionSummary[];
+  /** 当前会话 id（新建/切换时变化）。 */
+  activeSessionId: string | null;
+  /** 侧栏是否折叠。 */
+  sidebarCollapsed: boolean;
+
   setPhase: (phase: ConnectionPhase) => void;
   pushUser: (text: string) => void;
   applyEvent: (event: BridgeEvent) => void;
   dismissBanner: (id: string) => void;
   setMode: (mode: ModeName) => void;
-  setModes: (modes: ModeInfo[], active: ModeName) => void;
+  /**
+   * 更新模式清单。
+   *
+   * active 省略时**不覆盖**当前 mode——这一点很关键：面板刷新（如
+   * ModeWorkspace 拉能力信息）会在用户切换模式的同一帧发生，
+   * 若把后端返回的旧 active 写回去，用户的点击会被静默回滚。
+   */
+  setModes: (modes: ModeInfo[], active?: ModeName) => void;
   setVision: (vision: boolean) => void;
   setTheme: (theme: ThemeMode) => void;
   setThinkingLevel: (level: string) => void;
+  setStyle: (style: string) => void;
+  setAppearance: (patch: Partial<AppearanceSettings>) => void;
   setApproval: (detail: ApprovalDetail | null) => void;
   markChatStarted: () => void;
+  setSessions: (sessions: SessionSummary[]) => void;
+  setActiveSession: (id: string | null) => void;
+  toggleSidebar: () => void;
+  /** 载入历史会话（entries 整体替换）。 */
+  loadEntries: (entries: TranscriptEntry[]) => void;
   reset: () => void;
 }
 
@@ -96,7 +156,7 @@ let seq = 0;
 const nextId = () => "e" + ++seq;
 let bannerSeq = 0;
 
-const normalizeMode = (value: unknown): ModeName => {
+export const normalizeMode = (value: unknown): ModeName => {
   const name = String(value ?? "").toLowerCase();
   return name === "work" || name === "code" || name === "learn" ? name : "chat";
 };
@@ -110,9 +170,14 @@ export const useBridgeStore = create<BridgeStore>((set) => ({
   vision: false,
   theme: "dark",
   thinkingLevel: "中",
+  style: "默认",
+  appearance: { ...APPEARANCE_DEFAULTS },
   approval: null,
   chatStarted: false,
   banners: [],
+  sessions: [],
+  activeSessionId: null,
+  sidebarCollapsed: false,
 
   setPhase: (phase) => set({ phase }),
 
@@ -148,7 +213,8 @@ export const useBridgeStore = create<BridgeStore>((set) => ({
       }
 
       if (event.kind === "emoji") {
-        // emoji 载荷：{name, path}（harness 契约）。
+        // emoji 载荷：{name, path}（harness 契约）。path 是宿主机绝对路径，
+        // 渲染侧只用文件名拼内置贴纸目录（见 lib/assets.ts stickerUrl）。
         const meta = (event.payload && typeof event.payload === "object")
           ? (event.payload as Record<string, unknown>)
           : {};
@@ -209,7 +275,7 @@ export const useBridgeStore = create<BridgeStore>((set) => ({
   setMode: (mode) => set({ mode }),
 
   setModes: (modes, active) =>
-    set({ modes, mode: normalizeMode(active) }),
+    set(active === undefined ? { modes } : { modes, mode: normalizeMode(active) }),
 
   setVision: (vision) => set({ vision }),
 
@@ -217,7 +283,28 @@ export const useBridgeStore = create<BridgeStore>((set) => ({
 
   setThinkingLevel: (thinkingLevel) => set({ thinkingLevel }),
 
+  setStyle: (style) => set({ style }),
+
+  setAppearance: (patch) =>
+    set((s) => ({ appearance: { ...s.appearance, ...patch } })),
+
   setApproval: (approval) => set({ approval }),
+
+  setSessions: (sessions) => set({ sessions }),
+
+  setActiveSession: (activeSessionId) => set({ activeSessionId }),
+
+  toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+
+  loadEntries: (entries) => set({ entries, chatStarted: entries.length > 0 }),
 
   reset: () => set({ entries: [], busy: false, chatStarted: false }),
 }));
+
+/*
+ * 调试钩子：把 store 挂到 window 上，便于 DevTools 与自动化截图脚本
+ * 直接读写状态（不引入任何生产逻辑，只是暴露已有对象）。
+ */
+if (typeof window !== "undefined") {
+  (window as unknown as { __CA_STORE__?: unknown }).__CA_STORE__ = useBridgeStore;
+}

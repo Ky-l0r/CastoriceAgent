@@ -1,25 +1,63 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ChevronDown, ChevronRight, Wrench, AlertCircle } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Wrench,
+  AlertCircle,
+  Copy,
+  Check,
+} from "lucide-react";
 import { useBridgeStore, type TranscriptEntry } from "../store/bridge-store";
 import { Avatar } from "./Avatar";
+import { stickerUrl } from "../lib/assets";
 
 /**
- * 聊天流：气泡布局（用户右侧 / AI 左侧带头像，观感对齐一期截图）。
- * - text：打字机（streaming 条目逐字显现，motion 驱动）；
- * - tool：折叠条（start/done/error 状态 + call_id）；
- * - emoji：贴图显示（Image/表情包 本地路径 -> asset 协议不可达时显示标签占位）。
+ * 聊天流：气泡布局（用户右侧 / AI 左侧带头像）。
+ *
+ * 布局要点（修复「输入框上方出现空白」的观感问题）：
+ * 外层必须是 min-h-0 的 flex 列，滚动容器才能正确吸收剩余空间；
+ * 缺 min-h-0 时 flex 子项不会收缩，内容被挤到底部、顶部出现空白。
  */
 
-/** 本地图片路径 -> 可加载 URL 的映射（Vite 静态目录 /castorice-assets）。 */
-function localImageUrl(path: string): string {
-  const normalized = path.replace(/\\/g, "/");
-  const marker = "/Image/";
-  const idx = normalized.lastIndexOf(marker);
-  if (idx >= 0) {
-    return "/castorice-assets" + normalized.slice(idx + marker.length - 1);
-  }
-  return "";
+/** 极简 Markdown：只处理围栏代码块、行内代码、**粗体**、*斜体*。 */
+function renderRich(text: string): React.ReactNode[] {
+  const blocks = text.split(/```/);
+  const nodes: React.ReactNode[] = [];
+  blocks.forEach((block, bi) => {
+    if (bi % 2 === 1) {
+      const nl = block.indexOf("\n");
+      const body = nl >= 0 ? block.slice(nl + 1) : block;
+      nodes.push(
+        <pre key={"p" + bi} className="msg-pre">
+          <code>{body.replace(/\n$/, "")}</code>
+        </pre>,
+      );
+      return;
+    }
+    block.split("\n").forEach((line, li) => {
+      const parts = line.split(/(`[^`]+`|\*\*[^*]+\*\*)/g).filter(Boolean);
+      nodes.push(
+        <span key={bi + "-" + li}>
+          {parts.map((p, pi) => {
+            if (p.startsWith("`") && p.endsWith("`") && p.length > 2) {
+              return (
+                <code key={pi} className="msg-code">
+                  {p.slice(1, -1)}
+                </code>
+              );
+            }
+            if (p.startsWith("**") && p.endsWith("**") && p.length > 4) {
+              return <strong key={pi}>{p.slice(2, -2)}</strong>;
+            }
+            return <span key={pi}>{p}</span>;
+          })}
+          {li < block.split("\n").length - 1 && <br />}
+        </span>,
+      );
+    });
+  });
+  return nodes;
 }
 
 function TypewriterText({ text, streaming }: { text: string; streaming?: boolean }) {
@@ -30,7 +68,6 @@ function TypewriterText({ text, streaming }: { text: string; streaming?: boolean
       setShown(text);
       return;
     }
-    // 打字机：目标文本增长时按速率追赶（每帧 3 字符），流结束整段落定。
     let raf = 0;
     const tick = () => {
       setShown((cur) => {
@@ -44,10 +81,34 @@ function TypewriterText({ text, streaming }: { text: string; streaming?: boolean
   }, [text, streaming]);
 
   const typing = streaming && shown.length < text.length;
+  if (!typing) {
+    return <span style={{ whiteSpace: "pre-wrap" }}>{renderRich(shown)}</span>;
+  }
   return (
-    <span className={typing ? "typing-cursor" : undefined} style={{ whiteSpace: "pre-wrap" }}>
+    <span className="typing-cursor" style={{ whiteSpace: "pre-wrap" }}>
       {shown}
     </span>
+  );
+}
+
+/** 复制按钮（悬停显示）。 */
+function CopyButton({ text }: { text: string }) {
+  const [done, setDone] = useState(false);
+  return (
+    <button
+      type="button"
+      title={done ? "已复制" : "复制"}
+      className="flex h-6 w-6 items-center justify-center rounded-md opacity-0 transition-opacity hover:bg-[var(--c-nav-active-bg)] group-hover:opacity-100"
+      style={{ color: "var(--c-muted)" }}
+      onClick={() => {
+        void navigator.clipboard?.writeText(text).then(() => {
+          setDone(true);
+          setTimeout(() => setDone(false), 1400);
+        });
+      }}
+    >
+      {done ? <Check size={12} /> : <Copy size={12} />}
+    </button>
   );
 }
 
@@ -58,19 +119,20 @@ function ToolEntry({ entry }: { entry: TranscriptEntry }) {
     status === "done" ? "完成" : status === "error" ? "出错" : "执行中";
   const statusColor =
     status === "error"
-      ? "text-rose-400"
+      ? "text-[var(--c-danger)]"
       : status === "done"
-        ? "text-emerald-400"
-        : "text-amber-300";
+        ? "text-[var(--c-success)]"
+        : "text-[var(--c-warning)]";
 
   return (
     <motion.div
       initial={{ opacity: 0, y: 4 }}
       animate={{ opacity: 1, y: 0 }}
-      className="max-w-[85%] rounded-xl border text-xs"
+      className="max-w-[85%] overflow-hidden text-xs"
       style={{
         background: "var(--c-tool-bg)",
-        borderColor: "var(--c-input-border)",
+        border: "1px solid var(--c-divider)",
+        borderRadius: "var(--r-sm)",
         color: "var(--c-tool-text)",
       }}
     >
@@ -81,13 +143,13 @@ function ToolEntry({ entry }: { entry: TranscriptEntry }) {
       >
         {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
         <Wrench size={13} />
-        <span className="font-medium">{entry.content}</span>
-        <span className={statusColor}>· {statusLabel}</span>
+        <span className="truncate font-medium">{entry.content}</span>
+        <span className={"shrink-0 whitespace-nowrap " + statusColor}>· {statusLabel}</span>
       </button>
       {open && (
         <pre
           className="max-h-40 overflow-auto border-t px-3 py-2 text-[11px] leading-relaxed"
-          style={{ borderColor: "var(--c-input-border)" }}
+          style={{ borderColor: "var(--c-divider)" }}
         >
           {JSON.stringify(entry.meta ?? {}, null, 2)}
         </pre>
@@ -96,39 +158,73 @@ function ToolEntry({ entry }: { entry: TranscriptEntry }) {
   );
 }
 
+/** 表情包：只取文件名拼内置贴纸目录（不依赖宿主机路径）。 */
 function EmojiEntry({ entry }: { entry: TranscriptEntry }) {
+  const [failed, setFailed] = useState(false);
   const path = String(entry.meta?.path ?? "");
-  const url = path ? localImageUrl(path) : "";
+  const url = useMemo(() => stickerUrl(path), [path]);
+
+  if (!url || failed) {
+    return (
+      <div
+        className="px-3 py-2 text-sm"
+        style={{
+          background: "var(--c-ai-bubble-bg)",
+          color: "var(--c-tool-text)",
+          borderRadius: "var(--r-md)",
+          border: "1px solid var(--c-divider)",
+        }}
+      >
+        [表情：{entry.content}]
+      </div>
+    );
+  }
+
   return (
     <motion.div
       initial={{ opacity: 0, scale: 0.92 }}
       animate={{ opacity: 1, scale: 1 }}
       transition={{ type: "spring", stiffness: 260, damping: 20 }}
-      className="max-w-[180px] overflow-hidden rounded-xl border"
-      style={{ background: "var(--c-ai-bubble-bg)", borderColor: "var(--c-bubble-border)" }}
+      className="max-w-[168px] overflow-hidden"
+      style={{ borderRadius: "var(--r-md)" }}
     >
-      {url ? (
-        <img src={url} alt={entry.content} className="block h-auto w-full" draggable={false} />
-      ) : (
-        <div className="px-3 py-2 text-sm" style={{ color: "var(--c-tool-text)" }}>
-          [表情：{entry.content}]
-        </div>
-      )}
+      <img
+        src={url}
+        alt={entry.content}
+        className="block h-auto w-full select-none"
+        draggable={false}
+        onError={() => setFailed(true)}
+      />
     </motion.div>
+  );
+}
+
+/** 空状态：欢迎页（无消息时由 Composer 独占，这里只处理“有会话但为空”）。 */
+function EmptyChat() {
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center gap-2">
+      <p className="text-sm" style={{ color: "var(--c-muted)" }}>
+        还没有消息，先聊点什么吧
+      </p>
+    </div>
   );
 }
 
 export function ChatMessageList() {
   const entries = useBridgeStore((s) => s.entries);
+  const thinkingLevel = useBridgeStore((s) => s.thinkingLevel);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [entries]);
 
+  if (entries.length === 0) return <EmptyChat />;
+
   return (
-    <div className="flex-1 overflow-y-auto px-6 py-4">
-      <div className="mx-auto flex max-w-3xl flex-col gap-4">
+    <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+      <div className="mx-auto flex w-full max-w-3xl flex-col msg-gap">
         <AnimatePresence initial={false}>
           {entries.map((entry) => {
             if (entry.role === "user") {
@@ -137,56 +233,72 @@ export function ChatMessageList() {
                   key={entry.id}
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="flex justify-end"
+                  className="group flex justify-end"
                 >
-                  <div
-                    className="max-w-[70%] rounded-2xl rounded-br-md px-4 py-2.5 text-sm leading-relaxed"
-                    style={{
-                      background: "var(--c-user-bubble-bg)",
-                      color: "var(--c-bubble-text)",
-                    }}
-                  >
-                    {entry.content}
+                  <div className="flex items-end gap-1">
+                    <div className="opacity-0 transition-opacity group-hover:opacity-100">
+                      <CopyButton text={entry.content} />
+                    </div>
+                    <div
+                      className="msg-bubble max-w-[70%] px-4 py-2.5 text-sm"
+                      style={{
+                        background: "var(--c-user-bubble-bg)",
+                        color: "var(--c-bubble-text)",
+                      }}
+                    >
+                      <span style={{ whiteSpace: "pre-wrap" }}>{entry.content}</span>
+                    </div>
                   </div>
                 </motion.div>
               );
             }
-            // assistant：左侧带头像
             return (
               <motion.div
                 key={entry.id}
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="flex items-start gap-2.5"
+                className="group flex items-start gap-2.5"
               >
-                <Avatar size={34} />
-                {entry.kind === "text" && (
-                  <div
-                    className="max-w-[70%] rounded-2xl rounded-bl-md px-4 py-2.5 text-sm leading-relaxed"
-                    style={{
-                      background: "var(--c-ai-bubble-bg)",
-                      color: "var(--c-bubble-text)",
-                      border: "1px solid var(--c-bubble-border)",
-                    }}
-                  >
-                    <TypewriterText text={entry.content} streaming={entry.streaming} />
-                    {entry.interrupted && (
-                      <span
-                        className="mt-1 flex items-center gap-1 text-xs"
-                        style={{ color: "var(--c-muted)" }}
+                <Avatar size={32} />
+                <div className="flex min-w-0 flex-col gap-1">
+                  {entry.kind === "text" && (
+                    <>
+                      <div
+                        className="msg-bubble max-w-[min(70%,640px)] px-4 py-2.5 text-sm"
+                        style={{
+                          background: "var(--c-ai-bubble-bg)",
+                          color: "var(--c-bubble-text)",
+                          border: "1px solid var(--c-bubble-border)",
+                        }}
                       >
-                        <AlertCircle size={12} /> 已打断
-                      </span>
-                    )}
-                  </div>
-                )}
-                {entry.kind === "tool" && <ToolEntry entry={entry} />}
-                {entry.kind === "emoji" && <EmojiEntry entry={entry} />}
+                        <TypewriterText text={entry.content} streaming={entry.streaming} />
+                        {entry.interrupted && (
+                          <span
+                            className="mt-1 flex items-center gap-1 text-xs"
+                            style={{ color: "var(--c-muted)" }}
+                          >
+                            <AlertCircle size={12} /> 已打断
+                          </span>
+                        )}
+                      </div>
+                      {!entry.streaming && (
+                        <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                          <CopyButton text={entry.content} />
+                          <span className="text-[11px]" style={{ color: "var(--c-muted)" }}>
+                            {thinkingLevel && entry.content.length > 0 ? "" : ""}
+                          </span>
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {entry.kind === "tool" && <ToolEntry entry={entry} />}
+                  {entry.kind === "emoji" && <EmojiEntry entry={entry} />}
+                </div>
               </motion.div>
             );
           })}
         </AnimatePresence>
-        <div ref={bottomRef} />
+        <div ref={bottomRef} className="h-1" />
       </div>
     </div>
   );

@@ -1,3 +1,5 @@
+/// <reference types="vite/client" />
+
 /** Vite 静态资源（图片 import 的模块声明，含 ?url 形态）。 */
 declare module "*.jpeg" {
   const src: string;

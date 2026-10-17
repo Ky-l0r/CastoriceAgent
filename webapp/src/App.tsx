@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { motion } from "motion/react";
 import { useBridgeBinding } from "./lib/bridge-binding";
 import { useBridgeStore } from "./store/bridge-store";
 import { TitleBar } from "./components/TitleBar";
@@ -9,88 +8,90 @@ import { ChatMessageList } from "./components/ChatMessageList";
 import { Composer } from "./components/Composer";
 import { ApprovalCard } from "./components/ApprovalCard";
 import { NotificationBanner } from "./components/NotificationBanner";
+import { ModeWorkspace } from "./components/ModeWorkspace";
 import { SettingsPage } from "./pages/SettingsPage";
+import { bridgeActions } from "./lib/bridge-binding";
+import { ConnectionBanner } from "./components/ConnectionBanner";
 
 /**
- * 主界面组合根（参考图 1 观感复刻）：
- * 左窄导航 + 顶部模式 Tab + 中央欢迎页（头像/欢迎语/居中输入框）
- * ↕ 开始聊天后输入框下沉为底部栏 + 聊天流；审批卡中央浮层。
+ * 主界面组合根。
+ *
+ * 布局（第四期重排）：
+ *   标题栏
+ *   ├ 侧栏（会话列表，可折叠）
+ *   └ 内容区
+ *       ├ 模式分段选择器
+ *       ├ 连接状态条（仅在非 ready 时出现）
+ *       ├ 聊天流 / 欢迎页  ← 必须 min-h-0 才能正确吸收剩余高度
+ *       ├ 输入框
+ *       └ 模式工作区（work / code / learn 时右侧展开）
  */
 export default function App() {
   useBridgeBinding();
-  const phase = useBridgeStore((s) => s.phase);
   const theme = useBridgeStore((s) => s.theme);
   const entries = useBridgeStore((s) => s.entries);
   const chatStarted = useBridgeStore((s) => s.chatStarted);
+  const mode = useBridgeStore((s) => s.mode);
 
-  // 主题 -> data-theme（global.css 变量切换）。
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
 
-  const hasChat = chatStarted || entries.length > 0;
+  // 外观变量：气泡圆角 / 行距 / 段间距（设置中心外观页写入 ui_settings）。
+  const appearance = useBridgeStore((s) => s.appearance);
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--app-bubble-radius", appearance.bubbleRadius + "px");
+    root.style.setProperty("--app-line-height", String(appearance.lineHeight));
+    root.style.setProperty("--app-section-gap", appearance.sectionGap + "px");
+    root.dataset.bubbles = appearance.bubbles ? "on" : "off";
+  }, [appearance]);
 
-  // 顶层路由：聊天主界面 <-> 设置中心（t4）。设置页返回聊天时保留会话状态。
+  const hasChat = chatStarted || entries.length > 0;
   const [view, setView] = useState<"chat" | "settings">("chat");
 
   const newChat = () => {
     useBridgeStore.getState().reset();
+    setView("chat");
   };
 
-  if (view === "settings") {
-    return (
-      <div className="flex h-full flex-col" style={{ background: "var(--c-window-bg)" }}>
-        <TitleBar
-          theme={theme}
-          onToggleTheme={() => void import("./lib/bridge-binding").then(({ bridgeActions }) => bridgeActions().setTheme(theme === "dark" ? "light" : "dark"))}
-        />
-        <div className="min-h-0 flex-1">
-          <SettingsPage onBack={() => setView("chat")} />
-        </div>
-        <ApprovalCard />
-        <NotificationBanner />
-      </div>
-    );
-  }
-
   return (
-    <div className="flex h-full flex-col" style={{ background: "var(--c-window-bg)" }}>
+    <div
+      className="window-shell flex h-full flex-col overflow-hidden"
+      style={{ background: "var(--c-window-bg)" }}
+    >
       <TitleBar
         theme={theme}
-        onToggleTheme={() => void import("./lib/bridge-binding").then(({ bridgeActions }) => bridgeActions().setTheme(theme === "dark" ? "light" : "dark"))}
+        onToggleTheme={() => void bridgeActions().setTheme(theme === "dark" ? "light" : "dark")}
       />
+
       <div className="flex min-h-0 flex-1">
-        <SideNav onNewChat={newChat} onOpenSettings={() => setView("settings")} />
-        <div className="flex min-w-0 flex-1 flex-col">
-          <ModeTabs />
-          {phase !== "ready" && (
-            <div
-              className="flex items-center justify-center gap-2 py-1.5 text-xs"
-              style={{ background: "var(--c-tool-bg)", color: "var(--c-tool-text)" }}
-            >
-              <span
-                className={
-                  "inline-block h-1.5 w-1.5 rounded-full " +
-                  (phase === "offline" ? "bg-rose-400" : "animate-pulse bg-amber-300")
-                }
-              />
-              {phase === "offline"
-                ? "桥接离线：后端未启动或连接断开"
-                : "正在连接后端…"}
-            </div>
-          )}
-          {hasChat ? (
-            <>
+        {view === "chat" && (
+          <SideNav onNewChat={newChat} onOpenSettings={() => setView("settings")} />
+        )}
+
+        {view === "settings" ? (
+          <div className="min-h-0 min-w-0 flex-1">
+            <SettingsPage onBack={() => setView("chat")} />
+          </div>
+        ) : (
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <ModeTabs />
+            <ConnectionBanner />
+            {hasChat ? (
               <ChatMessageList />
-              <Composer docked />
-            </>
-          ) : (
-            <motion.div layout className="flex min-h-0 flex-1 flex-col">
-              <Composer docked={false} />
-            </motion.div>
-          )}
-        </div>
+            ) : (
+              <div className="min-h-0 flex-1">
+                <Composer docked={false} />
+              </div>
+            )}
+            {hasChat && <Composer docked />}
+          </div>
+        )}
+
+        {view === "chat" && mode !== "chat" && <ModeWorkspace mode={mode} />}
       </div>
+
       <ApprovalCard />
       <NotificationBanner />
     </div>

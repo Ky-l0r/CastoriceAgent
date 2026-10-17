@@ -79,6 +79,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from .channels.base import ChannelError
+from .session import SessionStore
 
 __all__ = [
     "BridgeServer",
@@ -331,6 +332,60 @@ class _RpcHandlers:
             raise ChannelError("模式切换失败: " + str(exc)) from exc
         return {"ok": True, "active": mode}
 
+    # ---- 会话列表（第四期：侧栏「最近对话」的数据源）----
+
+    def sessions_list(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """列出当前模式的历史会话（按修改时间倒序）。
+
+        只读会话文件，不打开 SessionStore（打开会触发单写者锁，
+        把正在使用的会话锁死）。标题取会话第一条 user 事件的文本前缀，
+        读不到就退化为「新对话」——列表永远可显示，不因脏文件报错。
+        """
+        modes_root = self._sessions_root()
+        if modes_root is None:
+            return {"sessions": [], "active": ""}
+
+        mode = str(params.get("mode") or getattr(self._bot, "mode", "") or "chat")
+        try:
+            paths = SessionStore.list_sessions(modes_root, mode)
+        except Exception as exc:
+            raise ChannelError("会话列表读取失败: " + str(exc)) from exc
+
+        sessions: List[Dict[str, Any]] = []
+        for path in paths[:50]:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            sessions.append({
+                "id": path.stem,
+                "mode": mode,
+                "title": _session_title(path),
+                "updatedAt": int(stat.st_mtime * 1000),
+                "messageCount": _session_event_count(path),
+            })
+        active = ""
+        try:
+            active = str(getattr(getattr(self._bot, "_session", None), "session_id", "") or "")
+        except Exception:
+            active = ""
+        return {"sessions": sessions, "active": active}
+
+    def _sessions_root(self) -> Optional[Path]:
+        """会话根目录：优先取 bot 已装配的会话根的父目录。"""
+        store = getattr(self._bot, "_session", None)
+        root = getattr(store, "root", None)
+        if root:
+            return Path(root)
+        # bot 有 _sessions 映射（模式 -> SessionStore）时同样可用
+        mapping = getattr(self._bot, "_sessions", None)
+        if isinstance(mapping, dict):
+            for candidate in mapping.values():
+                root = getattr(candidate, "root", None)
+                if root:
+                    return Path(root)
+        return None
+
     # ---- approval（ApprovalBroker defer/resolve 的远端入口）----
 
     def _require_broker(self) -> Any:
@@ -447,6 +502,49 @@ class _RpcHandlers:
         return {"ok": True, "settings": (
             self._ui_settings_loader()() if self._ui_settings_loader()
             else _load_ui_settings_file())}
+
+
+def _session_title(path: Path, limit: int = 32) -> str:
+    """会话标题：第一条 user 事件的正文前缀（读不到就返回「新对话」）。
+
+    JSONL 是 append-only，顺序读第一行即可，不需要完整解析文件。
+    """
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(event, dict) or event.get("kind") != "user":
+                    continue
+                payload = event.get("payload") or {}
+                text = ""
+                if isinstance(payload, dict):
+                    text = str(payload.get("text") or payload.get("content") or "")
+                text = " ".join(text.split())
+                if not text:
+                    continue
+                return text[:limit] + ("…" if len(text) > limit else "")
+    except Exception:
+        pass
+    return "新对话"
+
+
+def _session_event_count(path: Path) -> int:
+    """会话事件条数（脏行跳过，读失败按 0 计）。"""
+    count = 0
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.strip():
+                    count += 1
+    except Exception:
+        return 0
+    return count
 
 
 def _load_ui_settings_file() -> Dict[str, Any]:
@@ -571,6 +669,7 @@ class BridgeServer:
             "memory.clear": self._rpc.memory_clear,
             "mode.list": self._rpc.mode_list,
             "mode.switch": self._rpc.mode_switch,
+            "sessions.list": self._rpc.sessions_list,
             "approval.pending": self._rpc.approval_pending,
             "approval.resolve": self._rpc.approval_resolve,
             "notify.register": self._rpc.notify_register,

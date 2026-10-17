@@ -1,102 +1,158 @@
 @import "tailwindcss";
 
 /*
- * 主题 CSS 变量（对齐一期 ui.Colors 的深浅两套调色板）。
- * :root 默认深色；html[data-theme="light"] 覆盖浅色。
- * 组件一律用 var(--c-*) 引用，切主题零改动。
+ * 设计令牌（第四期视觉重构）
+ *
+ * 分层约定：
+ *   1. 语义色 --c-*：组件只引用这些，切主题零改动；
+ *   2. 标尺 --r-* / --s-* / --fs-*：圆角 / 间距 / 字号三套比例尺，
+ *      新增组件一律用标尺，禁止再写魔法数字；
+ *   3. 外观可变项 --app-*：设置中心外观面板可调（气泡圆角 / 行距 / 段间距）。
+ *
+ * 观感目标：淡雅分层、留白充足、去掉第一期的重色块通栏。
  */
+
 :root {
-  --c-window-bg: #171420;
-  --c-input-bg: #241f33;
-  --c-input-text: #efebfa;
-  --c-input-border: #332c47;
+  /* ---- 语义色（深色，默认） ---- */
+  --c-window-bg: #14121c;
+  --c-surface-bg: #1b1826;
+  --c-surface-raised: #221e30;
+  --c-input-bg: #1e1a2b;
+  --c-input-text: #ece8f7;
+  --c-input-border: #2e2842;
   --c-input-border-focus: #8b5cf6;
-  --c-input-placeholder: #8a8299;
-  --c-user-bubble-bg: #2c2444;
-  --c-ai-bubble-bg: #221d30;
-  --c-bubble-text: #f1edfa;
-  --c-bubble-border: transparent;
-  --c-scrollbar-bg: #241f33;
-  --c-scrollbar-handle: #463c63;
-  --c-scrollbar-handle-hover: #5a4e7e;
-  --c-avatar-bg: #332c47;
-  --c-avatar-border: #463c63;
+  --c-input-placeholder: #7d7591;
+  --c-user-bubble-bg: #2d2547;
+  --c-ai-bubble-bg: #1c1928;
+  --c-bubble-text: #ece8f7;
+  --c-bubble-border: #262135;
+  --c-scrollbar-bg: transparent;
+  --c-scrollbar-handle: #382f4d;
+  --c-scrollbar-handle-hover: #4c4266;
+  --c-avatar-bg: #2a2440;
+  --c-avatar-border: #3a3152;
   --c-highlight: #8b5cf6;
   --c-highlight-text: #ffffff;
-  --c-titlebar-bg: #5b34c9;
-  --c-titlebar-text: #ffffff;
+  --c-titlebar-bg: #1a1726;
+  --c-titlebar-text: #b9b1cc;
   --c-send-bg: #7c3aed;
   --c-send-bg-hover: #8b5cf6;
-  --c-send-bg-disabled: #332c47;
-  --c-tool-bg: #1f1a2c;
-  --c-tool-text: #8a8299;
-  --c-mode-bar-bg: #4a28a8;
-  --c-mode-tab-active-bg: #ffffff;
-  --c-mode-tab-active-text: #5b34c9;
-  --c-mode-tab-text: #d8ccff;
-  --c-mode-tab-hover-bg: #6b41da;
-  --c-nav-text: #a69cb8;
-  --c-nav-text-hover: #efebfa;
-  --c-nav-active-bg: #332c47;
-  --c-approval-bg: #2a2136;
-  --c-approval-border: #6d4ac4;
+  --c-send-bg-disabled: #2a2440;
+  --c-tool-bg: #1d1929;
+  --c-tool-text: #8b82a1;
+  --c-mode-bar-bg: transparent;
+  --c-mode-tab-active-bg: #2b2440;
+  --c-mode-tab-active-text: #f2eeff;
+  --c-mode-tab-text: #8b82a1;
+  --c-mode-tab-hover-bg: #221d31;
+  --c-nav-text: #8b82a1;
+  --c-nav-text-hover: #ece8f7;
+  --c-nav-active-bg: #262038;
+  --c-approval-bg: #221d33;
+  --c-approval-border: #5b3fa8;
   --c-approval-title: #f3eeff;
-  --c-approval-text: #c7bedb;
+  --c-approval-text: #b8aed0;
   --c-approval-allow-bg: #7c3aed;
-  --c-approval-deny-bg: #3a3050;
-  --c-approval-deny-text: #d9d2ea;
-  --c-muted: #8a8299;
-  --c-status-text: #a69cb8;
-  --c-status-chip-bg: #241f33;
-  --c-status-chip-border: #332c47;
-  --c-overlay-bg: rgba(10, 8, 16, 0.55);
+  --c-approval-deny-bg: #2e2842;
+  --c-approval-deny-text: #d3cae8;
+  --c-muted: #7d7591;
+  --c-status-text: #9a92ae;
+  --c-status-chip-bg: #1e1a2b;
+  --c-status-chip-border: #2e2842;
+  --c-overlay-bg: rgba(8, 6, 14, 0.62);
+  --c-divider: #241f33;
+  --c-danger: #f43f5e;
+  --c-success: #10b981;
+  --c-warning: #f59e0b;
+
+  /* ---- 标尺 ---- */
+  --r-xs: 6px;
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 18px;
+  --r-xl: 24px;
+  --r-full: 999px;
+
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+
+  --fs-xs: 11px;
+  --fs-sm: 12.5px;
+  --fs-base: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.18);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.22);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.34);
+
+  /* ---- 外观可变项（设置中心可调；组件必须引用这三个 ---- */
+  --app-bubble-radius: 16px;
+  --app-line-height: 1.6;
+  --app-section-gap: 16px;
+  --app-bubbles: 1;
 }
 
 html[data-theme="light"] {
-  --c-window-bg: #f4f1fb;
+  /* 浅色：紫白淡雅，参考昔涟观感 */
+  --c-window-bg: #faf8ff;
+  --c-surface-bg: #ffffff;
+  --c-surface-raised: #ffffff;
   --c-input-bg: #ffffff;
-  --c-input-text: #2b2540;
-  --c-input-border: #e2dbf2;
-  --c-input-border-focus: #7c3aed;
-  --c-input-placeholder: #9c93b4;
-  --c-user-bubble-bg: #ede6fc;
+  --c-input-text: #2a2440;
+  --c-input-border: #e8e2f5;
+  --c-input-border-focus: #8b5cf6;
+  --c-input-placeholder: #a79dbe;
+  --c-user-bubble-bg: #f0e9fe;
   --c-ai-bubble-bg: #ffffff;
-  --c-bubble-text: #2b2540;
-  --c-bubble-border: #e6dff7;
-  --c-scrollbar-bg: #f4f1fb;
-  --c-scrollbar-handle: #cfc7e4;
-  --c-scrollbar-handle-hover: #b6abd4;
-  --c-avatar-bg: #ede6fc;
-  --c-avatar-border: #d9d0f0;
+  --c-bubble-text: #2a2440;
+  --c-bubble-border: #eee8fa;
+  --c-scrollbar-bg: transparent;
+  --c-scrollbar-handle: #ddd4ef;
+  --c-scrollbar-handle-hover: #c9bde3;
+  --c-avatar-bg: #f0e9fe;
+  --c-avatar-border: #e3d8f7;
   --c-highlight: #7c3aed;
   --c-highlight-text: #ffffff;
-  --c-titlebar-bg: #8b5cf6;
-  --c-titlebar-text: #ffffff;
+  --c-titlebar-bg: #ffffff;
+  --c-titlebar-text: #6b6188;
   --c-send-bg: #7c3aed;
   --c-send-bg-hover: #8b5cf6;
-  --c-send-bg-disabled: #e2dbf2;
-  --c-tool-bg: #f0eafb;
-  --c-tool-text: #6b5ca5;
-  --c-mode-bar-bg: #7c4de8;
+  --c-send-bg-disabled: #ece6f8;
+  --c-tool-bg: #f6f2fd;
+  --c-tool-text: #7a6da0;
+  --c-mode-bar-bg: transparent;
   --c-mode-tab-active-bg: #ffffff;
   --c-mode-tab-active-text: #6d28d9;
-  --c-mode-tab-text: #ede6fc;
-  --c-mode-tab-hover-bg: #9a76f0;
-  --c-nav-text: #8a80a6;
-  --c-nav-text-hover: #4a3f6b;
-  --c-nav-active-bg: #ede6fc;
-  --c-approval-bg: #f3eeff;
+  --c-mode-tab-text: #8c82a8;
+  --c-mode-tab-hover-bg: #f3eefc;
+  --c-nav-text: #8c82a8;
+  --c-nav-text-hover: #3d3358;
+  --c-nav-active-bg: #f1eafd;
+  --c-approval-bg: #fbf8ff;
   --c-approval-border: #c4b5fd;
-  --c-approval-title: #4a3f6b;
-  --c-approval-text: #5b4b8a;
+  --c-approval-title: #3d3358;
+  --c-approval-text: #6b5f8a;
   --c-approval-allow-bg: #7c3aed;
-  --c-approval-deny-bg: #ede6fc;
+  --c-approval-deny-bg: #f1eafd;
   --c-approval-deny-text: #4a3f6b;
-  --c-muted: #9c93b4;
-  --c-status-text: #6b5ca5;
+  --c-muted: #a79dbe;
+  --c-status-text: #8c82a8;
   --c-status-chip-bg: #ffffff;
-  --c-status-chip-border: #e2dbf2;
-  --c-overlay-bg: rgba(74, 63, 107, 0.35);
+  --c-status-chip-border: #e8e2f5;
+  --c-overlay-bg: rgba(42, 36, 64, 0.30);
+  --c-divider: #efeaf9;
+  --c-danger: #e11d48;
+  --c-success: #059669;
+  --c-warning: #d97706;
+
+  --shadow-sm: 0 1px 2px rgba(76, 58, 120, 0.06);
+  --shadow-md: 0 4px 16px rgba(76, 58, 120, 0.08);
+  --shadow-lg: 0 12px 40px rgba(76, 58, 120, 0.14);
 }
 
 html,
@@ -110,6 +166,8 @@ body {
   background: var(--c-window-bg);
   color: var(--c-bubble-text);
   overflow: hidden;
+  font-size: var(--fs-base);
+  -webkit-font-smoothing: antialiased;
 }
 
 /* 无边框窗口的拖拽区约定：标题栏组件加 drag-region 类即可。 */
@@ -119,13 +177,15 @@ body {
 
 .drag-region button,
 .drag-region input,
-.drag-region textarea {
+.drag-region textarea,
+.no-drag {
   -webkit-app-region: no-drag;
 }
 
-/* 细滚动条（对齐一期配色） */
+/* 细滚动条 */
 ::-webkit-scrollbar {
   width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -134,22 +194,150 @@ body {
 
 ::-webkit-scrollbar-thumb {
   background: var(--c-scrollbar-handle);
-  border-radius: 4px;
+  border-radius: var(--r-full);
 }
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--c-scrollbar-handle-hover);
 }
 
-/* 流式光标（打字机进行中） */
-.typing-cursor::after {
-  content: "▍";
-  color: var(--c-highlight);
-  animation: blink 1s steps(2) infinite;
+/* ---- 通用基元 ---- */
+
+/* 卡片：设置页 / 弹层共用 */
+.ui-card {
+  background: var(--c-surface-bg);
+  border: 1px solid var(--c-divider);
+  border-radius: var(--r-lg);
 }
 
-@keyframes blink {
-  50% {
-    opacity: 0;
+.ui-divider {
+  height: 1px;
+  background: var(--c-divider);
+}
+
+/* 弹层（下拉 / 贴纸面板）：统一阴影与圆角 */
+.ui-popover {
+  background: var(--c-surface-raised);
+  border: 1px solid var(--c-input-border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-lg);
+}
+
+/*
+ * 欢迎页 Q 版贴图：素材是「白底 + 深色线条」的不透明 PNG。
+ *
+ * 用 multiply（正片叠底）：白色部分与背景相乘 = 背景原样透出（白底消失），
+ * 深色线条保留，深浅两种主题都能正确融进背景。
+ * 注意不能用 screen——白色的 screen 结果仍是白色，深色主题下会留一块白方块；
+ * 也不能用 Tailwind 的 dark: 变体——它走 prefers-color-scheme 媒体查询，
+ * 与本项目的 data-theme 属性切换不同步。
+ */
+.chibi-art {
+  mix-blend-mode: multiply;
+}
+
+/* 浅色主题下线条本来就深，multiply 足够；深色主题需要把深色线条提亮，
+   否则会糊进深背景里看不见。 */
+html[data-theme="dark"] .chibi-art {
+  filter: invert(1) hue-rotate(180deg);
+  mix-blend-mode: screen;
+}
+
+/* 打字机光标 */
+.typing-cursor::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  background: currentColor;
+  opacity: 0.7;
+  animation: typing-blink 1s steps(2, start) infinite;
+}
+
+@keyframes typing-blink {
+  to {
+    visibility: hidden;
   }
+}
+
+/* 消息气泡：统一走外观变量，设置中心滑块即时生效 */
+.msg-bubble {
+  border-radius: var(--app-bubble-radius);
+  line-height: var(--app-line-height);
+}
+
+html[data-bubbles="off"] .msg-bubble {
+  background: transparent !important;
+  border-color: transparent !important;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* 对话流：条目之间用外观段间距 */
+.msg-gap {
+  gap: var(--app-section-gap);
+}
+
+/* 代码块 / 行内代码（消息内容渲染用） */
+.msg-code {
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-size: 0.92em;
+  background: var(--c-tool-bg);
+  color: var(--c-tool-text);
+  padding: 1px 5px;
+  border-radius: var(--r-xs);
+}
+
+.msg-pre {
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-size: var(--fs-sm);
+  background: var(--c-tool-bg);
+  color: var(--c-tool-text);
+  padding: var(--s-3);
+  border-radius: var(--r-sm);
+  overflow-x: auto;
+  margin: var(--s-2) 0;
+  line-height: 1.55;
+}
+
+/* 最大化时窗口贴边：去掉圆角与描边（无边框窗口的常见问题） */
+html[data-maximized="true"] .window-shell {
+  border-radius: 0;
+}
+
+/* 动画：入场淡入 */
+@keyframes ui-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.ui-fade-in {
+  animation: ui-fade-in 180ms ease-out both;
+}
+
+/* 骨架屏 */
+@keyframes ui-shimmer {
+  0% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.5;
+  }
+}
+
+.ui-skeleton {
+  background: var(--c-tool-bg);
+  border-radius: var(--r-sm);
+  animation: ui-shimmer 1.4s ease-in-out infinite;
 }

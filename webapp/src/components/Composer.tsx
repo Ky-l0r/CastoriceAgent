@@ -1,14 +1,19 @@
 import { useEffect, useRef, useState } from "react";
-import { motion } from "motion/react";
-import { ImagePlus, ArrowUp, Square } from "lucide-react";
+import { ImagePlus, ArrowUp, Square, ChevronDown } from "lucide-react";
 import { useBridgeStore } from "../store/bridge-store";
 import { bridgeActions } from "../lib/bridge-binding";
 import { Avatar } from "./Avatar";
+import { WELCOME_CHIBI_URL } from "../lib/assets";
+import { Popover, PopoverItem } from "./ui/Popover";
+import { StickerPickerButton } from "./ui/StickerPicker";
 
 /**
  * 输入框：欢迎页居中（头像 + 欢迎语 + 大输入框）↔ 聊天态下沉为底部栏。
- * 状态条：style（占位）/ 模型（config active）/ thinking 档位（占位三档）。
- * vision 开启时显示图片附件按钮（本地文件路径直传 chat images 契约）。
+ *
+ * 对齐问题的根因（第四期修复）：原来外层用 items-end 让 36px 的发送按钮
+ * 与单行 textarea 底边对齐，textarea 只有一行高时，按钮把整行撑到 36px，
+ * 文字被推到下方，视觉上就是「文字上方多了一块空白」。
+ * 现在改为 items-center，并把发送按钮缩到 30px 与单行文字视觉居中。
  */
 
 const GREETINGS: Record<string, string> = {
@@ -30,27 +35,40 @@ function greeting(): string {
   return GREETINGS.lateNight;
 }
 
-const THINKING_LEVELS = ["低", "中", "高"];
+const THINKING_LEVELS = [
+  { value: "低", hint: "更快" },
+  { value: "中", hint: "平衡" },
+  { value: "高", hint: "更深入" },
+];
 
-/** 输入框下方的状态条（style / 模型 / thinking 档位）。 */
+const STYLE_PRESETS = [
+  { value: "默认", hint: "自然" },
+  { value: "温柔", hint: "耐心体贴" },
+  { value: "简洁", hint: "少废话" },
+  { value: "活泼", hint: "俏皮" },
+  { value: "学术", hint: "严谨" },
+];
+
+/** 输入框下方的状态条：风格 / 模型 / 模式 / 推理等级（四个都可点）。 */
 function StatusStrip() {
   const mode = useBridgeStore((s) => s.mode);
   const thinkingLevel = useBridgeStore((s) => s.thinkingLevel);
+  const style = useBridgeStore((s) => s.style);
   const phase = useBridgeStore((s) => s.phase);
-  const { setThinkingLevel } = bridgeActions();
   const [model, setModel] = useState<string>("…");
+  const [providers, setProviders] = useState<string[]>([]);
+  const [activeProvider, setActiveProvider] = useState<string>("");
 
-  // 连接就绪后拉一次模型名（active_provider + model 键）；失败显示占位。
   const fetchedRef = useRef("");
   useEffect(() => {
     if (phase === "ready" && fetchedRef.current !== "done") {
       fetchedRef.current = "done";
-      void fetchModel(setModel);
+      void fetchModelInfo(setModel, setProviders, setActiveProvider);
     }
   }, [phase]);
 
   const chip =
-    "flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] transition-colors";
+    "flex items-center gap-1 rounded-full border px-2.5 py-[3px] text-[11px] transition-colors hover:brightness-110";
   const chipStyle = {
     background: "var(--c-status-chip-bg)",
     borderColor: "var(--c-status-chip-border)",
@@ -59,25 +77,88 @@ function StatusStrip() {
 
   return (
     <div className="mt-2 flex flex-wrap items-center gap-1.5">
-      <span className={chip} style={chipStyle} title="语气风格（占位，接样式采样后启用）">
-        风格 · 默认
+      {/* 风格 */}
+      <Popover
+        side="top"
+        width={160}
+        trigger={({ toggle }) => (
+          <button type="button" className={chip} style={chipStyle} onClick={toggle} title="语气风格">
+            风格 · {style}
+            <ChevronDown size={10} className="opacity-60" />
+          </button>
+        )}
+      >
+        {({ close }) => (
+          <>
+            {STYLE_PRESETS.map((p) => (
+              <PopoverItem
+                key={p.value}
+                label={p.value}
+                hint={p.hint}
+                active={p.value === style}
+                onClick={() => {
+                  void bridgeActions().setStyle(p.value);
+                  close();
+                }}
+              />
+            ))}
+          </>
+        )}
+      </Popover>
+
+      {/* 模型：列出已配置的提供商，点选即切换 */}
+      <Popover
+        side="top"
+        width={200}
+        trigger={({ toggle }) => (
+          <button type="button" className={chip} style={chipStyle} onClick={toggle} title="切换模型提供商">
+            模型 · {model}
+            <ChevronDown size={10} className="opacity-60" />
+          </button>
+        )}
+      >
+        {({ close }) => (
+          <>
+            {providers.length === 0 && (
+              <div className="px-2.5 py-1.5 text-[12px]" style={{ color: "var(--c-muted)" }}>
+                未配置提供商
+              </div>
+            )}
+            {providers.map((name) => (
+              <PopoverItem
+                key={name}
+                label={name}
+                active={name === activeProvider}
+                onClick={() => {
+                  void switchProvider(name, setActiveProvider, setModel);
+                  close();
+                }}
+              />
+            ))}
+          </>
+        )}
+      </Popover>
+
+      {/* 模式 */}
+      <span className={chip} style={chipStyle} title="当前模式（在顶部切换）">
+        模式 · {modeLabel(mode)}
       </span>
-      <span className={chip} style={chipStyle} title="当前模型（来自 config active_provider）">
-        模型 · {model}
-      </span>
-      <span className={chip} style={chipStyle} title="当前模式">
-        模式 · {mode}
-      </span>
-      <span className={chip} style={{ ...chipStyle, cursor: "pointer" }} title="thinking 档位（点击切换）">
+
+      {/* 推理等级：三档内联选择 */}
+      <span className={chip} style={{ ...chipStyle, cursor: "pointer" }} title="推理投入档位">
         {THINKING_LEVELS.map((lv, i) => (
-          <span key={lv}>
+          <span key={lv.value}>
             <button
               type="button"
-              className={lv === thinkingLevel ? "font-semibold" : "opacity-60"}
-              style={{ color: "var(--c-status-text)" }}
-              onClick={() => void setThinkingLevel(lv)}
+              className="transition-opacity"
+              style={{
+                color: "var(--c-status-text)",
+                fontWeight: lv.value === thinkingLevel ? 700 : 400,
+                opacity: lv.value === thinkingLevel ? 1 : 0.55,
+              }}
+              onClick={() => void bridgeActions().setThinkingLevel(lv.value)}
             >
-              {lv}
+              {lv.value}
             </button>
             {i < THINKING_LEVELS.length - 1 && <span className="opacity-40"> / </span>}
           </span>
@@ -87,19 +168,67 @@ function StatusStrip() {
   );
 }
 
-async function fetchModel(set: (v: string) => void) {
+function modeLabel(mode: string): string {
+  return ({ chat: "聊天", work: "工作", code: "编程", learn: "学习" } as Record<string, string>)[mode] ?? mode;
+}
+
+async function fetchModelInfo(
+  setModel: (v: string) => void,
+  setProviders: (v: string[]) => void,
+  setActive: (v: string) => void,
+) {
   try {
-    const provider = (await window.castorice.invoke("config.get", {
-      key: "active_provider",
-    })) as { value?: unknown };
-    const section = (await window.castorice.invoke("config.get", {
-      key: "providers." + String(provider.value ?? ""),
-    })) as { value?: Record<string, unknown> };
-    const model = String(section.value?.model ?? "");
-    if (model) set(model);
-    else set("未知");
+    const active = (await window.castorice.invoke("config.get", { key: "active_provider" })) as {
+      value?: unknown;
+    };
+    const activeName = String(active.value ?? "");
+    setActive(activeName);
+
+    // config.get 的 providers 节拿不到全量清单，用 config.get("providers") 尝试；
+    // 失败时至少把 active_provider 作为唯一条目（不阻塞切换入口）。
+    let names: string[] = activeName ? [activeName] : [];
+    try {
+      const all = (await window.castorice.invoke("config.get", { key: "providers" })) as {
+        value?: Record<string, unknown>;
+      };
+      if (all.value && typeof all.value === "object") {
+        names = Object.keys(all.value);
+      }
+    } catch {
+      /* 退化为单条 */
+    }
+    setProviders(names);
+
+    if (activeName) {
+      const section = (await window.castorice.invoke("config.get", {
+        key: "providers." + activeName,
+      })) as { value?: Record<string, unknown> };
+      const model = String(section.value?.model ?? "");
+      setModel(model || "未知");
+    } else {
+      setModel("未配置");
+    }
   } catch {
-    set("离线");
+    setModel("离线");
+  }
+}
+
+async function switchProvider(
+  name: string,
+  setActive: (v: string) => void,
+  setModel: (v: string) => void,
+) {
+  try {
+    await window.castorice.invoke("config.set", {
+      updates: { active_provider: name },
+    });
+    setActive(name);
+    const section = (await window.castorice.invoke("config.get", {
+      key: "providers." + name,
+    })) as { value?: Record<string, unknown> };
+    setModel(String(section.value?.model ?? "未知"));
+  } catch {
+    /* 静默：保持原值 */
   }
 }
 
@@ -117,97 +246,138 @@ export function Composer({ docked }: ComposerProps) {
   const fileRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // 自适应高度：随内容增长，上限 200px（超出内部滚动）。
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 200) + "px";
+  }, [value]);
+
   const submit = () => {
     const text = value.trim();
-    if (!text || busy || phase !== "ready") return;
+    const hasImages = images.length > 0;
+    if ((!text && !hasImages) || busy || phase !== "ready") return;
     setValue("");
     setImages([]);
-    void bridgeActions().chat(text, images.length ? images : undefined);
+    void bridgeActions().chat(text, hasImages ? images : undefined);
   };
 
-  const pickImages = () => {
-    fileRef.current?.click();
+  /**
+   * 插入表情包：贴纸名以 [表情:xx] 标记进正文（模型能读到语义），
+   * 同时不当作图片附件——表情包的图片由后端在回复侧匹配，用户侧
+   * 只需要让模型知道发了哪个表情即可（避免 vision 未开时报错）。
+   */
+  const insertSticker = (label: string) => {
+    setValue((v) => (v ? v + " [表情:" + label + "]" : "[表情:" + label + "]"));
+    textareaRef.current?.focus();
   };
 
   const shellStyle = {
     background: "var(--c-input-bg)",
     borderColor: "var(--c-input-border)",
     color: "var(--c-input-text)",
+    borderRadius: "var(--r-xl)",
   };
 
+  const iconBtn =
+    "flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors hover:bg-[var(--c-nav-active-bg)]";
+
   const inner = (
-    <div className="rounded-2xl border px-4 py-3 transition-colors focus-within:border-[var(--c-input-border-focus)]" style={shellStyle}>
+    <div
+      className="border px-3 py-2.5 transition-colors focus-within:border-[var(--c-input-border-focus)]"
+      style={shellStyle}
+    >
       {images.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-1.5">
           {images.map((p, i) => (
             <span
               key={p + i}
-              className="max-w-[220px] truncate rounded-md px-2 py-0.5 text-[11px]"
+              className="flex max-w-[220px] items-center gap-1 rounded-[var(--r-sm)] px-2 py-1 text-[11px]"
               style={{ background: "var(--c-tool-bg)", color: "var(--c-tool-text)" }}
               title={p}
             >
-              {p.split(/[\\/]/).pop()}
+              <span className="truncate">{p.split(/[\\/]/).pop()}</span>
+              <button
+                type="button"
+                className="shrink-0 opacity-60 hover:opacity-100"
+                title="移除"
+                onClick={() => setImages((prev) => prev.filter((_, idx) => idx !== i))}
+              >
+                ×
+              </button>
             </span>
           ))}
         </div>
       )}
-      <div className="flex items-end gap-2">
-        <textarea
-          ref={textareaRef}
-          rows={docked ? 1 : 3}
-          className="flex-1 resize-none bg-transparent text-sm outline-none placeholder:text-[var(--c-input-placeholder)]"
-          style={{ color: "var(--c-input-text)" }}
-          placeholder={busy ? "思考中…" : "给昔涟发消息…"}
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              submit();
-            }
-          }}
-        />
+
+      <textarea
+        ref={textareaRef}
+        rows={1}
+        className="w-full flex-1 resize-none bg-transparent text-[13.5px] leading-6 outline-none placeholder:text-[var(--c-input-placeholder)]"
+        style={{ color: "var(--c-input-text)", maxHeight: 200 }}
+        placeholder={busy ? "遐蝶正在思考…" : "给遐蝶发消息…"}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            submit();
+          }
+        }}
+      />
+
+      {/* 工具行与发送按钮在同一行：底部对齐，避免单行时上方留白 */}
+      <div className="mt-1 flex items-center gap-1">
+        {vision && (
+          <button
+            type="button"
+            title="发送图片（视觉模型）"
+            className={iconBtn}
+            style={{ color: "var(--c-muted)" }}
+            onClick={() => fileRef.current?.click()}
+          >
+            <ImagePlus size={15} />
+          </button>
+        )}
+        <StickerPickerButton onPick={insertSticker} />
+
+        <span className="flex-1" />
+
+        <span className="mr-1 text-[10.5px]" style={{ color: "var(--c-muted)" }}>
+          Enter 发送 · Shift+Enter 换行
+        </span>
+
         {busy ? (
           <button
             type="button"
             title="停止"
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors"
             style={{ background: "var(--c-send-bg)", color: "var(--c-highlight-text)" }}
             onClick={() => bridgeActions().interrupt()}
           >
-            <Square size={14} />
+            <Square size={12} />
           </button>
         ) : (
           <button
             type="button"
             title="发送"
-            disabled={!value.trim() || phase !== "ready"}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-50"
+            disabled={(!value.trim() && images.length === 0) || phase !== "ready"}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-40"
             style={{
-              background: value.trim() ? "var(--c-send-bg)" : "var(--c-send-bg-disabled)",
+              background:
+                value.trim() || images.length > 0
+                  ? "var(--c-send-bg)"
+                  : "var(--c-send-bg-disabled)",
               color: "var(--c-highlight-text)",
             }}
             onClick={submit}
           >
-            <ArrowUp size={16} />
+            <ArrowUp size={15} />
           </button>
         )}
       </div>
-      {docked && (
-        <div className="mt-2 flex items-center gap-1">
-          {vision && (
-            <button
-              type="button"
-              title="发送图片（视觉模型）"
-              className="flex h-7 w-7 items-center justify-center rounded-lg transition-colors hover:bg-[var(--c-nav-active-bg)]"
-              style={{ color: "var(--c-muted)" }}
-              onClick={pickImages}
-            >
-              <ImagePlus size={15} />
-            </button>
-          )}
-        </div>
-      )}
+
       <input
         ref={fileRef}
         type="file"
@@ -217,7 +387,7 @@ export function Composer({ docked }: ComposerProps) {
         onChange={(e) => {
           // Electron 的 File 对象带 path（本地绝对路径，chat images 契约直传）。
           const files = Array.from(e.currentTarget.files ?? []) as (File & { path?: string })[];
-          if (files.length) setImages(files.map((f) => f.path || f.name));
+          if (files.length) setImages((prev) => [...prev, ...files.map((f) => f.path || f.name)]);
           e.currentTarget.value = "";
         }}
       />
@@ -227,42 +397,33 @@ export function Composer({ docked }: ComposerProps) {
   if (!docked) {
     // 欢迎页居中：头像 + 欢迎语 + 大输入框 + 状态条
     return (
-      <motion.div
-        layout
-        className="flex flex-1 flex-col items-center justify-center px-6 pb-16"
-        transition={{ type: "spring", stiffness: 170, damping: 22 }}
-      >
-        <Avatar size={84} />
-        <div className="mb-6 mt-4 flex items-end gap-1">
-          <p className="text-lg font-medium" style={{ color: "var(--c-bubble-text)" }}>
+      <div className="flex h-full flex-col items-center justify-center px-6 pb-10">
+        <Avatar size={76} />
+        <div className="mb-5 mt-3 flex items-end gap-1">
+          <p className="text-[17px] font-medium" style={{ color: "var(--c-bubble-text)" }}>
             {greeting()}
           </p>
           <img
-            src="/castorice-assets/welcome-chibi.png"
+            src={WELCOME_CHIBI_URL}
             alt=""
             draggable={false}
-            className="h-20 w-auto select-none mix-blend-multiply dark:mix-blend-screen"
+            className="chibi-art h-[72px] w-auto select-none"
           />
         </div>
-        <motion.div layout className="w-full max-w-2xl">
+        <div className="w-full max-w-2xl">
           {inner}
           <StatusStrip />
-        </motion.div>
-      </motion.div>
+        </div>
+      </div>
     );
   }
 
-  // 聊天态：底部输入栏
   return (
-    <motion.div
-      layout
-      className="shrink-0 px-6 pb-4"
-      transition={{ type: "spring", stiffness: 170, damping: 22 }}
-    >
-      <div className="mx-auto max-w-3xl">
+    <div className="shrink-0 px-6 pb-4 pt-1">
+      <div className="mx-auto w-full max-w-3xl">
         {inner}
         <StatusStrip />
       </div>
-    </motion.div>
+    </div>
   );
 }

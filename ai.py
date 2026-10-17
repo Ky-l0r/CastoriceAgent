@@ -1991,6 +1991,9 @@ class AI:
         # castorice.profile 零第三方依赖且读失败返回空，这里不 try：
         # 注入失败 = 没有小节，而不是对话失败。
         prompt += cprofile.system_prompt_section()
+        # 语气风格小节（第四期）：来自界面状态条的「风格」下拉。
+        # 未选择 / 选「默认」时不注入，保持既有提示词不变。
+        prompt += self._style_section()
         time_instructions = self.TIME_INSTRUCTIONS
         if "get_current_time" in self._mode_registry.visible_tool_names(
                 resolved_mode):
@@ -2049,6 +2052,46 @@ class AI:
             self.mode_registry.names(),
         )
         return self.mode_registry.get(name)
+
+    #: 语气风格 -> 提示词片段。键与界面状态条的「风格」下拉一一对应。
+    STYLE_SECTIONS = {
+        "温柔": "语气温柔耐心，多用缓和的表达，避免命令式措辞；即使对方急躁也保持稳定。",
+        "简洁": "表达尽量精简，直给结论，不铺垫、不重复、不写多余的客套。",
+        "活泼": "语气轻快俏皮，可以适度使用口语与语气词，让对话有活力但不吵闹。",
+        "学术": "表达严谨，术语准确，必要时给出前提与依据；避免模糊措辞与夸张比喻。",
+    }
+
+    def _style_section(self) -> str:
+        """当前语气风格对应的提示词片段（默认风格返回空串）。
+
+        读取失败 / 未知风格一律返回空串：风格是锦上添花，绝不能因为
+        ui_settings.json 损坏就让整轮对话失败。
+        """
+        try:
+            style = str(self._ui_style() or "").strip()
+        except Exception:
+            return ""
+        text = self.STYLE_SECTIONS.get(style)
+        if not text:
+            return ""
+        return "\n\n【语气风格】\n" + text
+
+    def _ui_style(self) -> str:
+        """从 ui_settings 读当前风格（无 ui 模块时读 JSON 兜底）。"""
+        getter = getattr(self, "_ui_settings_get", None)
+        if callable(getter):
+            try:
+                return str((getter() or {}).get("style") or "")
+            except Exception:
+                return ""
+        try:
+            import json  # noqa: PLC0415
+            from pathlib import Path  # noqa: PLC0415
+            path = Path(__file__).resolve().parent / "ui_settings.json"
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return str((data or {}).get("style") or "")
+        except Exception:
+            return ""
 
     def _build_emoji_instructions(self) -> str:
         """按当前 Image 目录内容生成表情包规则说明"""
@@ -2170,6 +2213,55 @@ class AI:
             parts.append({'type': 'text', 'text': text or '（图片）'})
         return {'role': 'user', 'content': parts}
 
+    #: 用户正文里的表情包标记，如 [表情:害羞]
+    USER_STICKER_RE = re.compile(
+        r"[\[【]\s*表情\s*[:：]\s*([^\]】\n]{1,24}?)\s*[\]】]"
+    )
+
+    def _extract_user_stickers(self, text: str) -> Tuple[str, List[str]]:
+        """把用户正文里的 [表情:xx] 标记剥离，返回 (纯文本, 贴纸图片路径列表)。
+
+        只返回**存在且后端真的扫到过**的贴纸路径：标记名不在 catalog 里时
+        不产生图片（避免拿一个不存在的路径去 encode_image_data_url 报错）。
+        视觉能力判定不在本函数做——调用方统一走 supports_vision()，
+        不支持的模型只是拿到「对方发了 xx 表情」的文字描述。
+        """
+        if not text or not self.USER_STICKER_RE.search(text):
+            return text, []
+
+        names: List[str] = []
+
+        def _take(match: "re.Match[str]") -> str:
+            name = (match.group(1) or "").strip()
+            if name:
+                names.append(name)
+            return ""
+
+        plain = self.USER_STICKER_RE.sub(_take, text).strip()
+        if not names:
+            return plain, []
+
+        paths: List[str] = []
+        described: List[str] = []
+        vision = False
+        try:
+            vision = bool(self.supports_vision())
+        except Exception:
+            vision = False
+
+        for name in names:
+            sticker = self.emoji_catalog.get(name) if self.emoji_catalog else None
+            if sticker is not None and vision:
+                paths.append(sticker.path)
+            else:
+                described.append(name)
+
+        if described:
+            # 没有视觉能力：用文字告诉模型对方发了什么表情（不改变角色设定）。
+            hint = "（对方发来了表情：" + "、".join(described) + "）"
+            plain = (plain + "\n" + hint).strip() if plain else hint
+        return plain, paths
+
     def _pick_emoji_for_reply(self, reply_text: str) -> Optional[EmojiSticker]:
         """
         为一条回复挑选表情包（每条回复最多一个）
@@ -2289,7 +2381,19 @@ class AI:
         """
         images = [p for p in (images or []) if p and os.path.exists(p)]
         has_text = bool(user_input and user_input.strip())
-        
+
+        # 用户发了表情包（正文里的 [表情:xx] 标记，界面贴纸面板产出）：
+        # 1) 若模型支持视觉输入，把贴纸文件当图片一起发过去，模型能真正看到；
+        # 2) 否则把标记翻译成自然语言描述，模型至少知道对方发了哪个表情。
+        #    两种情况下标记本身都要从正文里去掉——[表情:害羞] 直接喂给模型
+        #    会让它复读这个方括号字符串。
+        if has_text:
+            user_input, sticker_paths = self._extract_user_stickers(user_input)
+            user_input = user_input or ""
+            has_text = bool(user_input.strip())
+            if sticker_paths:
+                images = list(images) + sticker_paths
+
         if not has_text and not images:
             yield ('text', "请输入有效的问题。")
             yield ('done', "请输入有效的问题。")

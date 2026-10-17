@@ -36,6 +36,14 @@ const api = {
   // ---- 窗口控制（自绘标题栏；主进程直通）----
   minimize: () => ipcRenderer.send("window:minimize"),
   hide: () => ipcRenderer.send("window:hide"),
+  toggleMaximize: () => ipcRenderer.send("window:toggle-maximize"),
+  isMaximized: () => ipcRenderer.invoke("window:is-maximized") as Promise<boolean>,
+  /** 最大化状态推送（按钮 / 双击标题栏 / 系统快捷键都会触发）。 */
+  onMaximizedChanged: (listener: (maximized: boolean) => void) => {
+    const wrapped = (_: unknown, value: boolean) => listener(Boolean(value));
+    ipcRenderer.on("window:maximized-changed", wrapped);
+    return () => ipcRenderer.removeListener("window:maximized-changed", wrapped);
+  },
 
   // ---- 通知横幅（t5：WebNotifier 主动聊天投递的窗口内一路）----
   onNotification: (
