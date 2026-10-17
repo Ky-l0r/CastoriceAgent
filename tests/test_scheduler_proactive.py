@@ -491,13 +491,28 @@ class TestOfflineFallback:
 
 class TestNotInReleasePackage:
     def test_pack_script_whitelist_excludes_schedules(self):
-        """打包脚本按白名单复制：不拷贝 schedules.json。"""
+        """发布包按白名单带入资源：不拷贝 schedules.json。
+
+        v1.4 起（Electron 管线）：资源经 electron-builder 的
+        extraResources 白名单带入（webapp/electron-builder.json 从
+        ../prompts 与 ../Image 复制）；打包总控脚本不再复制 Image。
+        白名单语义不变——schedules.json（用户运行期数据）在总控脚本
+        与后端打包脚本中都不出现，extraResources 白名单钉住合法来源。
+        """
         from pathlib import Path as _P
-        script = _P("scripts") / "打包.ps1"
-        text = script.read_text(encoding="utf-8")
-        assert "schedules" not in text
-        # 白名单复制只拷 Image / prompts / example_config / 使用说明
-        assert "Copy-Item (Join-Path $root \"Image\")" in text
+        import json as _json
+        for name in ("打包.ps1", "打包后端.ps1"):
+            text = (_P("scripts") / name).read_text(encoding="utf-8")
+            assert "schedules" not in text
+        builder = _json.loads(
+            (_P("webapp") / "electron-builder.json").read_text(encoding="utf-8"))
+        sources = [
+            str(entry.get("from", ""))
+            for entry in builder.get("extraResources", [])
+            if isinstance(entry, dict)
+        ]
+        assert any(s.endswith("prompts") for s in sources)
+        assert any(s.endswith("Image") for s in sources)
 
     def test_store_roundtrip_and_default_path_is_program_dir(self, tmp_path):
         """schedules.json 放程序目录（相对 CWD 解析，与 ui_settings.json

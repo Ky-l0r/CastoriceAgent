@@ -681,3 +681,79 @@ harness.py 签名级核对：git diff castorice/harness.py 为空，且工作区
 ## 10. 结论
 
 第二期四条实现线（R19-1、触发词注入、QQ 渠道、主动聊天）独立验证全部通过；第一期基线（护栏 10 文件 sha256、818>738 全绿）无回归。一处低优先级瑕疵（调度器测试中的恒真断言）已记录，不阻塞。
+
+---
+
+# 第三期独立验证报告（t8 · reviewer3 · 2026-10-17）
+
+验证者独立复验第三期六条交付（t1–t6），不沿用实现方结论；关键链路以真实 ai.AI 装配 + 真实 WS 回环连接实测（非单测替身）。
+
+## 1. verify 命令记录
+
+| command | exitCode | 输出摘要 |
+| --- | --- | --- |
+| `python -m pytest tests/ -q` | 1 | **1 failed, 787 passed, 1 skipped（既有跳过）**，耗时 184.94s。唯一失败 `test_scheduler_proactive.py::TestNotInReleasePackage::test_pack_script_whitelist_excludes_schedules`——第二期钉死的 v1.3 打包脚本 `Copy-Item (Join-Path $root "Image")` 字面断言在 t6 重写打包管线后过时。语义复核：schedules 在 scripts/打包.ps1 与 scripts/打包后端.ps1 中 **0 次出现**，发布包内无 schedules.json（tar 扫描证实），防泄漏意图成立。captain 已定性为「断言过时，已派 t11 语义等价修复」，不记 blocker |
+| `python -c "import main; print('main ok')"` | 0 | main ok（Electron 优先组合根可导入） |
+| `python -c "import castorice.bridge; print('bridge ok')"` | 0 | bridge ok（纯 Python、websockets 延迟导入） |
+| `python -c "import castorice.profile; print('profile ok')"` | 0 | profile ok（补充验证项） |
+
+## 2. 【harness 铁律】—— 通过（双确认）
+
+- `git diff HEAD -- castorice/harness.py` 输出为空；`git diff --stat HEAD -- castorice/harness.py castorice/channels/` 亦为空（channels 契约未为 UI 特化而改）；
+- 内容比对：工作区 harness.py sha256 = `c2f6c1622165aeb658d947cb178cdde669a7425e439ea34a482efa4aebfe66e4`，与 `git show HEAD:castorice/harness.py` 逐字节相等（BYTE_IDENTICAL: True）。
+
+## 3. 【桥接同构】—— 通过
+
+- 契约同构：castorice/channels/base.py 冻结契约「恒 2 元组、done 恰好一次且最后」（t19 实测冻结注释在案）；WS 全链路实测事件序 `["tool","tool","text","done"]`，done 恰一次且为最后一帧（allow 与 deny 两轮均验证）；
+- 边界纪律：test_bridge.py 23 用例含 `test_chat_forwards_events_and_done_exactly_once_at_end`、`test_stream_error_becomes_done_ok_false`、`test_bot_without_done_gets_synthesized_done`（异常→done(ok=False)、越约 bot→兜底补发两条边界在案）；
+- token 握手：`test_wrong_token_is_rejected_at_handshake` / `test_non_hello_first_frame_is_rejected` / `test_handshake_timeout_closes_idle_connection` 三条在案；E2E 独立复验错误 token → `closed:ConnectionClosedError`（code 4001）；
+- 断线重连：webapp/electron/main/ws-client.ts 指数退避 1s→10s 封顶（retryBaseMs=1000 / retryMaxMs=10000，connecting/reconnecting/offline 状态机在案）；桥接层侧重连回环 E2E 复验：断开后新连接握手成功且 mode.list RPC 可用。
+
+## 4. 【审批回环】—— 通过（WS 全链路，非单测替身）
+
+真实 ai.AI 装配（fake provider 脚本，临时 workdir，approval_policy: ask + sandbox workspace-write）+ BridgeServer + spawn-bridge._install_web_approval_responder / _register_web_rpc_extensions 同款接线，经真实 WebSocket 回环连接验证：
+
+- **allow → 动作真实执行**：WS chat 帧 → tool(start) 事件广播 → approval.pending 轮询命中 → approval.detail 返回工具/参数详情 → approval.resolve(allow) 返回 delivered:true → tool(done) 事件 → `e2e_allow.txt` 内容 `T8-ALLOW` 真实落盘；
+- **deny → 不执行且模型收到结构化拒绝**：resolve(deny) 后文件不落盘；第二次 chat_completion 收到的 messages 中含结构化拒绝文本（「拒绝」字样命中；审批拒绝码体系沿用内核）；deny 轮 done 亦恰一次且最后；
+- **60s 超时路径**：诊断阶段真实复现——responder 已装但 resolve 未送达时，60.0s 后 broker 按 unavailable 关闭，审计日志 `code=APPROVAL_TIMEOUT`（reason 含「应答超时(60.0s)」），与 spawn-bridge APPROVAL_TIMEOUT_S=60 对齐前端倒计时的语义一致；
+- 既有承接：审批纯逻辑语义由 test_permissions 64 用例 + test_bridge 23 用例承接（见 §6）。
+
+## 5. 【用户档案闭环】—— 通过
+
+- **system prompt 注入（分离条件断言）**：真实 bot._build_system_prompt 实测——设 {nickname:开拓者, appellation:阁下} 后 prompt 出现【用户档案】小节（「请用「阁下」称呼用户…昵称是「开拓者」」）；改为 {nickname:阿星, appellation:你这家伙} 后称呼随之变化；清空档案（各字段显式 None）后小节消失。三态分离断言全过（含引号包裹形态）；
+- **记忆检索携带城市**：city=上海 → `memory_query_suffix() == " 上海"`（E2E 复验；ai.py:2308 记忆检索 query 拼接点在案；test_profile.py:146-149 单测在案）；
+- **落盘与打包隔离**：profile.json 经 ENV CASTORICE_PROFILE_PATH 落盘程序目录验证通过；发布包 tar 扫描 **无 profile.json / schedules.json / ui_settings.json / 渠道配置 / 任何含 api_key 的真实配置**。
+
+## 6. 【Qt 退役清单】—— 逐项核对通过
+
+- **ui.py 已删除**：`git ls-files castorice/ui.py` 为空（git rm 于 5137c5f）；requirements.txt 已移除 PySide6；
+- **退役用例全名清单**（自 `git show 5137c5f~1` 逐一核对，tests/README.md 已记档）：
+  - tests/test_ui_panels.py：**48 用例**（47 个 test 函数 + offline parametrize 连带 1 例）——ChatWindow/模式条/面板/主题两套调色板/打字机/表情/图片附件/UiSettings 落盘，全部 Qt 窗体专属，无可保留的纯逻辑用例；
+  - tests/test_approval_wiring.py：**31 用例**——ChatWindow 应答者注册/线程纪律/配色为 Qt 专属；纯逻辑审批语义（allow/deny/timeout/结构化拒绝码/sandbox 边界）由 test_permissions.py（64 用例）与 test_bridge.py（Web 审批 RPC 23 用例）承接，本轮 §4 的 WS 全链路复验补齐端到端证据；
+  - test_offline_guarantees.py parametrize 去掉 "ui"（连带 1 例，计入上面 48）；
+- **对账**：818 − 79（Qt 专属）= 739 新基线；739 + 23（bridge）+ 27（profile）= 789 收集 = **788 passed + 1 skipped**（t6 报告数）；本轮实测 787 passed + 1 failed（断言过时，t11 修复中）+ 1 skipped，修复后应回到 788+1；
+- **main.py Electron 优先**：WEBAPP_ENTRY 探测（renderer+main+preload 三产物齐备才 ready），缺产物打印构建指引退出，**不回退 Qt**；`python -c "import main"` 通过；
+- **无 Qt 环境可测试可驱动**：当前环境 PySide6 已卸载（pytest 既有跳过仅 1 条 napcat 在线用例），三条 import verify 全过、全量 pytest 除断言过时 1 例全过——红线 D「无 Qt 环境下可测试可 CLI 驱动」语义保留成立；
+- **字面差异记录（低风险）**：castorice/bridge.py:424/442 的 `import ui` 为 try/except 包裹的**可选回退**（优先 bot._ui_settings_load/save 鸭子类型，ui.py 已删后恒走本地等价实现兜底），功能语义与红线 D 一致，但与模块 docstring「本模块不 import ui」字面有出入——建议后续统一措辞或移除死分支（不阻塞）。
+
+## 7. 【发布核对】—— 通过
+
+- **tag 指向**：v1.4 为 annotated tag，`git rev-parse "v1.4^{commit}"` = `5137c5f2fda9a74969f0e0d4023ce7a6722a2df7`，与 HEAD（第三期提交）一致；工作树干净（`git status --porcelain` 为空，`main...origin/main` 无 ahead/behind）；
+- **远端资产**：GitHub Release v1.4（REST API 实查）——tag_name=v1.4, target=main, draft=false, prerelease=false；资产 CastoriceAgent-v1.4.zip **size=1,179,555,840 bytes, state=uploaded**；
+- **本地对账**：本地发布包同文件 size=1,179,555,840 bytes 完全一致；全量 sha256 = `a7a8cc0bf205837033313097b3ac028260ea460cec6fa38e597647ecab0fc6bd` 与远端 API digest **逐字符一致**；
+- **包内敏感数据扫描**（tar 全量 3705 条目）：无 schedules.json / profile.json / ui_settings.json / 渠道配置 / API key（backend/config.yaml 为 example 占位：api_key 均为 "your-*-api-key" 空值形态）；database/chroma.sqlite3 为**空模板**（embeddings=0、仅 chromadb 默认 schema，mtime=打包时刻 2026-10-17 19:40:53，非用户真实记忆库）；Image/prompts/example_config/使用说明/sidecar runtime（backend-runtime）+ Electron 壳齐备；
+- **形态备注**：该发布包实际为 **tar 归档**（.zip 命名；Python zipfile 报 BadZipFile，tarfile 可读；Windows 资源管理器可正常解压）。功能无损，建议后续发布改用真 zip 或改扩展名为 .tar.gz（记录性瑕疵，不阻塞）。
+
+## 8. 【纯 Python 红线】—— 通过
+
+- grep 核对：castorice/bridge.py 与 castorice/profile.py 非注释代码无 PySide6/QtWidgets/import ui（bridge.py 仅 §6 所述 try/except 可选回退）；notify.py 的 PySide6 仅存在于 SystemTrayNotifier 可选路径的延迟导入（Qt 缺失时降级日志软失败）+ docstring/注释；
+- harness/channels 契约未改（§2 diff 双空）；桥接层消费 bot 全鸭子类型，无 ai.py 依赖。
+
+## 9. 独立验证方法说明
+
+- 审批/档案 E2E 复刻 tests/test_approval_wiring.py（5137c5f~1）的真实 ai.AI 装配路径（FakeProvider 脚本替身 + 真实内核），桥接侧用 spawn-bridge 同款接线函数，WS 客户端走真实回环连接；诊断期间三次误判（客户端线程 keepalive 超时、provider 未安装、save_values({}) 当清空用）均定性为**验证脚本自身缺陷**而非产品缺陷，修正后 12/12 断言全过；
+- 归因类断言均为分离条件构造（allow/deny 各自跑轮、p1/p2/p3 三态 prompt），无单边推断；未以 git diff 作为测试判据（harness 一致性另做逐字节内容比对）。
+
+## 10. 结论
+
+第三期六条交付（桥接层 / Electron 壳 / 主界面 / 设置与档案 / 通知托盘 / 打包与 Qt 退役 + v1.4 发布）独立验证**全部通过**。两项记录性瑕疵（打包脚本字面断言过时——已派 t11；发布包 tar 形态 .zip 命名）与一项字面差异（bridge.py 可选回退与 docstring 措辞）均不阻塞。818→739 新基线对账成立，harness 铁律零改动，v1.4 发布资产本地/远端字节级一致。
