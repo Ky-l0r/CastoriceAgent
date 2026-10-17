@@ -77,7 +77,7 @@ def test_no_test_writes_into_repository(tmp_path):
     assert PROJECT_ROOT not in tmp_path.resolve().parents
 
 
-@pytest.mark.parametrize("module_name", ["ai", "ui", "main"])
+@pytest.mark.parametrize("module_name", ["ai", "main"])
 def test_expected_modules_exist(module_name):
     assert (PROJECT_ROOT / f"{module_name}.py").exists()
 

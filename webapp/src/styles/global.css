@@ -1,0 +1,155 @@
+@import "tailwindcss";
+
+/*
+ * 主题 CSS 变量（对齐一期 ui.Colors 的深浅两套调色板）。
+ * :root 默认深色；html[data-theme="light"] 覆盖浅色。
+ * 组件一律用 var(--c-*) 引用，切主题零改动。
+ */
+:root {
+  --c-window-bg: #171420;
+  --c-input-bg: #241f33;
+  --c-input-text: #efebfa;
+  --c-input-border: #332c47;
+  --c-input-border-focus: #8b5cf6;
+  --c-input-placeholder: #8a8299;
+  --c-user-bubble-bg: #2c2444;
+  --c-ai-bubble-bg: #221d30;
+  --c-bubble-text: #f1edfa;
+  --c-bubble-border: transparent;
+  --c-scrollbar-bg: #241f33;
+  --c-scrollbar-handle: #463c63;
+  --c-scrollbar-handle-hover: #5a4e7e;
+  --c-avatar-bg: #332c47;
+  --c-avatar-border: #463c63;
+  --c-highlight: #8b5cf6;
+  --c-highlight-text: #ffffff;
+  --c-titlebar-bg: #5b34c9;
+  --c-titlebar-text: #ffffff;
+  --c-send-bg: #7c3aed;
+  --c-send-bg-hover: #8b5cf6;
+  --c-send-bg-disabled: #332c47;
+  --c-tool-bg: #1f1a2c;
+  --c-tool-text: #8a8299;
+  --c-mode-bar-bg: #4a28a8;
+  --c-mode-tab-active-bg: #ffffff;
+  --c-mode-tab-active-text: #5b34c9;
+  --c-mode-tab-text: #d8ccff;
+  --c-mode-tab-hover-bg: #6b41da;
+  --c-nav-text: #a69cb8;
+  --c-nav-text-hover: #efebfa;
+  --c-nav-active-bg: #332c47;
+  --c-approval-bg: #2a2136;
+  --c-approval-border: #6d4ac4;
+  --c-approval-title: #f3eeff;
+  --c-approval-text: #c7bedb;
+  --c-approval-allow-bg: #7c3aed;
+  --c-approval-deny-bg: #3a3050;
+  --c-approval-deny-text: #d9d2ea;
+  --c-muted: #8a8299;
+  --c-status-text: #a69cb8;
+  --c-status-chip-bg: #241f33;
+  --c-status-chip-border: #332c47;
+  --c-overlay-bg: rgba(10, 8, 16, 0.55);
+}
+
+html[data-theme="light"] {
+  --c-window-bg: #f4f1fb;
+  --c-input-bg: #ffffff;
+  --c-input-text: #2b2540;
+  --c-input-border: #e2dbf2;
+  --c-input-border-focus: #7c3aed;
+  --c-input-placeholder: #9c93b4;
+  --c-user-bubble-bg: #ede6fc;
+  --c-ai-bubble-bg: #ffffff;
+  --c-bubble-text: #2b2540;
+  --c-bubble-border: #e6dff7;
+  --c-scrollbar-bg: #f4f1fb;
+  --c-scrollbar-handle: #cfc7e4;
+  --c-scrollbar-handle-hover: #b6abd4;
+  --c-avatar-bg: #ede6fc;
+  --c-avatar-border: #d9d0f0;
+  --c-highlight: #7c3aed;
+  --c-highlight-text: #ffffff;
+  --c-titlebar-bg: #8b5cf6;
+  --c-titlebar-text: #ffffff;
+  --c-send-bg: #7c3aed;
+  --c-send-bg-hover: #8b5cf6;
+  --c-send-bg-disabled: #e2dbf2;
+  --c-tool-bg: #f0eafb;
+  --c-tool-text: #6b5ca5;
+  --c-mode-bar-bg: #7c4de8;
+  --c-mode-tab-active-bg: #ffffff;
+  --c-mode-tab-active-text: #6d28d9;
+  --c-mode-tab-text: #ede6fc;
+  --c-mode-tab-hover-bg: #9a76f0;
+  --c-nav-text: #8a80a6;
+  --c-nav-text-hover: #4a3f6b;
+  --c-nav-active-bg: #ede6fc;
+  --c-approval-bg: #f3eeff;
+  --c-approval-border: #c4b5fd;
+  --c-approval-title: #4a3f6b;
+  --c-approval-text: #5b4b8a;
+  --c-approval-allow-bg: #7c3aed;
+  --c-approval-deny-bg: #ede6fc;
+  --c-approval-deny-text: #4a3f6b;
+  --c-muted: #9c93b4;
+  --c-status-text: #6b5ca5;
+  --c-status-chip-bg: #ffffff;
+  --c-status-chip-border: #e2dbf2;
+  --c-overlay-bg: rgba(74, 63, 107, 0.35);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--c-window-bg);
+  color: var(--c-bubble-text);
+  overflow: hidden;
+}
+
+/* 无边框窗口的拖拽区约定：标题栏组件加 drag-region 类即可。 */
+.drag-region {
+  -webkit-app-region: drag;
+}
+
+.drag-region button,
+.drag-region input,
+.drag-region textarea {
+  -webkit-app-region: no-drag;
+}
+
+/* 细滚动条（对齐一期配色） */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--c-scrollbar-bg);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--c-scrollbar-handle);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--c-scrollbar-handle-hover);
+}
+
+/* 流式光标（打字机进行中） */
+.typing-cursor::after {
+  content: "▍";
+  color: var(--c-highlight);
+  animation: blink 1s steps(2) infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}

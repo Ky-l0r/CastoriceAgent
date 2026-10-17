@@ -25,6 +25,7 @@ from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 
 import castorice
+import castorice.profile as cprofile
 import castorice.tools as ctools
 import castorice.tools.web as tools_web
 from castorice import (
@@ -1887,7 +1888,8 @@ class AI:
     TIME_INSTRUCTIONS = (
         "\n\n【时间信息】\n"
         "1. 每条用户消息开头的【当前时间】就是这条消息发出时的真实本地日期与时间，"
-        "回答「现在几点 / 今天几号 / 今天星期几」这类问题时以它为准，不要凭空猜测或说过时的时间；\n"
+        "回答「现在几点 / 今天几号 / 今天星期几」这类问题时以它为准，不要凭空猜测或说过时的时间；"
+        "标注了时区时说明用户不在机器本地时区，跨时区问候（早安 / 晚安）以标注时区为准；\n"
         "2. 【相关记忆】里每条记忆都以 [日期 时间] 开头，表示那件事发生的时刻，"
         "可以据此判断事情的先后顺序与相隔多久。"
     )
@@ -1985,6 +1987,10 @@ class AI:
             mode=resolved_mode, user_message=user_message)
         if self.emoji_catalog:
             prompt += self._build_emoji_instructions()
+        # 用户档案小节（第三期 t4）：称呼 / 性别 / 生日 / 城市 / 时区。
+        # castorice.profile 零第三方依赖且读失败返回空，这里不 try：
+        # 注入失败 = 没有小节，而不是对话失败。
+        prompt += cprofile.system_prompt_section()
         time_instructions = self.TIME_INSTRUCTIONS
         if "get_current_time" in self._mode_registry.visible_tool_names(
                 resolved_mode):
@@ -2232,15 +2238,33 @@ class AI:
         """
         当前本地时间的文本表示（含星期）
 
+        用户档案配置了时区（castorice/profile.json 的 timezone，IANA 名）
+        时按该时区渲染并附注时区；未配置 / 时区名非法时退回机器本地时间
+        （旧行为，字节级一致）。
+
         Args:
             moment: 指定时刻，默认取当前时间
 
         Returns:
-            形如「2026-10-03 16:20:15（星期六）」
+            形如「2026-10-03 16:20:15（星期六）」，配置时区时形如
+            「2026-10-03 16:20:15（星期六，时区 Asia/Shanghai）」
         """
         now = moment or datetime.now()
+        tz_name = ""
+        try:
+            tz_name = cprofile.UserProfile.get("timezone").strip()
+        except Exception:
+            tz_name = ""
+        tz_note = ""
+        if tz_name:
+            try:
+                from zoneinfo import ZoneInfo  # noqa: PLC0415 - 按需加载
+                now = now.astimezone(ZoneInfo(tz_name))
+                tz_note = f"，时区 {tz_name}"
+            except Exception:
+                tz_note = f"，时区 {tz_name}（未能识别，按本地时间显示）"
         weekday = "星期" + "一二三四五六日"[now.weekday()]
-        return f"{now.strftime('%Y-%m-%d %H:%M:%S')}（{weekday}）"
+        return f"{now.strftime('%Y-%m-%d %H:%M:%S')}（{weekday}{tz_note}）"
     
     def get_response_stream(
         self, user_input: str, images: Optional[List[str]] = None
@@ -2275,8 +2299,13 @@ class AI:
             # 0. 本轮表情包回合计数（用于概率/冷却判定）
             self.emoji_session.mark_turn()
             
-            # 1. 搜索相关记忆（只发图片时不检索）
+            # 1. 搜索相关记忆（只发图片时不检索）。
+            #    用户档案配了城市时（castorice.profile.memory_query_suffix），
+            #    查询串附带城市做地理定位——「明天天气怎么样」这类问题的
+            #    检索与后续工具入参都能落在正确城市上。
             query = (user_input or "").strip()
+            if query:
+                query = query + cprofile.memory_query_suffix()
             memories = self.memory_manager.search_memories(query) if query else []
             
             # 2. 当前时间 + 记忆都放到 user 消息里，而不是系统提示词（节省 token）

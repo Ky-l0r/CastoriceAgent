@@ -8,9 +8,11 @@
 
   调度器只依赖该协议，**不 import 任何 Qt 类**；第三期 Electron 前端
   实现同一协议接入（Web 端 toast / 系统通知），不需要改调度器。
-* `SystemTrayNotifier` —— 第一期默认实现：QSystemTrayIcon 气泡通知。
-  Qt 是**延迟导入**（方法体里 import PySide6），因此 castorice/ 包
-  整体仍可在无 Qt 环境下被测试与 CLI 驱动（红线 D：import 本模块
+* `SystemTrayNotifier` —— 第一期默认实现（v1.4 起为可选实现）：
+  QSystemTrayIcon 气泡通知。Qt 是**延迟导入**（方法体里 import
+  PySide6），且 requirements.txt 已不再声明 PySide6——Electron 壳
+  （webapp/）是 v1.4 的默认通知出口，本实现仅在环境里恰好装有
+  Qt 时可用；无 Qt 环境自动降级为日志（红线 D：import 本模块
   本身不引入 PySide6 依赖）。托盘不可用时按 `fallback_log` 配置
   降级为仅记日志（fallback_log=False 时直接报失败）。
 
@@ -32,6 +34,7 @@ __all__ = [
     "DesktopNotifier",
     "NotifierRegistry",
     "SystemTrayNotifier",
+    "WebNotifier",
     "get_notifier_registry",
 ]
 
@@ -133,6 +136,63 @@ class NotifierRegistry:
             except Exception as exc:  # pragma: no cover - 关闭容错
                 logger.warning("关闭通知实现 %r 失败: %s", notifier, exc)
         self._notifiers.clear()
+
+
+class WebNotifier:
+    """DesktopNotifier 协议的 Web 端实现（第三期 Electron 前端接入）。
+
+    notify() 把通知交给桥接服务器（castorice.bridge.BridgeServer）广播给
+    Web 前端（toast / 系统通知）。与 SystemTrayNotifier 的降级纪律一致：
+    服务器未运行 / 没有已握手客户端时按软失败返回
+    DeliveryResult(ok=False)，绝不抛异常打断调度器。
+
+    桥接服务器是延迟依赖：本类不 import bridge（避免环），notify() 时按
+    注入的 server 或进程内最近启动的桥接服务器解析（castorice.bridge
+    启动时会把自身登记进去）。
+    """
+
+    def __init__(self, server: Optional[Any] = None) -> None:
+        self._server = server
+
+    def bind(self, server: Any) -> None:
+        """显式绑定桥接服务器（组合根在服务器 start 之后调用）。"""
+        self._server = server
+
+    def _resolve_server(self) -> Optional[Any]:
+        if self._server is not None:
+            return self._server
+        try:  # 延迟解析进程级桥接服务器（避免 import 环）
+            from .bridge import active_server  # noqa: PLC0415
+        except ImportError:
+            return None
+        return active_server()
+
+    def notify(self, title: str, body: str, target_id: str = "") -> DeliveryResult:
+        server = self._resolve_server()
+        if server is None:
+            return DeliveryResult.failure(
+                target_id=target_id, detail="桥接服务器未运行")
+        send = getattr(server, "send_event", None)
+        if not callable(send):
+            return DeliveryResult.failure(
+                target_id=target_id, detail="桥接服务器不支持事件广播")
+        try:
+            delivered = bool(send("notification", {
+                "title": str(title or ""),
+                "body": str(body or ""),
+                "target_id": str(target_id or ""),
+            }))
+        except Exception as exc:  # pragma: no cover - 广播竞态
+            logger.warning("Web 通知投递异常: %s", exc)
+            return DeliveryResult.failure(
+                target_id=target_id, detail="通知投递异常: " + str(exc))
+        if not delivered:
+            return DeliveryResult.failure(
+                target_id=target_id, detail="当前没有已握手的 Web 客户端")
+        return DeliveryResult.success(target_id=target_id)
+
+    def close(self) -> None:
+        pass
 
 
 _registry: Optional[NotifierRegistry] = None

@@ -482,7 +482,7 @@ channels:
 
 ## 致谢与版权
 
-- 界面基于 [PySide6](https://doc.qt.io/qtforpython/)（Qt for Python）
+- 界面基于 [Electron](https://www.electronjs.org/) 壳 + React Web UI（v1.4 起，替代此前的 PySide6 / Qt for Python）
 - 记忆检索使用 [ChromaDB](https://www.trychroma.com/)
 - 模型调用通过 [[OI] Python SDK](https://github.com/openai/openai-python) 的兼容接口
 
@@ -498,7 +498,7 @@ channels:
 
 | 内容 | 授权情况 |
 | :--- | :--- |
-| `ai.py`、`ui.py`、`main.py` 等源码，`README.md`、`打包.ps1` 等文档脚本 | MIT，自由使用 |
+| `ai.py`、`main.py`、`castorice/`、`webapp/` 等源码，`README.md`、`打包.ps1` 等文档脚本 | MIT，自由使用 |
 | `prompts/` 中转述游戏角色设定与原作台词的文本 | 出自《崩坏：星穹铁道》，版权归米哈游 / HoYoverse |
 | `Image/` 下的头像与表情包图片 | 同上 |
 
@@ -520,7 +520,8 @@ channels:
 ### 环境要求
 
 - **Python 3.9+**（开发环境为 3.13）
-- **Windows**（界面基于 PySide6，理论上跨平台，但未在 Linux / macOS 上测试）
+- **Windows**（Electron 壳 + Python sidecar 嵌套打包，理论可跨平台，但未在 Linux / macOS 上测试）
+- **Node.js 24 + pnpm**（webapp 依赖安装与构建）
 
 ### 从源码运行
 
@@ -542,7 +543,8 @@ python scripts/requirement_install.py
 python main.py
 ```
 
-想先看界面不接 API？直接运行 `python ui.py`，会用内置的模拟 AI 演示界面效果。
+界面产物未构建时，`python main.py` 会打印 `pnpm install` / `pnpm run build` 的指引；
+构建完成后再次运行即可拉起 Electron 壳（sidecar 由壳自动管理，无需手动启动）。
 
 ### 打包为 exe
 
@@ -554,15 +556,19 @@ pwsh -File scripts\打包.ps1
 脚本会自动生成并嵌入 exe 图标（取自 `Image\CastoriceAvatar.jpeg`），
 发布包里的 `config.yaml` 用示例配置占位，不含任何密钥。
 
-脚本已经排除了 `torch`、`scipy`、`pandas`、`transformers` 这几个 **chromadb 声明里没有、运行时也不导入**的依赖 ——
-它们是被 `--collect-all` 连带收进来的，其中 `torch_cpu.dll` 单个文件就有 291MB。排除后发布包从 871MB 降到 **336MB**。
+打包分三步：`scripts\打包后端.ps1` 用 PyInstaller 把 Python 后端打成独立 sidecar
+（`dist\castorice-sidecar\`，含 `_internal`，同样排除 torch / scipy / pandas / transformers，
+`torch_cpu.dll` 单个就有 291MB），`pnpm run build` 构建界面，最后 electron-builder
+把两者嵌套成单目录绿色便携包（sidecar 经 extraResources 放进 `resources/`，
+用户机器**无需安装 Python**）。发布包里的 `config.yaml` 用示例配置占位，不含任何密钥。
 
 ### 项目结构
 
 ```
 CastoriceAgent/
-├── main.py                     程序入口：环境准备、日志、首次使用引导
-├── ui.py                       界面：主窗口、设置窗口、气泡、表情面板、动画
+├── main.py                     程序入口（Electron 优先；Qt 版自 v1.4 退役）
+├── webapp/                     Electron 壳 + React Web UI（界面：欢迎页 / 聊天流 /
+│                               分类设置中心 / 用户档案 / 托盘与通知）
 ├── ai.py                       AI 核心：配置、记忆库、提供商适配、工具、表情包
 ├── castorice/                  四模式内核：模式注册表 / 会话日志 / agent 循环 /
 │                               权限审批 / 工具集 / 记忆引擎 / 渠道接口（castorice/channels/）
@@ -570,7 +576,8 @@ CastoriceAgent/
 ├── example_config.yaml         配置模板（发布时用它占位）
 ├── config.yaml                 你的实际配置（已被 .gitignore 忽略）
 ├── scripts/
-│   ├── 打包.ps1                一键打包脚本
+│   ├── 打包.ps1                一键打包脚本（Electron 嵌套总控）
+│   ├── 打包后端.ps1            Python sidecar 打包（PyInstaller，产 _internal）
 │   └── requirement_install.py  依赖安装脚本
 ├── docs/
 │   ├── 使用说明.txt             给最终用户的说明书（随发布包分发）

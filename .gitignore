@@ -91,3 +91,6 @@ desktop.ini
 .mypy_cache/
 .ruff_cache/
 .ipynb_checkpoints/
+
+# 第三期 UI 参考仓库（用户手动放置，勿提交勿删除）
+Cyrene-Agent-master/

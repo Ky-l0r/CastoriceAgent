@@ -1,0 +1,61 @@
+{
+  "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
+  "appId": "com.castorice.agent",
+  "productName": "CastoriceAgent",
+  "directories": {
+    "output": "release"
+  },
+  "files": [
+    "package.json",
+    { "from": "dist/main/main", "to": "dist/main" },
+    { "from": "dist/main/shared", "to": "dist/main/shared" },
+    "dist/preload/**/*",
+    "dist/renderer/**/*"
+  ],
+  "extraResources": [
+    {
+      "from": "electron/sidecar",
+      "to": "backend",
+      "filter": ["**/*", "!**/__pycache__/**"]
+    },
+    {
+      "from": "../castorice",
+      "to": "backend/castorice",
+      "filter": ["**/*.py"]
+    },
+    {
+      "from": "../ai.py",
+      "to": "backend/ai.py"
+    },
+    {
+      "from": "../main.py",
+      "to": "backend/main.py"
+    },
+    {
+      "from": "../prompts",
+      "to": "backend/prompts"
+    },
+    {
+      "from": "../config.yaml",
+      "to": "backend/config.yaml"
+    },
+    {
+      "from": "../Image",
+      "to": "Image",
+      "filter": ["**/*"]
+    },
+    {
+      "from": "../dist/castorice-sidecar",
+      "to": "backend-runtime",
+      "filter": ["**/*"]
+    },
+    {
+      "from": "../Image/CastoriceAgent.ico",
+      "to": "CastoriceAgent.ico"
+    }
+  ],
+  "win": {
+    "target": "dir",
+    "icon": "../Image/CastoriceAgent.ico"
+  }
+}

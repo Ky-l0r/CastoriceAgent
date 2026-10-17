@@ -5,8 +5,9 @@
 # LLM API（兼容 OpenAI 接口的服务都能用）
 openai>=1.0.0
 
-# 桌面界面
-PySide6>=6.5.0
+# 桌面界面（v1.4 起 Electron 壳替代 Qt；PySide6 仅在需要旧版
+# SystemTrayNotifier 托盘通知时可选安装，缺失时自动降级为日志）
+# PySide6>=6.5.0
 
 # 向量记忆库（内含本地 embedding，无需额外模型文件）
 chromadb>=0.4.0

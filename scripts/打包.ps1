@@ -1,91 +1,78 @@
-# 一键打包脚本：生成可直接分发的文件夹（含 exe 与运行所需资源）
+# 一键打包脚本（v1.4：Electron 壳 + Python sidecar 嵌套，绿色便携）
 #
 # 用法（在仓库根目录下）：
 #   pwsh -File scripts\打包.ps1
 #
 # 产物：发布包\CastoriceAgent\  （整个文件夹拷给别人即可使用）
+#   CastoriceAgent.exe            Electron 壳（入口）
+#   resources/app.asar            Web UI 与主进程代码
+#   resources/backend/            config.yaml / prompts / castorice 包 / Image
+#   resources/backend-runtime/    PyInstaller 产的 Python sidecar（免装 Python）
 #
+# 前置：webapp 依赖已安装（cd webapp; pnpm install --registry=https://registry.npmmirror.com）
 # 说明：
-#   - 用文件夹模式而不是单文件：chromadb / onnxruntime 这类库在单文件模式下
-#     每次启动都要解压到临时目录（十几秒起），且容易出错。
+#   - Qt 版自 v1.4 退役（ui.py 已删除），不再产出 PySide6 界面产物。
+#   - chromadb / onnxruntime 的 --collect-all 与大件 --exclude 瘦身经验
+#     沿用第一期（torch_cpu.dll 一个就 291MB）。
 #   - 发布包里的 config.yaml 用 example_config.yaml 的占位内容，
-#     不含你自己的 API Key，可以放心给别人。
+#     不含你自己的 API Key。
 
 $ErrorActionPreference = "Stop"
 
-# 本脚本位于 scripts\ 下，仓库根目录是它的上一级
 $root = Split-Path $PSScriptRoot -Parent
-$dist = Join-Path $root "dist\CastoriceAgent"
 $releaseRoot = Join-Path $root "发布包"
 $release = Join-Path $releaseRoot "CastoriceAgent"
+$unpacked = Join-Path $root "webapp\release\win-unpacked"
 
-Write-Host "== 0/4 准备 exe 图标 ==" -ForegroundColor Cyan
-$icon = Join-Path $root "Image\CastoriceAgent.ico"
-if (-not (Test-Path $icon)) {
-    $avatar = Join-Path $root "Image\CastoriceAvatar.jpeg"
-    if (-not (Test-Path $avatar)) { throw "缺少图标源文件: $avatar" }
-    Write-Host "未找到 $icon，正在根据头像生成..." -ForegroundColor Yellow
-    python -c "import sys; from PIL import Image; Image.open(sys.argv[1]).convert('RGBA').save(sys.argv[2], format='ICO', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])" $avatar $icon
-    if ($LASTEXITCODE -ne 0) { throw "生成 ico 失败（需要 Pillow：pip install pillow）" }
-}
-Write-Host "图标: $icon" -ForegroundColor Green
+Write-Host "== 1/4 打包 Python sidecar（PyInstaller，产 _internal）==" -ForegroundColor Cyan
+& pwsh -File (Join-Path $PSScriptRoot "打包后端.ps1")
+if ($LASTEXITCODE -ne 0) { throw "sidecar 打包失败" }
 
-Write-Host "== 1/4 调用 PyInstaller 打包 ==" -ForegroundColor Cyan
-Push-Location $root
+Write-Host "== 2/4 构建 Web UI + Electron 主进程 ==" -ForegroundColor Cyan
+Push-Location (Join-Path $root "webapp")
 try {
-    # 排除项说明：
-    #   torch / scipy / pandas / transformers —— chromadb 声明里没有、
-    #   运行时也不会导入，但 --collect-all 会把它们连带收进来，
-    #   其中 torch_cpu.dll 一个文件就 291MB，排除后可省下约 460MB。
-    #   onnxruntime / tokenizers 是记忆检索真正要用的，必须保留。
-    python -m PyInstaller --noconfirm --clean --windowed --name CastoriceAgent --icon "$icon" `
-        --collect-all chromadb `
-        --collect-all onnxruntime `
-        --collect-all tokenizers `
-        --exclude-module torch `
-        --exclude-module scipy `
-        --exclude-module pandas `
-        --exclude-module transformers `
-        --exclude-module matplotlib `
-        --exclude-module tkinter `
-        --exclude-module PyQt5 `
-        --exclude-module PyQt6 `
-        --exclude-module IPython `
-        --exclude-module pytest `
-        main.py
-    if ($LASTEXITCODE -ne 0) { throw "PyInstaller 打包失败" }
+    pnpm run build
+    if ($LASTEXITCODE -ne 0) { throw "webapp 构建失败" }
 }
 finally {
     Pop-Location
 }
 
-Write-Host "== 2/4 准备发布目录 ==" -ForegroundColor Cyan
+Write-Host "== 3/4 electron-builder 嵌套打包（sidecar 为 extraResources）==" -ForegroundColor Cyan
+$eb = Join-Path $root "webapp\node_modules\.bin\electron-builder.cmd"
+Push-Location (Join-Path $root "webapp")
+try {
+    $env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
+    # electron-builder 内部会经 PowerShell 调 pnpm list 收集依赖树；PATH 上
+    # 若有拦截 stdout 的 pnpm shim（如开发工具注入的 runtime-commands），
+    # JSON 输出被污染会报 "No JSON content found"。这里把系统 node 目录
+    # 提到 PATH 最前，保证它解析到真实 pnpm。
+    $sysNode = "C:\Program Files\node-v24.19.0-win-x64\node-v24.19.0-win-x64"
+    if (Test-Path $sysNode) {
+        $env:PATH = "$sysNode;$env:PATH"
+    }
+    & $eb --win dir
+    if ($LASTEXITCODE -ne 0) { throw "electron-builder 打包失败" }
+}
+finally {
+    Remove-Item Env:ELECTRON_MIRROR -ErrorAction SilentlyContinue
+    Pop-Location
+}
+
+Write-Host "== 4/4 组装发布目录 ==" -ForegroundColor Cyan
 if (Test-Path $release) { Remove-Item -Recurse -Force $release }
-New-Item -ItemType Directory -Path $release -Force | Out-Null
+New-Item -ItemType Directory -Path $releaseRoot -Force | Out-Null
+Copy-Item $unpacked $release -Recurse -Force
 
-Write-Host "== 3/4 复制程序与资源 ==" -ForegroundColor Cyan
-Copy-Item (Join-Path $dist "*") $release -Recurse -Force
+# config.yaml 不随仓库进包（extraResources 拷的是开发机配置）：
+# 用示例配置覆盖，保证发布包不含真实 API Key。
+Copy-Item (Join-Path $root "example_config.yaml") (Join-Path $release "resources\backend\config.yaml") -Force
+Copy-Item (Join-Path $root "example_config.yaml") (Join-Path $release "resources\backend\example_config.yaml") -Force
 
-# 运行期需要的资源（放在 exe 旁边，方便用户自行修改）
-Copy-Item (Join-Path $root "Image")   $release -Recurse -Force
-Copy-Item (Join-Path $root "prompts") $release -Recurse -Force
-
-# 配置：使用示例配置，不含真实 API Key
-Copy-Item (Join-Path $root "example_config.yaml") (Join-Path $release "config.yaml")
-Copy-Item (Join-Path $root "example_config.yaml") (Join-Path $release "example_config.yaml")
-
-# 使用说明（放在 docs\ 下，复制进发布包根目录给用户看）
+# 使用说明
 $manual = Join-Path $root "docs\使用说明.txt"
 if (Test-Path $manual) { Copy-Item $manual $release }
 
-# 不放 database / memory / sessions / logs / ui_settings.json 与第二期新增的
-# 定时任务清单、渠道数据目录：让用户以全新状态启动
-#（白名单式复制只拷贝上面列出的条目，sessions/ 等运行期产物天然不会进入发布包）
-
-Write-Host "== 4/4 完成 ==" -ForegroundColor Cyan
 $size = [math]::Round((Get-ChildItem $release -Recurse -File | Measure-Object Length -Sum).Sum / 1MB, 1)
 Write-Host "发布目录: $release" -ForegroundColor Green
 Write-Host "总大小  : $size MB" -ForegroundColor Green
-Write-Host ""
-Write-Host "目录内容:" -ForegroundColor Yellow
-Get-ChildItem $release | Select-Object Mode, Name | Format-Table -AutoSize

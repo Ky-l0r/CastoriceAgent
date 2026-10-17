@@ -1,7 +1,18 @@
 # 测试套件
 
-CastoriceAgent 的回归测试基线。改造 `ai.py` / `ui.py` 之前先跑一遍，
+CastoriceAgent 的回归测试基线。改造 `ai.py` / 桥接层之前先跑一遍，
 改造之后再跑一遍，用于确认对外接口与既有语义没有被破坏。
+
+> **v1.4 基线调整（Qt 退役）**：界面从 PySide6 窗体迁移到 Electron 壳 +
+> Web UI（webapp/），`ui.py` 删除，Qt 专属用例同步退役并从基线扣除：
+>
+> | 退役文件 | 用例数 | 说明 |
+> | --- | --- | --- |
+> | `tests/test_ui_panels.py` | 48 | ChatWindow / 面板 / 打字机 / UiSettings 落盘（Qt 窗体专属） |
+> | `tests/test_approval_wiring.py` | 31 | 审批接线（ChatWindow 应答者注册 / 线程纪律 / 颜色）；其中纯逻辑审批语义由 `test_permissions.py`（64 用例）与 `test_bridge.py`（Web 审批 RPC 23 用例）承接 |
+>
+> 818 - 79 = **739** 为新基线（此后新增 `test_bridge.py` 23、`test_profile.py`
+> 27 等按叠加计数）。Web 侧 UI 行为由 `webapp/smoke-ws.py` 端到端冒烟覆盖。
 
 ## 运行方式
 
