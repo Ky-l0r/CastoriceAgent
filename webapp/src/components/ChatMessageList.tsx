@@ -128,7 +128,7 @@ function ToolEntry({ entry }: { entry: TranscriptEntry }) {
     <motion.div
       initial={{ opacity: 0, y: 4 }}
       animate={{ opacity: 1, y: 0 }}
-      className="max-w-[85%] overflow-hidden text-xs"
+      className="w-fit max-w-full overflow-hidden text-xs"
       style={{
         background: "var(--c-tool-bg)",
         border: "1px solid var(--c-divider)",
@@ -185,7 +185,7 @@ function EmojiEntry({ entry }: { entry: TranscriptEntry }) {
       initial={{ opacity: 0, scale: 0.92 }}
       animate={{ opacity: 1, scale: 1 }}
       transition={{ type: "spring", stiffness: 260, damping: 20 }}
-      className="max-w-[168px] overflow-hidden"
+      className="w-fit max-w-[200px] overflow-hidden"
       style={{ borderRadius: "var(--r-md)" }}
     >
       <img
@@ -223,8 +223,10 @@ export function ChatMessageList() {
   if (entries.length === 0) return <EmptyChat />;
 
   return (
-    <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
-      <div className="mx-auto flex w-full max-w-3xl flex-col msg-gap">
+    <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-8 py-5">
+      {/* 不设 max-width：最大化窗口时气泡分别贴住左右边缘（用户要求）。
+          可读性由气泡自身的宽度上限保证，而不是靠压缩整个内容区。 */}
+      <div className="flex w-full flex-col msg-gap">
         <AnimatePresence initial={false}>
           {entries.map((entry) => {
             if (entry.role === "user") {
@@ -233,14 +235,15 @@ export function ChatMessageList() {
                   key={entry.id}
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="group flex justify-end"
+                  className="group flex w-full justify-end"
                 >
-                  <div className="flex items-end gap-1">
-                    <div className="opacity-0 transition-opacity group-hover:opacity-100">
+                  {/* 这一层必须能收缩（min-w-0），否则长文本会把复制按钮挤出视口 */}
+                  <div className="flex min-w-0 max-w-[min(78%,640px)] items-end gap-1">
+                    <div className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100">
                       <CopyButton text={entry.content} />
                     </div>
                     <div
-                      className="msg-bubble max-w-[70%] px-4 py-2.5 text-sm"
+                      className="msg-bubble px-4 py-2.5 text-sm"
                       style={{
                         background: "var(--c-user-bubble-bg)",
                         color: "var(--c-bubble-text)",
@@ -260,11 +263,14 @@ export function ChatMessageList() {
                 className="group flex items-start gap-2.5"
               >
                 <Avatar size={32} />
-                <div className="flex min-w-0 flex-col gap-1">
+                {/* flex-1 是关键：缺了它这一列是 fit-content，内部元素的
+                    max-w-[xx%] 会与父级宽度互相依赖而塌缩成很窄的一条
+                    （工具条被压成「rea… / get_curr…」就是这么来的）。 */}
+                <div className="flex min-w-0 flex-1 flex-col gap-1">
                   {entry.kind === "text" && (
                     <>
                       <div
-                        className="msg-bubble max-w-[min(70%,640px)] px-4 py-2.5 text-sm"
+                        className="msg-bubble max-w-[min(78%,680px)] px-4 py-2.5 text-sm"
                         style={{
                           background: "var(--c-ai-bubble-bg)",
                           color: "var(--c-bubble-text)",
