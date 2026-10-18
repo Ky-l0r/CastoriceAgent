@@ -18,6 +18,8 @@ export interface CastoriceBridgeApi {
   minimize(): void;
   hide(): void;
   toggleMaximize(): void;
+  /** 目录选择对话框（工作目录绑定）；取消返回 null。 */
+  pickDirectory(): Promise<string | null>;
   isMaximized(): Promise<boolean>;
   /** 订阅最大化状态变化（按钮 / 双击标题栏 / 系统快捷键）；返回退订函数。 */
   onMaximizedChanged(listener: (maximized: boolean) => void): () => void;

@@ -1,4 +1,4 @@
-import { useState, type ComponentType } from "react";
+import { useEffect, useState, type ComponentType } from "react";
 import type { CSSProperties } from "react";
 import {
   ArrowLeft,
@@ -24,7 +24,7 @@ import { AboutPanel } from "../components/settings/AboutPanel";
  * 不弹独立窗口（无边框壳里弹窗管理成本高，页面切换与聊天共享主题变量）。
  */
 
-type SettingsTab =
+export type SettingsTab =
   | "appearance"
   | "providers"
   | "channels"
@@ -52,8 +52,21 @@ const TABS: {
   { id: "about", label: "关于", icon: Info, title: "关于" },
 ];
 
-export function SettingsPage({ onBack }: { onBack: () => void }) {
-  const [tab, setTab] = useState<SettingsTab>("profile");
+export function SettingsPage({
+  onBack,
+  initialTab,
+}: {
+  onBack: () => void;
+  /** 从侧栏快捷入口进来时直接定位的分类。 */
+  initialTab?: SettingsTab;
+}) {
+  const [tab, setTab] = useState<SettingsTab>(initialTab ?? "appearance");
+
+  // 侧栏再次点其它快捷入口时，App 会传新的 initialTab（组件不卸载），
+  // 这里跟随更新——否则点了「模型 API」还停在上一个分类。
+  useEffect(() => {
+    if (initialTab) setTab(initialTab);
+  }, [initialTab]);
 
   const activeTab = TABS.find((t) => t.id === tab) ?? TABS[0];
   const ActiveIcon = activeTab.icon;

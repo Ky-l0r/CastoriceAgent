@@ -37,6 +37,8 @@ const api = {
   minimize: () => ipcRenderer.send("window:minimize"),
   hide: () => ipcRenderer.send("window:hide"),
   toggleMaximize: () => ipcRenderer.send("window:toggle-maximize"),
+  /** 目录选择对话框（工作目录绑定）；取消返回 null。 */
+  pickDirectory: () => ipcRenderer.invoke("dialog:pick-directory") as Promise<string | null>,
   isMaximized: () => ipcRenderer.invoke("window:is-maximized") as Promise<boolean>,
   /** 最大化状态推送（按钮 / 双击标题栏 / 系统快捷键都会触发）。 */
   onMaximizedChanged: (listener: (maximized: boolean) => void) => {

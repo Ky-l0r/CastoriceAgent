@@ -9,16 +9,16 @@ import { Composer } from "./components/Composer";
 import { ApprovalCard } from "./components/ApprovalCard";
 import { NotificationBanner } from "./components/NotificationBanner";
 import { ModeWorkspace } from "./components/ModeWorkspace";
-import { SettingsPage } from "./pages/SettingsPage";
+import { SettingsPage, type SettingsTab } from "./pages/SettingsPage";
 import { bridgeActions } from "./lib/bridge-binding";
 import { ConnectionBanner } from "./components/ConnectionBanner";
 
 /**
  * 主界面组合根。
  *
- * 布局（第四期重排）：
+ * 布局：
  *   标题栏
- *   ├ 侧栏（会话列表，可折叠）
+ *   ├ 侧栏（会话列表 + 设置快捷入口，可折叠）
  *   └ 内容区
  *       ├ 模式分段选择器
  *       ├ 连接状态条（仅在非 ready 时出现）
@@ -32,13 +32,13 @@ export default function App() {
   const entries = useBridgeStore((s) => s.entries);
   const chatStarted = useBridgeStore((s) => s.chatStarted);
   const mode = useBridgeStore((s) => s.mode);
+  const appearance = useBridgeStore((s) => s.appearance);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
 
   // 外观变量：气泡圆角 / 行距 / 段间距（设置中心外观页写入 ui_settings）。
-  const appearance = useBridgeStore((s) => s.appearance);
   useEffect(() => {
     const root = document.documentElement;
     root.style.setProperty("--app-bubble-radius", appearance.bubbleRadius + "px");
@@ -49,9 +49,16 @@ export default function App() {
 
   const hasChat = chatStarted || entries.length > 0;
   const [view, setView] = useState<"chat" | "settings">("chat");
+  /** 打开设置时定位到的分类（侧栏快捷入口用）。 */
+  const [settingsTab, setSettingsTab] = useState<SettingsTab | undefined>(undefined);
+
+  const openSettings = (tab?: SettingsTab) => {
+    setSettingsTab(tab);
+    setView("settings");
+  };
 
   const newChat = () => {
-    useBridgeStore.getState().reset();
+    void bridgeActions().newSession();
     setView("chat");
   };
 
@@ -66,13 +73,19 @@ export default function App() {
       />
 
       <div className="flex min-h-0 flex-1">
-        {view === "chat" && (
-          <SideNav onNewChat={newChat} onOpenSettings={() => setView("settings")} />
-        )}
+        <SideNav
+          onNewChat={newChat}
+          onOpenSettings={openSettings}
+          onOpenSession={(id) => {
+            void bridgeActions().switchSession(id);
+            setView("chat");
+          }}
+          onDeleteSession={(id) => void bridgeActions().deleteSession(id)}
+        />
 
         {view === "settings" ? (
           <div className="min-h-0 min-w-0 flex-1">
-            <SettingsPage onBack={() => setView("chat")} />
+            <SettingsPage initialTab={settingsTab} onBack={() => setView("chat")} />
           </div>
         ) : (
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">

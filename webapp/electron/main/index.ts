@@ -230,6 +230,18 @@ function registerIpc(): void {
   });
   ipcMain.handle("window:is-maximized", () => mainWindow?.isMaximized() ?? false);
 
+  // 目录选择（工作目录绑定用）：renderer 没有 fs 能力，必须走主进程。
+  ipcMain.handle("dialog:pick-directory", async () => {
+    if (!mainWindow) return null;
+    const { dialog } = require("electron") as typeof import("electron");
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: "选择工作目录",
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+  });
+
   // 关闭行为读写（t5：设置中心「关闭时最小化到托盘」开关的后端）。
   ipcMain.handle("window:get-close-action", () => closeToTray);
   ipcMain.handle("window:set-close-action", (_event, value: boolean) => {

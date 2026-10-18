@@ -2873,6 +2873,120 @@ class AI:
         self._sessions[name] = store
         return store
 
+    # ---- 会话管理（第四期：侧栏点击切换 / 删除） ----
+
+    def switch_to_session(self, session_id: str) -> None:
+        """切到当前模式下指定的历史会话。
+
+        语义与 set_mode 的会话激活一致：先 flush 并 close 旧会话（否则新
+        会话文件会撞单写者登记），再从磁盘恢复历史进内核。
+        找不到该会话时抛 ValueError——界面据此提示，而不是静默不动。
+        """
+        name = self._mode_name
+        target = str(session_id or "").strip()
+        if not target:
+            raise ValueError("session_id 不能为空")
+
+        path = self.sessions_dir / name / (target + ".jsonl")
+        if not path.is_file():
+            raise ValueError(
+                "会话不存在: " + target + "（模式 " + name + "）")
+
+        current = self._sessions.get(name)
+        if current is not None and getattr(current, "session_id", "") == target:
+            return  # 已在该会话，幂等
+        if current is not None:
+            if getattr(current, "dirty", False):
+                current.flush("切换会话")
+            current.close()
+            self._sessions.pop(name, None)
+
+        store = SessionStore(
+            self.sessions_dir, name, session_id=target,
+            cwd=self._workdir_for_session(),
+        )
+        self._sessions[name] = store
+        self._session = store
+        self._session_projection = SessionProjection(store)
+        self._harness.session = store
+        self._harness.projection = self._session_projection
+        self._harness.set_mode(name)
+        self._sync_permission_context(name)
+
+        restored = store.derive_messages()
+        if restored:
+            self._messages = restored
+            if not any(m.get('role') == 'system' for m in self._messages):
+                self._messages.insert(0, {
+                    'role': 'system',
+                    'content': self._build_system_prompt(),
+                })
+        else:
+            self._reset_messages()
+        self._harness.seed_history(self._messages)
+        self.emoji_session.reset()
+        self.logger.info(f"已切换会话: {target}")
+
+    def delete_session(self, session_id: str) -> bool:
+        """删除当前模式下的一个历史会话文件。
+
+        正在使用的会话**拒绝删除**（它持有单写者登记，删了会让内核状态
+        与磁盘不一致）：调用方先切到别的会话再删。
+        返回 True 表示已删除，False 表示文件不存在（幂等）。
+        """
+        name = self._mode_name
+        target = str(session_id or "").strip()
+        if not target:
+            raise ValueError("session_id 不能为空")
+
+        current = self._sessions.get(name)
+        if current is not None and getattr(current, "session_id", "") == target:
+            raise ValueError(
+                "不能删除正在使用的会话，请先切换到其它会话")
+
+        path = self.sessions_dir / name / (target + ".jsonl")
+        if not path.is_file():
+            return False
+        path.unlink()
+        self.logger.info(f"已删除会话: {target}")
+        return True
+
+    def create_session(self) -> str:
+        """在当前模式下新开一个会话（关闭旧的，返回新会话 id）。
+
+        旧会话**必须落盘**：即便它还是空的，也要在磁盘上留一个文件，
+        否则它会从历史列表里消失（全新会话没有文件 → sessions.list 扫不到），
+        用户会觉得「刚建的对话不见了」。
+        """
+        name = self._mode_name
+        current = self._sessions.get(name)
+        if current is not None:
+            if getattr(current, "dirty", False):
+                current.flush("新建会话")
+            else:
+                # 空会话也写一次，保证它作为「空对话」出现在历史里
+                try:
+                    current.flush("新建会话（空会话占位）")
+                except Exception as e:  # pragma: no cover - 落盘失败不阻断新建
+                    self.logger.warning(f"旧会话落盘失败: {e}")
+            current.close()
+            self._sessions.pop(name, None)
+
+        store = SessionStore(
+            self.sessions_dir, name, cwd=self._workdir_for_session())
+        self._sessions[name] = store
+        self._session = store
+        self._session_projection = SessionProjection(store)
+        self._harness.session = store
+        self._harness.projection = self._session_projection
+        self._harness.set_mode(name)
+        self._sync_permission_context(name)
+        self._reset_messages()
+        self._harness.seed_history(self._messages)
+        self.emoji_session.reset()
+        self.logger.info(f"已新建会话: {store.session_id}")
+        return store.session_id
+
     def _workdir_for_session(self) -> Optional[str]:
         """会话不可变的工作目录（对齐 DSH 的 SessionHeader.cwd）"""
         return os.getcwd()

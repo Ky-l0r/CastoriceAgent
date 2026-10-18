@@ -369,7 +369,137 @@ class _RpcHandlers:
             active = str(getattr(getattr(self._bot, "_session", None), "session_id", "") or "")
         except Exception:
             active = ""
-        return {"sessions": sessions, "active": active}
+        # 各模式当前绑定的工作目录（界面「工作区」面板直接展示，省一次往返）
+        workdirs: Dict[str, str] = {}
+        registry = getattr(self._bot, "_mode_registry", None)
+        for name in ("work", "code", "learn"):
+            try:
+                got = registry.workdir(name) if registry is not None else None
+            except Exception:
+                got = None
+            if got:
+                workdirs[name] = str(got)
+        return {"sessions": sessions, "active": active, "workdirs": workdirs}
+
+    def sessions_history(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """读某个会话的历史事件（界面切换会话后重放消息流用）。
+
+        直接从 JSONL 投影，不构造 SessionStore（避免单写者锁）。
+        只返回界面需要渲染的最小子集：user / assistant / tool / emoji。
+        """
+        session_id = str(params.get("session_id") or "").strip()
+        if not session_id:
+            raise ChannelError("sessions.history 需要 session_id")
+        root = self._sessions_root()
+        if root is None:
+            return {"events": []}
+        mode = str(params.get("mode") or getattr(self._bot, "mode", "") or "chat")
+        path = root / mode / (session_id + ".jsonl")
+        if not path.is_file():
+            return {"events": []}
+
+        events: List[Dict[str, Any]] = []
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        raw = json.loads(line)
+                    except Exception:
+                        continue
+                    if not isinstance(raw, dict):
+                        continue
+                    kind = str(raw.get("kind") or "")
+                    if kind not in ("user", "assistant", "tool", "emoji"):
+                        continue
+                    payload = raw.get("payload") or {}
+                    if not isinstance(payload, dict):
+                        payload = {}
+                    item: Dict[str, Any] = {"kind": kind}
+                    if kind in ("user", "assistant"):
+                        item["text"] = str(
+                            payload.get("text") or payload.get("content") or "")
+                    elif kind == "emoji":
+                        item["name"] = str(payload.get("name") or "")
+                        item["path"] = str(payload.get("path") or "")
+                    else:
+                        item["name"] = str(payload.get("name") or "")
+                        item["status"] = str(payload.get("status") or "done")
+                    events.append(item)
+        except Exception as exc:
+            raise ChannelError("会话历史读取失败: " + str(exc)) from exc
+        return {"events": events, "session_id": session_id}
+
+    def session_switch(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """切到指定会话（界面侧栏点击）。"""
+        session_id = str(params.get("session_id") or "").strip()
+        if not session_id:
+            raise ChannelError("session.switch 需要 session_id")
+        switcher = getattr(self._bot, "switch_to_session", None)
+        if not callable(switcher):
+            raise ChannelError("bot 不支持会话切换")
+        try:
+            switcher(session_id)
+        except ValueError as exc:
+            raise ChannelError(str(exc)) from exc
+        except Exception as exc:
+            raise ChannelError("会话切换失败: " + str(exc)) from exc
+        return {"ok": True, "active": session_id}
+
+    def session_delete(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """删除一个历史会话文件。"""
+        session_id = str(params.get("session_id") or "").strip()
+        if not session_id:
+            raise ChannelError("session.delete 需要 session_id")
+        deleter = getattr(self._bot, "delete_session", None)
+        if not callable(deleter):
+            raise ChannelError("bot 不支持会话删除")
+        try:
+            removed = bool(deleter(session_id))
+        except ValueError as exc:
+            raise ChannelError(str(exc)) from exc
+        except Exception as exc:
+            raise ChannelError("会话删除失败: " + str(exc)) from exc
+        return {"ok": True, "removed": removed, "session_id": session_id}
+
+    def session_new(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """在当前模式下新建会话。"""
+        creator = getattr(self._bot, "create_session", None)
+        if not callable(creator):
+            raise ChannelError("bot 不支持新建会话")
+        try:
+            session_id = str(creator())
+        except Exception as exc:
+            raise ChannelError("新建会话失败: " + str(exc)) from exc
+        return {"ok": True, "session_id": session_id}
+
+    def workdir_bind(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """为某个模式绑定 / 解绑工作目录。
+
+        path 为空串表示解绑。越界路径由 ai.bind_mode_workdir 抛结构化
+        WorkdirError，这里把 code / message 原样传给界面展示。
+        """
+        mode = str(params.get("mode") or "").strip()
+        if not mode:
+            raise ChannelError("workdir.bind 需要 mode")
+        path = params.get("path")
+        binder = getattr(self._bot, "bind_mode_workdir", None)
+        if not callable(binder):
+            raise ChannelError("bot 不支持绑定工作目录")
+        try:
+            normalized = binder(mode, path if path else None)
+        except Exception as exc:
+            # WorkdirError 有 to_dict()（code / message / path）
+            to_dict = getattr(exc, "to_dict", None)
+            if callable(to_dict):
+                detail = to_dict()
+                raise ChannelError(
+                    str(detail.get("message") or exc),
+                ) from exc
+            raise ChannelError("绑定失败: " + str(exc)) from exc
+        return {"ok": True, "mode": mode, "workdir": normalized}
 
     def _sessions_root(self) -> Optional[Path]:
         """会话根目录：优先取 bot 已装配的会话根的父目录。"""
@@ -670,6 +800,11 @@ class BridgeServer:
             "mode.list": self._rpc.mode_list,
             "mode.switch": self._rpc.mode_switch,
             "sessions.list": self._rpc.sessions_list,
+            "sessions.history": self._rpc.sessions_history,
+            "session.switch": self._rpc.session_switch,
+            "session.delete": self._rpc.session_delete,
+            "session.new": self._rpc.session_new,
+            "workdir.bind": self._rpc.workdir_bind,
             "approval.pending": self._rpc.approval_pending,
             "approval.resolve": self._rpc.approval_resolve,
             "notify.register": self._rpc.notify_register,

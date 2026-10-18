@@ -126,3 +126,64 @@
    return 之前，并复核其余面板无同类问题。
 2. **模式点击无效**：见 §5「已知坑」。
 3. **贴图白底**：`screen` 混合模式对白色无效，深色主题留白方块。见 §3。
+
+## 8. 追加项（用户第二轮反馈）
+
+### 8.1 欢迎页：删掉 Q 版贴图
+
+贴图素材是白底不透明 PNG，靠混合模式融入背景，但**白色在深色主题下
+无论 multiply 还是 screen 都会留下可察觉的方块**（screen 白色=白，
+multiply 白色=背景，但贴图自身的浅色区域仍会发灰）。用户判定为突兀，
+直接移除；头像从 76px 放大到 104px 作为视觉焦点。
+
+`.chibi-art` 相关 CSS 保留但已无引用点，后续若要恢复贴图可直接复用
+（深色主题下需要 `invert(1) hue-rotate(180deg)` + `screen`）。
+
+### 8.2 工作目录绑定（不用再进设置页）
+
+原先只能改 `config.yaml`，界面上没有任何入口。现在：
+
+- **入口**：右侧工作区面板「工作目录」区块 → 「选择目录 / 更换」按钮；
+- **对话框**：`dialog:pick-directory` IPC（renderer 无 fs 权限，必须走主进程）；
+- **RPC**：`workdir.bind {mode, path}`，path 为空串表示解绑；
+- **安全**：路径必须落在可信根（默认项目目录）内，越界由
+  `ModeRegistry.bind_workdir` 抛结构化 `WorkdirError` 拒绝，界面显示原因；
+- **即时反馈**：绑定结果写进 store.workdirs，面板立刻显示新路径。
+
+chat 模式不可绑定（`WorkdirPolicy.bindable=False`），UI 按 `bindable`
+字段隐藏入口。
+
+### 8.3 设置入口
+
+侧栏底部新增 6 个快捷图标（外观 / 模型 API / 用户档案 / 权限 / 记忆 / 渠道），
+点击**直达对应分页**，不用先进设置页再找分类。`SettingsPage` 新增
+`initialTab` 参数；用 `useEffect` 跟随变化，否则在设置页内点另一个
+快捷入口不会切换分页（组件不卸载）。
+
+### 8.4 会话切换与删除
+
+| RPC | 说明 |
+| :--- | :--- |
+| `sessions.history {session_id}` | 读 JSONL 投影出 user/assistant/tool/emoji 事件 |
+| `session.new` | 关闭旧会话（**空会话也落盘**）、开新文件 |
+| `session.switch {session_id}` | flush + close 旧会话 → 打开目标 → 恢复历史进内核 |
+| `session.delete {session_id}` | 删文件；**拒绝删正在使用的会话** |
+
+**踩到的坑**：`create_session` 最初只在 `dirty` 时 flush 旧会话，
+结果一个刚创建、还没发过消息的会话**根本没有文件**——它既不出现在
+`sessions.list` 里（扫盘扫不到），也无法 `session.switch` 过去（文件不存在）。
+修复：不 dirty 时也写一次空快照，让空会话作为一个合法的历史条目存在。
+
+删除当前会话被拒绝而不是静默允许：它持有 `_ACTIVE_WRITERS` 单写者登记，
+删掉文件会让内核内存状态与磁盘不一致。
+
+### 8.5 引导优化
+
+新增 `GuidanceCard`（info / tip / warn 三种语气）与 `EmptyState` 组件：
+
+- **模型 API**：三步引导（选厂商 → 粘 Key → 保存试一句），空状态说明
+  「没有模型就无法对话，配置只存本地」；
+- **用户档案**：把原先的小字提示改成引导卡，实时显示「遐蝶会这样称呼你：X」，
+  并说明留空不影响使用；
+- 其余面板的空状态统一走 `EmptyState`，避免出现无解释的空白区。
+

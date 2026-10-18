@@ -7,6 +7,9 @@ import {
   Terminal,
   RefreshCw,
   ChevronRight,
+  FolderSearch,
+  X,
+  Loader2,
 } from "lucide-react";
 import { useBridgeStore, type ModeName } from "../store/bridge-store";
 import { bridgeActions } from "../lib/bridge-binding";
@@ -14,13 +17,9 @@ import { bridgeActions } from "../lib/bridge-binding";
 /**
  * 模式工作区（右侧面板）：四个模式在这里体现差异。
  *
- * 数据全部来自现有 RPC，不新增后端概念：
- *   - mode.list 给 sandbox / workdir / bindable；
- *   - 工具清单在 chat 之外的模式下由后端 available_modes 提供（可见工具数）；
- *   - 会话内工具调用记录来自 store 的 tool 条目（本轮已发生的调用）。
- *
- * 后端某项不可用时不报错，退化为「未绑定 / 不可用」提示——面板永远是
- * 可解释的，不出现空白块。
+ * 数据来自 mode.list（sandbox / workdir / bindable）与 store.workdirs
+ * （sessions.list 的附带字段）。工作目录可在这里直接绑定 / 解绑——
+ * 不用绕到设置页去改（用户反馈的「没有地方改绑定目录」）。
  */
 
 interface ModeCapability {
@@ -38,17 +37,22 @@ const SANDBOX_LABEL: Record<string, string> = {
 function Section({
   icon: Icon,
   title,
+  action,
   children,
 }: {
   icon: typeof Wrench;
   title: string;
+  action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <div className="mb-4">
-      <div className="mb-1.5 flex items-center gap-1.5" style={{ color: "var(--c-muted)" }}>
-        <Icon size={13} strokeWidth={1.8} />
-        <span className="text-[11px] font-semibold uppercase tracking-wider">{title}</span>
+      <div className="mb-1.5 flex items-center justify-between">
+        <div className="flex items-center gap-1.5" style={{ color: "var(--c-muted)" }}>
+          <Icon size={13} strokeWidth={1.8} />
+          <span className="text-[11px] font-semibold uppercase tracking-wider">{title}</span>
+        </div>
+        {action}
       </div>
       {children}
     </div>
@@ -72,11 +76,15 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
 export function ModeWorkspace({ mode }: { mode: ModeName }) {
   const modes = useBridgeStore((s) => s.modes);
   const entries = useBridgeStore((s) => s.entries);
+  const workdirs = useBridgeStore((s) => s.workdirs);
   const [refreshing, setRefreshing] = useState(false);
+  const [binding, setBinding] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const info: ModeCapability = modes.find((m) => m.name === mode) ?? {};
+  // store.workdirs 是最新事实（绑定后立即可见），mode.list 的 workdir 作兜底
+  const workdir = workdirs[mode] || info.workdir || "";
 
-  // 本轮已经发生的工具调用（从事件流派生，不需要额外 RPC）。
   const toolCalls = entries.filter((e) => e.kind === "tool");
 
   const refresh = async () => {
@@ -84,7 +92,6 @@ export function ModeWorkspace({ mode }: { mode: ModeName }) {
     try {
       const listing = (await bridgeActions().invoke("mode.list")) as {
         modes?: { name?: string; display_name?: string; sandbox?: string; workdir?: string; bindable?: boolean }[];
-        active?: string;
       };
       const list = (listing.modes ?? []).map((m) => ({
         name: String(m.name ?? ""),
@@ -102,19 +109,51 @@ export function ModeWorkspace({ mode }: { mode: ModeName }) {
     setRefreshing(false);
   };
 
+  const bindDirectory = async () => {
+    setError(null);
+    const picked = await window.castorice.pickDirectory?.();
+    if (!picked) return; // 用户取消
+    setBinding(true);
+    try {
+      const r = (await bridgeActions().invoke("workdir.bind", {
+        mode,
+        path: picked,
+      })) as { workdir?: string };
+      useBridgeStore.getState().setWorkdirs({
+        ...workdirs,
+        [mode]: String(r.workdir ?? picked),
+      });
+    } catch (e) {
+      setError(String((e as Error).message || "绑定失败"));
+    }
+    setBinding(false);
+  };
+
+  const unbind = async () => {
+    setError(null);
+    setBinding(true);
+    try {
+      await bridgeActions().invoke("workdir.bind", { mode, path: "" });
+      const next = { ...workdirs };
+      delete next[mode];
+      useBridgeStore.getState().setWorkdirs(next);
+    } catch (e) {
+      setError(String((e as Error).message || "解绑失败"));
+    }
+    setBinding(false);
+  };
+
   useEffect(() => {
-    // 进入某模式时拉一次能力信息（workdir 可能被设置页改过）。
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
 
-  const title =
-    mode === "work" ? "工作区" : mode === "code" ? "代码区" : "笔记本";
+  const title = mode === "work" ? "工作区" : mode === "code" ? "代码区" : "笔记本";
   const Icon = mode === "work" ? Terminal : mode === "code" ? FileCode2 : NotebookPen;
 
   return (
     <aside
-      className="flex h-full w-[268px] shrink-0 flex-col border-l"
+      className="flex h-full w-[272px] shrink-0 flex-col border-l"
       style={{ borderColor: "var(--c-divider)", background: "var(--c-surface-bg)" }}
     >
       <div className="flex items-center justify-between border-b px-3.5 py-2.5" style={{ borderColor: "var(--c-divider)" }}>
@@ -134,19 +173,56 @@ export function ModeWorkspace({ mode }: { mode: ModeName }) {
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3.5 py-3">
-        <Section icon={FolderTree} title="工作目录">
-          {info.workdir ? (
-            <div
-              className="break-all rounded-[var(--r-sm)] px-2 py-1.5 text-[11.5px]"
-              style={{ background: "var(--c-tool-bg)", color: "var(--c-tool-text)" }}
+        <Section
+          icon={FolderTree}
+          title="工作目录"
+          action={
+            <button
+              type="button"
+              disabled={binding}
+              className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] transition-colors hover:bg-[var(--c-nav-active-bg)] disabled:opacity-50"
+              style={{ color: "var(--c-highlight)" }}
+              onClick={() => void bindDirectory()}
             >
-              {info.workdir}
+              {binding ? <Loader2 size={10} className="animate-spin" /> : <FolderSearch size={10} />}
+              {workdir ? "更换" : "选择目录"}
+            </button>
+          }
+        >
+          {workdir ? (
+            <div className="flex items-start gap-1">
+              <div
+                className="min-w-0 flex-1 break-all rounded-[var(--r-sm)] px-2 py-1.5 text-[11.5px]"
+                style={{ background: "var(--c-tool-bg)", color: "var(--c-tool-text)" }}
+              >
+                {workdir}
+              </div>
+              <button
+                type="button"
+                title="解绑"
+                disabled={binding}
+                className="mt-1 flex h-5 w-5 shrink-0 items-center justify-center rounded transition-colors hover:bg-[var(--c-danger)] hover:text-white disabled:opacity-50"
+                style={{ color: "var(--c-muted)" }}
+                onClick={() => void unbind()}
+              >
+                <X size={10} />
+              </button>
             </div>
           ) : (
             <p className="text-[12px] leading-relaxed" style={{ color: "var(--c-muted)" }}>
               {info.bindable
-                ? "未绑定目录。在「设置 → 权限」里绑定后，本模式的工具只能在该目录内工作。"
+                ? "还没绑定目录。绑定后本模式的工具只能在该目录内工作。"
                 : "本模式不使用工作目录。"}
+            </p>
+          )}
+          {error && (
+            <p className="mt-1.5 text-[11.5px] leading-relaxed" style={{ color: "var(--c-danger)" }}>
+              {error}
+            </p>
+          )}
+          {info.bindable && (
+            <p className="mt-1.5 text-[11px] leading-relaxed" style={{ color: "var(--c-muted)" }}>
+              只允许选择可信根目录（默认是项目目录）内的路径，越界会被拒绝。
             </p>
           )}
         </Section>

@@ -123,6 +123,8 @@ interface BridgeStore {
   activeSessionId: string | null;
   /** 侧栏是否折叠。 */
   sidebarCollapsed: boolean;
+  /** 各模式当前绑定的工作目录（模式名 -> 绝对路径）。 */
+  workdirs: Record<string, string>;
 
   setPhase: (phase: ConnectionPhase) => void;
   pushUser: (text: string) => void;
@@ -146,6 +148,7 @@ interface BridgeStore {
   markChatStarted: () => void;
   setSessions: (sessions: SessionSummary[]) => void;
   setActiveSession: (id: string | null) => void;
+  setWorkdirs: (workdirs: Record<string, string>) => void;
   toggleSidebar: () => void;
   /** 载入历史会话（entries 整体替换）。 */
   loadEntries: (entries: TranscriptEntry[]) => void;
@@ -178,6 +181,7 @@ export const useBridgeStore = create<BridgeStore>((set) => ({
   sessions: [],
   activeSessionId: null,
   sidebarCollapsed: false,
+  workdirs: {},
 
   setPhase: (phase) => set({ phase }),
 
@@ -293,6 +297,8 @@ export const useBridgeStore = create<BridgeStore>((set) => ({
   setSessions: (sessions) => set({ sessions }),
 
   setActiveSession: (activeSessionId) => set({ activeSessionId }),
+
+  setWorkdirs: (workdirs) => set({ workdirs }),
 
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
 

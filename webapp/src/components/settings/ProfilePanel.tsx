@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, User, MapPin, Cake, Sparkles } from "lucide-react";
+import { Check, User, MapPin, Cake } from "lucide-react";
 import { fetchProfile, saveProfile, type ProfileData, type ProfileField } from "../../lib/settings-api";
+import { GuidanceCard } from "./GuidanceCard";
 
 /**
  * 用户档案页（第四期重做：从「六个文本框」改为「表单控件」）。
@@ -116,15 +117,10 @@ export function ProfilePanel() {
 
   return (
     <div className="pb-6">
-      <div className="mb-5 rounded-[var(--r-lg)] border px-4 py-3.5" style={{ borderColor: "var(--c-divider)", background: "var(--c-surface-bg)" }}>
-        <div className="flex items-center gap-2 text-[12.5px]" style={{ color: "var(--c-muted)" }}>
-          <Sparkles size={13} style={{ color: "var(--c-highlight)" }} />
-          这些信息会写进系统提示词，影响称呼、时间感知与本地化回答。
-        </div>
-        <div className="mt-2 text-[14px]" style={{ color: "var(--c-bubble-text)" }}>
-          遐蝶会这样称呼你：<b style={{ color: "var(--c-highlight)" }}>{callName}</b>
-        </div>
-      </div>
+      <GuidanceCard tone="tip" title={"遐蝶会这样称呼你：" + callName}>
+        填写的信息会写进每轮对话的系统提示词，所以她会记住怎么叫你、你所在城市的天气，
+        并在生日当天送上祝福。留空不会影响使用，只是回答会更通用一些。
+      </GuidanceCard>
 
       {/* 昵称 */}
       <Label icon={User} text="昵称" hint="遐蝶平时怎么叫你" />

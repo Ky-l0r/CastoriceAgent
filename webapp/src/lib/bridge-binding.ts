@@ -1,5 +1,10 @@
 import { useEffect } from "react";
-import { useBridgeStore, type ApprovalDetail, type ModeName } from "../store/bridge-store";
+import {
+  useBridgeStore,
+  type ApprovalDetail,
+  type ModeName,
+  type TranscriptEntry,
+} from "../store/bridge-store";
 
 /**
  * 把 preload 暴露的 API 绑定到 zustand store。
@@ -74,29 +79,7 @@ async function bootstrapOnce(): Promise<void> {
   }
 
   // 会话列表（侧栏「最近对话」；后端未实现该 RPC 时保持空列表）。
-  try {
-    const listing = (await invoke("sessions.list")) as {
-      sessions?: {
-        id?: string;
-        mode?: string;
-        title?: string;
-        updatedAt?: number;
-        messageCount?: number;
-      }[];
-      active?: string;
-    };
-    const sessions = (listing.sessions ?? []).map((s) => ({
-      id: String(s.id ?? ""),
-      mode: String(s.mode ?? ""),
-      title: String(s.title ?? "新对话"),
-      updatedAt: s.updatedAt,
-      messageCount: s.messageCount,
-    })).filter((s) => s.id);
-    useBridgeStore.getState().setSessions(sessions);
-    if (listing.active) useBridgeStore.getState().setActiveSession(String(listing.active));
-  } catch {
-    /* fail-open：无会话列表也能新建对话 */
-  }
+  await refreshSessions();
 
   // 界面设置（theme / thinking 档位；fail-closed 默认值）。
   try {
@@ -124,6 +107,82 @@ async function bootstrapOnce(): Promise<void> {
     });
   } catch {
     /* fail-closed：保持默认 dark */
+  }
+}
+
+/** 重新拉会话列表（新建/删除/切换后调用）。 */
+async function refreshSessions(): Promise<void> {
+  try {
+    const listing = (await window.castorice.invoke("sessions.list")) as {
+      sessions?: { id?: string; mode?: string; title?: string; updatedAt?: number; messageCount?: number }[];
+      active?: string;
+      workdirs?: Record<string, string>;
+    };
+    const sessions = (listing.sessions ?? [])
+      .map((s) => ({
+        id: String(s.id ?? ""),
+        mode: String(s.mode ?? ""),
+        title: String(s.title ?? "新对话"),
+        updatedAt: s.updatedAt,
+        messageCount: s.messageCount,
+      }))
+      .filter((s) => s.id);
+    const store = useBridgeStore.getState();
+    store.setSessions(sessions);
+    if (listing.active) store.setActiveSession(String(listing.active));
+    if (listing.workdirs) store.setWorkdirs(listing.workdirs);
+  } catch {
+    /* fail-open */
+  }
+}
+
+/**
+ * 把某个会话的历史事件转成界面条目。
+ *
+ * 走 sessions.history RPC（后端读 JSONL 并投影）；后端未实现时返回空数组，
+ * 界面显示空对话而不是报错——切换会话至少不会白屏。
+ */
+async function loadSessionEntries(sessionId: string): Promise<TranscriptEntry[]> {
+  try {
+    const r = (await window.castorice.invoke("sessions.history", {
+      session_id: sessionId,
+    })) as { events?: { kind?: string; role?: string; text?: string; name?: string; path?: string; status?: string }[] };
+    const events = r.events ?? [];
+    const entries: TranscriptEntry[] = [];
+    let seq = 0;
+    for (const e of events) {
+      const kind = String(e.kind ?? "");
+      const id = "h" + ++seq;
+      if (kind === "user") {
+        entries.push({ id, role: "user", kind: "text", content: String(e.text ?? "") });
+      } else if (kind === "assistant") {
+        entries.push({
+          id,
+          role: "assistant",
+          kind: "text",
+          content: String(e.text ?? ""),
+        });
+      } else if (kind === "emoji") {
+        entries.push({
+          id,
+          role: "assistant",
+          kind: "emoji",
+          content: String(e.name ?? "表情"),
+          meta: { name: e.name, path: e.path },
+        });
+      } else if (kind === "tool") {
+        entries.push({
+          id,
+          role: "assistant",
+          kind: "tool",
+          content: String(e.name ?? "tool"),
+          meta: { status: e.status ?? "done" },
+        });
+      }
+    }
+    return entries;
+  } catch {
+    return [];
   }
 }
 
@@ -215,6 +274,43 @@ export function bridgeActions() {
         /* 同上 */
       }
     },
+    /** 新建会话（后端关闭旧会话、开新文件）。 */
+    newSession: async () => {
+      try {
+        const r = (await window.castorice.invoke("session.new")) as { session_id?: string };
+        useBridgeStore.getState().reset();
+        if (r.session_id) useBridgeStore.getState().setActiveSession(r.session_id);
+        await refreshSessions();
+        return true;
+      } catch {
+        return false;
+      }
+    },
+
+    /** 切换会话（后端恢复历史；成功后重载消息流）。 */
+    switchSession: async (sessionId: string) => {
+      try {
+        await window.castorice.invoke("session.switch", { session_id: sessionId });
+        useBridgeStore.getState().setActiveSession(sessionId);
+        const entries = await loadSessionEntries(sessionId);
+        useBridgeStore.getState().loadEntries(entries);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+
+    /** 删除会话（后端拒绝删正在用的那个）。 */
+    deleteSession: async (sessionId: string) => {
+      try {
+        await window.castorice.invoke("session.delete", { session_id: sessionId });
+        await refreshSessions();
+        return true;
+      } catch {
+        return false;
+      }
+    },
+
     /** 语气风格（本地立即生效 + ui_settings.set 落库）。 */
     setStyle: async (style: string) => {
       useBridgeStore.getState().setStyle(style);

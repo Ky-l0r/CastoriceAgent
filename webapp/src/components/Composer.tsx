@@ -3,7 +3,6 @@ import { ImagePlus, ArrowUp, Square, ChevronDown } from "lucide-react";
 import { useBridgeStore } from "../store/bridge-store";
 import { bridgeActions } from "../lib/bridge-binding";
 import { Avatar } from "./Avatar";
-import { WELCOME_CHIBI_URL } from "../lib/assets";
 import { Popover, PopoverItem } from "./ui/Popover";
 import { StickerPickerButton } from "./ui/StickerPicker";
 
@@ -398,18 +397,10 @@ export function Composer({ docked }: ComposerProps) {
     // 欢迎页居中：头像 + 欢迎语 + 大输入框 + 状态条
     return (
       <div className="flex h-full flex-col items-center justify-center px-6 pb-10">
-        <Avatar size={76} />
-        <div className="mb-5 mt-3 flex items-end gap-1">
-          <p className="text-[17px] font-medium" style={{ color: "var(--c-bubble-text)" }}>
-            {greeting()}
-          </p>
-          <img
-            src={WELCOME_CHIBI_URL}
-            alt=""
-            draggable={false}
-            className="chibi-art h-[72px] w-auto select-none"
-          />
-        </div>
+        <Avatar size={104} />
+        <p className="mb-6 mt-4 text-[17px] font-medium" style={{ color: "var(--c-bubble-text)" }}>
+          {greeting()}
+        </p>
         <div className="w-full max-w-2xl">
           {inner}
           <StatusStrip />

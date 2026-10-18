@@ -16,6 +16,7 @@ import {
   type ProviderEntry,
 } from "../../lib/settings-api";
 import { bridgeActions } from "../../lib/bridge-binding";
+import { GuidanceCard, EmptyState } from "./GuidanceCard";
 
 /**
  * 模型 API 页（第四期重做：从「字段平铺」改为「预设卡片」）。
@@ -150,24 +151,22 @@ export function ProvidersPanel() {
         </button>
       </div>
 
+      <GuidanceCard tone="info" title="三步就能开始对话">
+        <ol className="ml-3.5 list-decimal space-y-0.5">
+          <li>点右上角「添加」，选一家你已有账号的厂商（地址和模型会自动填好）</li>
+          <li>把该厂商控制台里的 API Key 粘进来</li>
+          <li>点「保存」→ 回到对话发一句试试；失败多半是 Key 或模型名不对</li>
+        </ol>
+      </GuidanceCard>
+
       {state.providers.length === 0 && !adding && (
-        <div
-          className="rounded-[var(--r-lg)] border border-dashed px-4 py-10 text-center"
-          style={{ borderColor: "var(--c-input-border)" }}
-        >
-          <Cpu size={26} style={{ color: "var(--c-muted)" }} className="mx-auto mb-2" />
-          <p className="text-[13px]" style={{ color: "var(--c-muted)" }}>
-            还没有配置任何模型提供商
-          </p>
-          <button
-            type="button"
-            onClick={() => setAdding(true)}
-            className="mt-3 rounded-full px-4 py-1.5 text-[12.5px] font-medium"
-            style={{ background: "var(--c-send-bg)", color: "var(--c-highlight-text)" }}
-          >
-            添加第一个
-          </button>
-        </div>
+        <EmptyState
+          icon={Cpu}
+          title="还没有配置任何模型提供商"
+          hint="没有模型就无法对话。选一家厂商并填入 Key 即可，配置只保存在本地，不会上传。"
+          actionLabel="添加第一个"
+          onAction={() => setAdding(true)}
+        />
       )}
 
       <div className="flex flex-col gap-2">
