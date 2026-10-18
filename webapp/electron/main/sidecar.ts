@@ -5,6 +5,37 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import type { SidecarReady } from "../shared/bridge-protocol";
 
+/**
+ * 强杀一个进程及其所有子进程（Windows 用 taskkill /T，其它平台用进程组）。
+ *
+ * 存在理由：PyInstaller onedir 的 sidecar.exe 是引导器，真正干活的
+ * Python 解释器是它的子进程。只 kill 外层会留下内层孤儿。
+ */
+function killTree(pid: number | undefined): void {
+  if (!pid) return;
+  if (process.platform === "win32") {
+    try {
+      // /T 连带子进程，/F 强制；输出丢弃，失败也不影响退出流程
+      spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+    } catch {
+      /* 进程可能已退出 */
+    }
+    return;
+  }
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      /* 已退出 */
+    }
+  }
+}
+
 export interface SidecarOptions {
   /** Python 解释器，默认 PATH 上的 python。 */
   pythonPath?: string;
@@ -56,15 +87,25 @@ export class Sidecar extends EventEmitter {
 
     // scriptPath 为空：pythonPath 本身是 PyInstaller 产物可执行文件
     //（绿色便携形态，不再依赖用户机器上的 Python）；否则按脚本 + 解释器拉起。
+    // stdin 必须是 pipe（不能是 ignore）：
+    //   1. 父进程退出时管道自动关闭，sidecar 读到 EOF 立即退出——
+    //      这是 Windows 上唯一可靠的「父死子亡」信号；
+    //   2. 同时把 PID 传过去，sidecar 另有 PPID 轮询兜底。
+    // 传 process.pid 而不是 process.ppid：sidecar 的父进程就是本进程。
+    const env = {
+      ...process.env,
+      CASTORICE_ROOT: this.castoriceRoot,
+      CASTORICE_PARENT_PID: String(process.pid),
+    };
     const proc = this.scriptPath
       ? spawn(this.pythonPath, [this.scriptPath], {
-          env: { ...process.env, CASTORICE_ROOT: this.castoriceRoot },
-          stdio: ["ignore", "pipe", "pipe"],
+          env,
+          stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
         })
       : spawn(this.pythonPath, {
-          env: { ...process.env, CASTORICE_ROOT: this.castoriceRoot },
-          stdio: ["ignore", "pipe", "pipe"],
+          env,
+          stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
         });
     this.proc = proc;
@@ -118,16 +159,44 @@ export class Sidecar extends EventEmitter {
     }
   }
 
-  /** 优雅终止：SIGTERM -> 3s 后强杀。 */
+  /**
+   * 优雅终止：关 stdin（触发 sidecar 的 EOF 退出）-> SIGTERM -> 3s 后强杀进程树。
+   *
+   * 为什么要杀「进程树」而不是只 kill 自己：PyInstaller onedir 形态下
+   * sidecar.exe 会再拉起一个真正的 Python 子进程，只杀外层 exe 会留下
+   * 内层 python 常驻——这正是「关了程序后台还有 python」的另一个来源。
+   */
   stop(): void {
     const proc = this.proc;
     if (!proc) return;
     this.proc = null;
-    const killed = setTimeout(() => {
-      if (!proc.killed) proc.kill("SIGKILL");
+
+    // 1. 关 stdin：sidecar 的 stdin-watchdog 读到 EOF 会自行退出
+    //    （比 SIGTERM 更彻底：它会走 os._exit，不受非 daemon 线程拖延）。
+    try {
+      proc.stdin?.end();
+    } catch {
+      /* stdin 已关闭 */
+    }
+
+    let exited = false;
+    proc.once("exit", () => {
+      exited = true;
+    });
+
+    // 2. 温和信号
+    try {
+      proc.kill();
+    } catch {
+      /* 已退出 */
+    }
+
+    // 3. 兜底：3s 内没退出就整棵进程树强杀
+    const timer = setTimeout(() => {
+      if (exited) return;
+      killTree(proc.pid);
     }, 3000);
-    proc.once("exit", () => clearTimeout(killed));
-    proc.kill();
+    proc.once("exit", () => clearTimeout(timer));
   }
 
   private appendLog(chunk: string): void {

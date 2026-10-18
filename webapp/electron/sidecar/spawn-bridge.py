@@ -78,6 +78,96 @@ def _install_web_approval_responder(bot) -> bool:
     return True
 
 
+def _parent_alive_windows(ppid: int) -> bool:
+    """Windows：用 OpenProcess + GetExitCodeProcess 判断父进程是否还活着。
+
+    为什么不用 os.kill(ppid, 0)：Windows 上 Python 的 os.kill 对非子进程
+    语义不可靠（0 号信号会走 TerminateProcess 以外的路径），容易误判。
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, int(ppid))
+        if not handle:
+            # 打不开通常表示进程已退出（或权限不足——后者按存活处理，宁可不杀）
+            return kernel32.GetLastError() == 5
+        try:
+            code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return True
+            return code.value == STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:  # noqa: BLE001 - 判断失败时按存活处理，避免误自杀
+        return True
+
+
+def _parent_alive(ppid: int) -> bool:
+    """跨平台判断父进程是否存活（判断不了时一律按存活处理）。"""
+    if ppid <= 0:
+        return True
+    if os.name == "nt":
+        return _parent_alive_windows(ppid)
+    try:
+        os.kill(ppid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _install_parent_watchdog() -> None:
+    """父进程（Electron）退出后**本进程必须自己退出**。
+
+    为什么需要它：Windows 没有「父进程死亡自动清理子进程」的机制，
+    Electron 被任务管理器强杀、或崩溃时 before-quit 不会执行，sidecar
+    就会变成孤儿进程常驻后台（用户看到的就是「关了程序 python 还在跑」）。
+
+    双保险：
+      1. stdin EOF —— 父进程退出时管道自动关闭，stdin 读到 EOF 立即退出。
+         依赖父进程以 stdio[0]='pipe' 启动本进程（Electron 侧已改）。
+      2. PPID 轮询 —— 兜住 stdin 被意外继承/未关闭的情况（例如父进程
+         的句柄被子进程继承）。每秒检查一次，代价可忽略。
+    """
+    parent_pid = int(os.environ.get("CASTORICE_PARENT_PID") or 0)
+    logger = logging.getLogger("sidecar")
+
+    def _watchdog() -> None:
+        while True:
+            time.sleep(1.0)
+            if not _parent_alive(parent_pid):
+                logger.warning("父进程 %s 已退出，sidecar 自行终止", parent_pid)
+                # 用 os._exit 而不是 sys.exit：可能有非 daemon 线程
+                # （chromadb / 渠道）在跑，正常退出流程可能被它们拖住。
+                os._exit(0)
+
+    def _watch_stdin() -> None:
+        try:
+            while True:
+                chunk = sys.stdin.readline()
+                if chunk == "":
+                    # EOF：父进程的管道端已关闭
+                    logger.info("stdin 已关闭（父进程退出），sidecar 自行终止")
+                    os._exit(0)
+        except Exception:  # noqa: BLE001 - stdin 不可用时不阻塞启动
+            return
+
+    if parent_pid > 0:
+        threading.Thread(target=_watchdog, name="parent-watchdog",
+                         daemon=True).start()
+        logger.info("父进程监控已启用（ppid=%s）", parent_pid)
+    try:
+        if sys.stdin is not None and not sys.stdin.closed:
+            threading.Thread(target=_watch_stdin, name="stdin-watchdog",
+                             daemon=True).start()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _emit(payload: dict) -> None:
     """握手/错误信息走 stdout 单行 JSON，日志走 stderr。"""
     sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
@@ -219,6 +309,10 @@ def main() -> int:
 
     # 与 main.py:setup_environment 同一资源定位：打包后资源根由
     # CASTORICE_ROOT 环境变量显式传入，dev 默认仓库根。
+    # 父进程监控必须在任何重活之前装上：bot 构造（chromadb 加载）可能
+    # 耗时数十秒，这期间父进程若被强杀，没有监控就会一直挂着。
+    _install_parent_watchdog()
+
     root = Path(
         os.environ.get("CASTORICE_ROOT") or str(REPO_ROOT)
     ).resolve()

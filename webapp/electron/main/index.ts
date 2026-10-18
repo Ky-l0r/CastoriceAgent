@@ -292,10 +292,31 @@ if (!app.requestSingleInstanceLock()) {
     });
   });
 
+  // 退出收尾。三层保证 sidecar 不会变孤儿：
+  //   1. before-quit —— 正常退出的第一站；
+  //   2. will-quit —— 若 first 因异常未跑完，这里再收一次（stop 幂等）；
+  //   3. exit —— 最后一道同步兜底。
+  // 另有 sidecar 自身的 stdin-EOF / PPID 轮询，覆盖「主进程被强杀、
+  // 这些钩子根本不执行」的情况。
   app.on("before-quit", () => {
     quitting = true;
     bridge?.close();
     sidecar.stop();
+  });
+
+  app.on("will-quit", () => {
+    quitting = true;
+    sidecar.stop();
+  });
+
+  process.on("exit", () => {
+    // 同步阶段只能尽力而为：stop() 内部已是「发信号 + 定时强杀」，
+    // 这里再调一次确保至少发出了终止信号。
+    try {
+      sidecar.stop();
+    } catch {
+      /* 退出阶段不抛 */
+    }
   });
 
   app.on("window-all-closed", () => {

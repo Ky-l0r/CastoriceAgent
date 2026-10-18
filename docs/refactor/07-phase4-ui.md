@@ -294,3 +294,75 @@ flex-1，父级就是 fit-content，任何百分比子元素都会塌缩**。
 - 短消息 `"好"` 宽度 46px、单行；
 - 工具条宽度恢复到 146 / 134 / 209 / 197px（不再被压成省略号）。
 
+
+## 11. 退出后 sidecar 残留（孤儿进程）
+
+### 11.1 症状
+
+关闭 Electron 后，任务管理器里仍有 `python.exe` / `castorice-sidecar.exe`
+常驻。用户表述为「关了程序 python 后台不能自己结束」。
+
+### 11.2 根因（两层）
+
+**① Windows 没有「父死子亡」机制。**
+POSIX 下父进程退出后子进程会被 reparent 到 init 并收到 SIGHUP（取决于
+配置）；Windows **完全没有这回事**——子进程会一直活着直到自己退出或被杀。
+原来只有 `app.on("before-quit")` 里调 `sidecar.stop()`，这条路径在
+「任务管理器强杀 / Electron 崩溃 / 关机」时根本不执行。
+
+**② 只杀外层进程，内层 Python 变孤儿。**
+PyInstaller `--onedir` 产出的 `castorice-sidecar.exe` 是**引导器**，真正
+干活的 Python 解释器是它的子进程。原来的 `proc.kill()` 只杀引导器，
+内层 python 继续跑——这解释了为什么有时「exe 没了但 python 还在」。
+
+### 11.3 修复：三层兜底
+
+**第一层 —— sidecar 自杀（覆盖父进程被强杀）**
+
+`spawn-bridge.py` 新增 `_install_parent_watchdog()`，在**任何重活之前**
+安装（chromadb 加载要几十秒，这期间父进程被杀的窗口必须覆盖）：
+
+| 机制 | 触发条件 | 说明 |
+| :--- | :--- | :--- |
+| stdin EOF | 父进程退出 → 管道关闭 | 立即退出，最可靠 |
+| PPID 轮询 | 每秒检查一次 | 兜住 stdin 被继承/未关闭的情况 |
+
+父进程判断用 `OpenProcess` + `GetExitCodeProcess`（`PROCESS_QUERY_LIMITED_INFORMATION`），
+**不用 `os.kill(ppid, 0)`**——Windows 上该调用语义不可靠，会误判。
+
+判断不了时（异常 / 权限不足）**一律按存活处理**：宁可多活一秒，不能误杀
+自己把用户正在用的对话打断。
+
+**第二层 —— Electron 主动收（覆盖正常退出）**
+
+- `spawn` 的 `stdio[0]` 从 `"ignore"` 改成 `"pipe"`：这是第一层的前提，
+  `ignore` 的话管道不存在，sidecar 永远读不到 EOF；
+- 通过 `CASTORICE_PARENT_PID` 把 `process.pid` 传给 sidecar；
+- `stop()` 改为三段：**关 stdin** → SIGTERM → 3s 后 `killTree`；
+- `killTree` 在 Windows 用 `taskkill /T /F` **连带子进程**，解决根因②；
+- 退出钩子从 `before-quit` 扩展到 `will-quit` + `process.on("exit")`
+  （`stop()` 幂等，重复调用无副作用）。
+
+**第三层 —— 双保险的意义**
+
+第一层管「壳被杀」，第二层管「壳正常退」。任一层失效另一层仍能收尾；
+两层都不依赖对方，避免单点。
+
+### 11.4 验证（真实进程，三场景）
+
+| 场景 | 期望 | 结果 |
+| :--- | :--- | :--- |
+| A. 父进程正常退出 | stdin EOF → 子进程退出 | PASS |
+| B. 父进程被强杀（不关 stdin） | PPID 轮询 → 子进程退出 | PASS |
+| C. 父进程存活 | **子进程不得被误杀** | PASS |
+
+场景 C 是防止「修好一个 bug 引入另一个」——看门狗误判会把用户正在进行的
+对话杀掉。验证时还发现探针自身的一个假阳性（C 误用 normal 模式导致父进程
+提前退出），修正后通过。
+
+### 11.5 已知限制
+
+`process.on("exit")` 阶段只能发信号，不能等待；若 `taskkill` 本身没能
+及时执行，仍有极小窗口残留。真正的兜底是第一层的 PPID 轮询（1s 内生效），
+它不依赖壳层任何代码执行。
+
