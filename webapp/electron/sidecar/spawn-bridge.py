@@ -127,6 +127,56 @@ def _register_web_rpc_extensions(server, bot) -> None:
             "approval.detail RPC 未注册（桥接层无可扩展路由）")
 
 
+def _start_napcat_channel(bot, root: Path):
+    """组合根启动 QQ 渠道（config.yaml 的 channels.napcat 节，缺省不启用）。
+
+    未配置该节时返回 None（保持第一期行为：完全不碰网络）。
+    配置存在时构造 NapCatChannel 并 start()——首连 fail-fast 失败只记
+    日志、不阻断后端启动（桌面 UI 仍需可用），下一次后端重启再重试。
+    """
+    logger = logging.getLogger("sidecar")
+    try:
+        from castorice.channels.base import ChannelContext
+        from castorice.channels.napcat import NapCatChannel
+    except Exception as exc:  # noqa: BLE001 - 依赖缺失不阻断启动
+        logger.warning("QQ 渠道模块不可用: %s", exc)
+        return None
+
+    try:
+        section = bot.config_manager.get("channels.napcat")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("读取 channels.napcat 失败: %s", exc)
+        return None
+    if not section:
+        logger.info("未配置 channels.napcat，跳过 QQ 渠道")
+        return None
+
+    data_dir = root / "channels" / "qq"
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:  # noqa: BLE001 - 目录建不出来只降级告警
+        logger.warning("QQ 渠道数据目录创建失败: %s", exc)
+
+    ctx = ChannelContext(
+        bot=bot,
+        sessions_root=str(root / "sessions"),
+        data_dir=str(data_dir),
+        options=section,
+    )
+    channel = NapCatChannel(ctx)
+    try:
+        channel.start()
+    except Exception as exc:  # noqa: BLE001 - fail-fast 但不阻断桌面
+        logger.error("QQ 渠道连接失败（后端继续运行）: %s", exc)
+        try:
+            channel.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+    logger.info("QQ 渠道已启动: %s", ctx.options.get("url", ""))
+    return channel
+
+
 def _register_web_notifier(server) -> None:
     """组合根主动注册 WebNotifier（t5：主动聊天投递到 Electron 通知）。
 
@@ -200,10 +250,16 @@ def main() -> int:
     server = BridgeServer(bot)
     _register_web_rpc_extensions(server, bot)
     _register_web_notifier(server)
+    qq_channel = _start_napcat_channel(bot, root)
     try:
         port = server.start()
     except Exception as exc:  # noqa: BLE001
         _emit({"event": "error", "message": f"桥接启动失败：{exc}"})
+        if qq_channel is not None:
+            try:
+                qq_channel.close()
+            except Exception:  # noqa: BLE001
+                pass
         return 1
 
     _emit({"event": "ready", "port": port, "token": server.token})
@@ -224,6 +280,11 @@ def main() -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        if qq_channel is not None:
+            try:
+                qq_channel.close()
+            except Exception as exc:  # noqa: BLE001 - 关闭阶段不再抛
+                logging.getLogger("sidecar").warning("QQ 渠道关闭异常: %s", exc)
         server.close()
     return 0
 
