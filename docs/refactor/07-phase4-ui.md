@@ -458,3 +458,71 @@ pwsh -File scripts\打包补丁.ps1 -DryRun               # 只看收哪些文�
 | 补丁路径映射（v1.4→HEAD 实测） | 源码进包、文档/测试排除、config 排除 |
 | 全量测试 | 788 passed / 1 skipped |
 
+
+## 13. v1.5.1 热修复：添加提供商无效
+
+### 13.1 症状
+
+在「模型 API」页点「添加」→ 选厂商 → 填 Key → 确定，**界面提示添加失败，
+但用户此前没做任何操作**；或看起来成功但列表里没有新条目。
+
+### 13.2 根因
+
+`config.set` 底层是 `update_yaml_scalars`，它只能**定位已存在的键**并
+替换其标量值。对一个全新的提供商：
+
+1. `providers.<name>` 这个父块根本不存在 → `_locate_yaml_key` 返回 None；
+2. 代码走到「追加到父块末尾」分支，找 `parent = ("providers",)`；
+3. 找到 providers 段了，于是把字段插进去……
+
+但**三个字段的插入互相看不到**：同一批 updates 里先插
+`providers.mybrand.api_key` 时，父块 `providers.mybrand` 还不存在，
+直接 `continue` 跳过。结果三个字段全部静默丢弃，函数返回成功，
+接口返回 `{"ok": true}`。
+
+**最恶劣的点是「静默」**：既不报错也没生效，用户和界面都无从判断。
+
+### 13.3 修复
+
+**① 新增 `provider.add` RPC（整块写入）**
+
+`ConfigManager.set_provider_values` 先调用 `ensure_provider_block`
+补一个空的父块行（`  mybrand:`），再逐字段 set——复用既有的
+「保留注释与排版」逻辑，不必重写整份 YAML。
+
+**② `config.set` 对未命中路径显式报错**
+
+新增 `update_yaml_scalars_ex`（返回未命中的路径列表），
+`ConfigManager.set_values` 发现有未命中就抛 `KeyError`：
+
+```
+以下配置路径在 config.yaml 中不存在，未能写入: providers.nosuch.api_key
+```
+
+保留旧的 `update_yaml_scalars` 签名（委托给 ex 版本取第一个返回值），
+既有调用方零改动。
+
+**③ 前端显示真实原因**
+
+`settings-api.addProvider` 返回 `{ok, error}` 而不是布尔值，
+失败时把后端原文显示出来，不再用「添加失败（同名提供商可能已存在）」
+这种**猜出来的文案**——它在这次事故里完全误导了排查方向。
+
+### 13.4 验证
+
+| 项 | 结果 |
+| :--- | :--- |
+| `provider.add` 新增后真的出现在配置里 | PASS |
+| 字段值正确 | PASS |
+| `config.set` 对不存在路径抛异常（不再静默） | PASS |
+| 修改已存在的键仍正常 | PASS |
+| 新增后逐字段保存（保存按钮路径）可用 | PASS |
+| 原有注释与排版未被破坏 | PASS |
+| 全量测试 | 788 passed / 1 skipped |
+
+### 13.5 教训
+
+**「操作成功但没效果」比「直接报错」危害大得多。** 静默失败让排查成本
+从「看一眼错误信息」变成「逐层加日志复现」，而且会误导用户以为是自己的
+操作问题。本项目此后遵循：写操作要么生效，要么抛错，不允许第三条路。
+

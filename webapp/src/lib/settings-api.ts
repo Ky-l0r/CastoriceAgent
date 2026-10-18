@@ -255,6 +255,28 @@ export async function saveProvider(
   }
 }
 
+/**
+ * 新增提供商（整块写入）。
+ *
+ * 不能走 saveProvider：config.set 只能改**已存在**的键，
+ * 对全新的 providers.<name> 结构无能为力。后端专门开了 provider.add。
+ *
+ * 返回失败原因而不是布尔值——「添加失败」这四个字对用户毫无帮助，
+ * 真正的原因（配置文件不可写 / providers 段缺失）必须显示出来。
+ */
+export async function addProvider(
+  name: string,
+  values: Partial<Pick<ProviderEntry, "api_key" | "base_url" | "model" | "temperature" | "vision">>,
+): Promise<{ ok: boolean; error?: string }> {
+  const { invoke } = bridgeActions();
+  try {
+    await invoke("provider.add", { name, values });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String((e as Error).message || "添加失败") };
+  }
+}
+
 export async function setActiveProvider(name: string): Promise<boolean> {
   const { invoke } = bridgeActions();
   try {

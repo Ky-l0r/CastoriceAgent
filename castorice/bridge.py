@@ -220,6 +220,30 @@ class _RpcHandlers:
             raise ChannelError("配置写回失败: " + str(exc)) from exc
         return {"ok": True}
 
+    def provider_add(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """新增 / 更新一个提供商（整块写入，不依赖标量定位）。
+
+        与 config.set 的区别：config.set 是「改已存在的键」，对尚不存在的
+        providers.<name> 结构无能为力（底层 yaml 标量替换只能命中已有行）。
+        这个方法先确保父块存在，再写字段——「添加提供商」走这里。
+        """
+        name = str(params.get("name") or "").strip()
+        if not name:
+            raise ChannelError("provider.add 需要 name")
+        values = params.get("values")
+        if not isinstance(values, dict) or not values:
+            raise ChannelError("provider.add 需要 values 映射（字段 -> 值）")
+
+        manager = getattr(self._bot, "config_manager", None)
+        setter = getattr(manager, "set_provider_values", None)
+        if not callable(setter):
+            raise ChannelError("config_manager 不支持 set_provider_values")
+        try:
+            setter(name, {str(k): v for k, v in values.items()})
+        except Exception as exc:
+            raise ChannelError("添加提供商失败: " + str(exc)) from exc
+        return {"ok": True, "name": name}
+
     # ---- memory（ai.MemoryManager 同步接口）----
 
     def memory_search(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -806,6 +830,7 @@ class BridgeServer:
         self._rpc_methods: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
             "config.get": self._rpc.config_get,
             "config.set": self._rpc.config_set,
+            "provider.add": self._rpc.provider_add,
             "memory.search": self._rpc.memory_search,
             "memory.clear": self._rpc.memory_clear,
             "mode.list": self._rpc.mode_list,

@@ -10,6 +10,7 @@ import {
   Zap,
 } from "lucide-react";
 import {
+  addProvider,
   fetchProviders,
   saveProvider,
   setActiveProvider,
@@ -309,19 +310,20 @@ export function ProvidersPanel() {
           existing={state.providers.map((p) => p.name)}
           onCancel={() => setAdding(false)}
           onCreate={(name, patch) => {
-            void saveProvider(name, {
+            void addProvider(name, {
               api_key: patch.api_key ?? "",
               base_url: patch.base_url ?? "",
               model: patch.model ?? "",
               temperature: 0.7,
               vision: false,
-            }).then((ok) => {
-              if (ok) {
+            }).then((r) => {
+              if (r.ok) {
                 setAdding(false);
                 load();
                 notify(true, "已添加 " + name);
               } else {
-                notify(false, "添加失败（同名提供商可能已存在）");
+                // 显示后端的真实原因，而不是猜一个
+                notify(false, r.error ?? "添加失败");
               }
             });
           }}

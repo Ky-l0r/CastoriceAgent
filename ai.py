@@ -115,7 +115,20 @@ def _locate_yaml_key(lines: List[str], path: Tuple[str, ...]) -> Optional[int]:
     return None
 
 
-def update_yaml_scalars(text: str, updates: Dict[Tuple[str, ...], Any]) -> str:
+def update_yaml_scalars(
+    text: str, updates: Dict[Tuple[str, ...], Any]
+) -> str:
+    """更新 YAML 文本中指定路径的标量值（保留注释与排版）。
+
+    不存在的路径会被**跳过**（本函数不创造新结构）。需要「知道哪些没写
+    进去」的调用方请用 update_yaml_scalars_ex，它同时返回未命中的路径。
+    """
+    return update_yaml_scalars_ex(text, updates)[0]
+
+
+def update_yaml_scalars_ex(
+    text: str, updates: Dict[Tuple[str, ...], Any]
+) -> Tuple[str, List[Tuple[str, ...]]]:
     """
     更新 YAML 文本中指定路径的标量值，保留原有注释与排版
 
@@ -127,9 +140,10 @@ def update_yaml_scalars(text: str, updates: Dict[Tuple[str, ...], Any]) -> str:
         updates: {(键路径...): 新值}，如 {("providers", "deepseek", "api_key"): "sk-x"}
 
     Returns:
-        更新后的 YAML 文本
+        (更新后的 YAML 文本, 未能写入的键路径列表)
     """
     lines = text.splitlines()
+    missed: List[Tuple[str, ...]] = []
 
     for path, value in updates.items():
         rendered = _yaml_scalar_text(value)
@@ -151,12 +165,14 @@ def update_yaml_scalars(text: str, updates: Dict[Tuple[str, ...], Any]) -> str:
                 lines[index] = f"{match.group(1)}{rendered}{comment}"
             continue
 
-        # 键不存在：追加到父块的末尾
+        # 键不存在：追加到父块的末尾；父块也没有则记下来交给调用方
         parent = path[:-1]
         if not parent:
+            missed.append(path)
             continue
         parent_index = _locate_yaml_key(lines, parent)
         if parent_index is None:
+            missed.append(path)
             continue
         parent_indent, _ = _yaml_key_of(lines[parent_index])
         
@@ -178,7 +194,7 @@ def update_yaml_scalars(text: str, updates: Dict[Tuple[str, ...], Any]) -> str:
     result = "\n".join(lines)
     if text.endswith("\n"):
         result += "\n"
-    return result
+    return result, missed
 
 
 class ConfigManager:
@@ -262,19 +278,78 @@ class ConfigManager:
             raise FileNotFoundError(f"配置文件不存在: {self.config_path}")
         
         text = self.config_path.read_text(encoding="utf-8")
-        new_text = update_yaml_scalars(text, updates)
+        new_text, missed = update_yaml_scalars_ex(text, updates)
+        if missed:
+            # 静默跳过是本项目踩过的真实坑：界面点「添加」既不报错也不
+            # 生效，用户完全无从判断。这里把未命中的路径原样报出来，
+            # 需要创造新结构的调用方应改用 set_provider_values 等方法。
+            raise KeyError(
+                "以下配置路径在 config.yaml 中不存在，未能写入: "
+                + ", ".join(".".join(p) for p in missed)
+            )
         self.config_path.write_text(new_text, encoding="utf-8")
         self._load_config()
     
     def set_provider_values(
         self, provider_name: str, values: Dict[str, Any]
     ) -> None:
-        """更新某个提供商的配置字段"""
+        """更新某个提供商的配置字段（不存在则新建整块）。
+
+        为什么不能用 set_values 逐字段写：底层 update_yaml_scalars 只能
+        定位**已存在**的键，对一个全新的提供商，父块 providers.<name>
+        根本不存在，逐字段写会静默跳过——界面点了「添加」既没报错
+        也没生效。
+
+        这里改为：先确保 providers.<name> 这一块存在，再逐字段写。
+        """
+        self.ensure_provider_block(provider_name)
         updates = {
             ("providers", provider_name, key): value
             for key, value in values.items()
         }
         self.set_values(updates)
+
+    def ensure_provider_block(self, provider_name: str) -> bool:
+        """确保 config.yaml 里存在 providers.<name> 块；返回是否新建。
+
+        只补一个空的父块（名字那一行），子字段由后续 set_values 逐条
+        写入——复用既有的「保留注释与排版」逻辑，不必重写整份 YAML。
+        """
+        name = str(provider_name or "").strip()
+        if not name:
+            raise ValueError("provider_name 不能为空")
+        if not self.config_path.exists():
+            raise FileNotFoundError(
+                f"配置文件不存在: {self.config_path}")
+
+        text = self.config_path.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        if _locate_yaml_key(lines, ("providers", name)) is not None:
+            return False
+
+        parent_index = _locate_yaml_key(lines, ("providers",))
+        if parent_index is None:
+            raise ValueError(
+                "config.yaml 缺少顶层 providers 段，无法新增提供商")
+
+        # 找到 providers 段的最后一个子行，插在它后面
+        insert_at = parent_index + 1
+        for index in range(parent_index + 1, len(lines)):
+            raw = lines[index]
+            if not raw.strip():
+                continue
+            indent = len(raw) - len(raw.lstrip(" "))
+            if indent <= 0:
+                break
+            insert_at = index + 1
+
+        lines.insert(insert_at, "  " + name + ":")
+        result = "\n".join(lines)
+        if text.endswith("\n"):
+            result += "\n"
+        self.config_path.write_text(result, encoding="utf-8")
+        self._load_config()
+        return True
     
     def set_active_provider(self, provider_name: str) -> None:
         """切换当前激活的提供商"""
