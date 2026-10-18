@@ -7,8 +7,7 @@
   },
   "files": [
     "package.json",
-    { "from": "dist/main/main", "to": "dist/main" },
-    { "from": "dist/main/shared", "to": "dist/main/shared" },
+    "dist/main/**/*",
     "dist/preload/**/*",
     "dist/renderer/**/*"
   ],
@@ -36,8 +35,12 @@
       "to": "backend/prompts"
     },
     {
-      "from": "../config.yaml",
+      "from": "../example_config.yaml",
       "to": "backend/config.yaml"
+    },
+    {
+      "from": "../example_config.yaml",
+      "to": "backend/example_config.yaml"
     },
     {
       "from": "../Image",
