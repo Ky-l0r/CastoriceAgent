@@ -64,13 +64,26 @@ function saveShellPrefs(): void {
 const sidecarScript = SIDECAR_SCRIPT;
 const sidecarExe = path.join(process.resourcesPath, "backend-runtime", "castorice-sidecar.exe");
 
+/**
+ * 可写数据目录：Windows 上的 %APPDATA%/CastoriceAgent。
+ *
+ * 与程序目录分离是为了让「覆盖更新」不影响用户数据（详见
+ * castorice/paths.py）。dev 与 prod 用同一个位置，避免「开发时数据在
+ * 仓库里、发布后在 APPDATA」的割裂——也防止开发期的测试数据混进发布包。
+ *
+ * app.getPath("userData") 取的就是「用户数据目录/产品名」，
+ * 与 productName（CastoriceAgent）一致，无需再拼子目录。
+ */
+const DATA_ROOT = app.getPath("userData");
+
 const sidecar = new Sidecar(isDev ? sidecarScript : "", {
   // prod：pythonPath 直接指 PyInstaller 产的 sidecar 可执行文件（exe 模式，
   // scriptPath 传空——Sidecar 据此走「直接 spawn 可执行文件」分支）；
   // 资源根 = resources/backend（extraResources 布局）。
   pythonPath: isDev ? undefined : sidecarExe,
   castoriceRoot: isDev ? path.join(PROJECT_ROOT, "..") : path.join(process.resourcesPath, "backend"),
-  logDir: isDev ? undefined : path.join(app.getPath("userData"), "logs"),
+  dataRoot: DATA_ROOT,
+  logDir: path.join(DATA_ROOT, "logs"),
 });
 
 let bridge: BridgeClient | null = null;

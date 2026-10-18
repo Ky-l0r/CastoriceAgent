@@ -4,7 +4,8 @@
 内核参数（改它需要重启或明确的配置语义），档案则是「关于用户是谁」的
 轻量事实（昵称变了、搬城市了，下一轮对话就该生效）。因此：
 
-* 落盘 profile.json，放**程序目录**（与 ui_settings.json 同级约定，
+* 落盘 profile.json，放**数据目录**（castorice.paths 统一解析：
+  生产环境 %APPDATA%/CastoriceAgent，开发环境回落到程序目录；
   不进发布包；ENV 覆盖支持便携 / 多份配置并存）；
 * 读写是**读-改-写合并**（保留文件里已有的其它键），任何异常静默降级
   ——档案坏了不该让 bot 起不来（对齐 ui.py:UiSettings 的容错标准）；
@@ -24,6 +25,8 @@ import json
 import os
 from pathlib import Path
 from typing import Any, Dict
+
+from . import paths as cpaths
 
 __all__ = [
     "UserProfile",
@@ -60,14 +63,14 @@ FIELD_LABELS: Dict[str, str] = {
 
 
 def _profile_file() -> Path:
-    """档案文件路径（每次动态解析；ENV 覆盖 / 程序目录兜底）。"""
-    override = os.environ.get(ENV_PATH)
-    if override:
-        return Path(override).expanduser()
-    # 程序目录：源码运行 = 仓库根（本文件在 castorice/ 下，根在上一级）；
-    # 打包后 castorice 在 _internal 里，「castorice 包父目录」与
-    # config.yaml / prompts 的解析定位一致。
-    return Path(__file__).resolve().parent.parent / "profile.json"
+    """档案文件路径（每次动态解析）。
+
+    优先级：CASTORICE_PROFILE_PATH（细粒度覆盖/测试）> 数据目录。
+    数据目录由 castorice.paths 统一解析——生产环境是 %APPDATA%，
+    开发环境回落到程序目录，两者行为与改造前保持兼容。
+    """
+    return cpaths.resolve_data_file(
+        "profile.json", os.environ.get(ENV_PATH))
 
 
 class UserProfile:

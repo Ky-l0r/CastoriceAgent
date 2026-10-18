@@ -66,12 +66,60 @@ Copy-Item $unpacked $release -Recurse -Force
 
 # config.yaml 不随仓库进包（extraResources 拷的是开发机配置）：
 # 用示例配置覆盖，保证发布包不含真实 API Key。
+# 这份只是**模板**：首次启动时 sidecar 会把它复制到数据目录
+#（%APPDATA%\CastoriceAgent），之后程序只读数据目录那份。
 Copy-Item (Join-Path $root "example_config.yaml") (Join-Path $release "resources\backend\config.yaml") -Force
 Copy-Item (Join-Path $root "example_config.yaml") (Join-Path $release "resources\backend\example_config.yaml") -Force
+
+# 打包前清理：用户数据（含 API Key / 记忆 / 会话）绝不能进发布包。
+# v1.4 及以前这些文件在程序目录里，会被 extraResources 一起拷走——
+# 这是个真实的泄露风险，第五期借「数据外置」一并根治。
+$leakTargets = @(
+    "resources\backend\profile.json",
+    "resources\backend\ui_settings.json",
+    "resources\backend\database",
+    "resources\backend\sessions",
+    "resources\backend\channels",
+    "resources\backend\logs"
+)
+foreach ($rel in $leakTargets) {
+    $victim = Join-Path $release $rel
+    if (Test-Path $victim) {
+        Remove-Item $victim -Recurse -Force
+        Write-Host "  已移除用户数据: $rel" -ForegroundColor DarkYellow
+    }
+}
 
 # 使用说明
 $manual = Join-Path $root "docs\使用说明.txt"
 if (Test-Path $manual) { Copy-Item $manual $release }
+
+# 数据位置说明（用户第一次运行前就能看到）
+$dataNote = @"
+CastoriceAgent 数据存放位置
+===========================
+首次启动后，你的配置、用户档案、记忆、对话历史会创建在：
+
+    %APPDATA%CastoriceAgent
+
+（在文件资源管理器地址栏输入 %APPDATA% 回车，然后进入 CastoriceAgent 文件夹）
+
+为什么放在这里
+--------------
+程序目录可以被「覆盖更新」整个替换，而你的数据放在独立目录，
+所以更新程序不会影响配置、也不会丢掉聊天记录。
+
+备份
+----
+直接复制 %APPDATA%CastoriceAgent 整个文件夹即可。
+其中 config.yaml 含 API Key，请勿随意分享。
+
+重置
+----
+删除 %APPDATA%CastoriceAgent 文件夹，下次启动会重新生成默认配置
+（注意：记忆与对话历史会一起丢失）。
+"@
+$dataNote | Out-File -FilePath (Join-Path $release "数据位置说明.txt") -Encoding UTF8
 
 $size = [math]::Round((Get-ChildItem $release -Recurse -File | Measure-Object Length -Sum).Sum / 1MB, 1)
 Write-Host "发布目录: $release" -ForegroundColor Green

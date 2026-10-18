@@ -41,6 +41,8 @@ export interface SidecarOptions {
   pythonPath?: string;
   /** 资源根（CASTORICE_ROOT），dev 默认仓库根。 */
   castoriceRoot?: string;
+  /** 可写数据根（CASTORICE_DATA_ROOT）：config / 档案 / 记忆 / 会话。 */
+  dataRoot?: string;
   /** stderr 日志落盘目录（dev 可省略）。 */
   logDir?: string;
 }
@@ -62,12 +64,14 @@ export class Sidecar extends EventEmitter {
   private readyInfo: SidecarReady | null = null;
   private readonly pythonPath: string;
   private readonly castoriceRoot: string;
+  private readonly dataRoot?: string;
   private readonly logDir?: string;
 
   constructor(private readonly scriptPath: string, options: SidecarOptions = {}) {
     super();
     this.pythonPath = options.pythonPath ?? "python";
     this.castoriceRoot = options.castoriceRoot ?? path.resolve(scriptPath, "../../..");
+    this.dataRoot = options.dataRoot;
     this.logDir = options.logDir;
   }
 
@@ -92,11 +96,23 @@ export class Sidecar extends EventEmitter {
     //      这是 Windows 上唯一可靠的「父死子亡」信号；
     //   2. 同时把 PID 传过去，sidecar 另有 PPID 轮询兜底。
     // 传 process.pid 而不是 process.ppid：sidecar 的父进程就是本进程。
-    const env = {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
       CASTORICE_ROOT: this.castoriceRoot,
       CASTORICE_PARENT_PID: String(process.pid),
     };
+    // 数据目录与程序目录分离（见 castorice/paths.py）：
+    // 覆盖更新只替换程序目录，用户配置/记忆/会话留在数据目录里。
+    if (this.dataRoot) {
+      env.CASTORICE_DATA_ROOT = this.dataRoot;
+      // 首次启动需要数据目录存在；sidecar 也会 ensure，不过提前建好
+      // 能让崩溃日志、渠道数据目录的写入更早可用。
+      try {
+        fs.mkdirSync(this.dataRoot, { recursive: true });
+      } catch {
+        /* 建不出来交给 sidecar 的降级逻辑 */
+      }
+    }
     const proc = this.scriptPath
       ? spawn(this.pythonPath, [this.scriptPath], {
           env,

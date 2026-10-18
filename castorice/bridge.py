@@ -685,16 +685,23 @@ def _session_event_count(path: Path) -> int:
     return count
 
 
+def _ui_settings_path() -> Path:
+    """ui_settings.json 的唯一路径解析点（读写共用，避免两处漂移）。
+
+    优先级：CASTORICE_UI_SETTINGS（测试/便携）> 数据目录。
+    数据目录见 castorice.paths：生产环境 %APPDATA%，开发环境程序目录。
+    """
+    from . import paths as cpaths  # noqa: PLC0415
+
+    return cpaths.resolve_data_file(
+        "ui_settings.json", os.environ.get("CASTORICE_UI_SETTINGS"))
+
+
 def _load_ui_settings_file() -> Dict[str, Any]:
     """ui_settings.json 的兜底读取（ui.py 不可用时；语义对齐 UiSettings.load）。"""
     import json  # noqa: PLC0415
-    from pathlib import Path  # noqa: PLC0415
 
-    override = os.environ.get("CASTORICE_UI_SETTINGS")
-    path = (
-        Path(override).expanduser() if override
-        else Path(__file__).resolve().parent.parent / "ui_settings.json"
-    )
+    path = _ui_settings_path()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
@@ -706,11 +713,7 @@ def _save_ui_settings_file(values: Dict[str, Any]) -> None:
     """ui_settings.json 的兜底写入（读-改-写合并，坏文件静默降级）。"""
     data = _load_ui_settings_file()
     data.update(values)
-    override = os.environ.get("CASTORICE_UI_SETTINGS")
-    path = (
-        Path(override).expanduser() if override
-        else Path(__file__).resolve().parent.parent / "ui_settings.json"
-    )
+    path = _ui_settings_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(

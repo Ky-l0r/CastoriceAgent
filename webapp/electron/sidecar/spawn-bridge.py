@@ -220,6 +220,10 @@ def _register_web_rpc_extensions(server, bot) -> None:
 def _start_napcat_channel(bot, root: Path):
     """组合根启动 QQ 渠道（config.yaml 的 channels.napcat 节，缺省不启用）。
 
+    Args:
+        root: **数据目录**（渠道的 data_dir 与会话根都是可写数据；
+            传程序目录会在覆盖更新时被抹掉）。
+
     未配置该节时返回 None（保持第一期行为：完全不碰网络）。
     配置存在时构造 NapCatChannel 并 start()——首连 fail-fast 失败只记
     日志、不阻断后端启动（桌面 UI 仍需可用），下一次后端重启再重试。
@@ -313,6 +317,7 @@ def main() -> int:
     # 耗时数十秒，这期间父进程若被强杀，没有监控就会一直挂着。
     _install_parent_watchdog()
 
+    # 程序目录：代码与只读资源（prompts / Image / 模板 config）。
     root = Path(
         os.environ.get("CASTORICE_ROOT") or str(REPO_ROOT)
     ).resolve()
@@ -322,15 +327,25 @@ def main() -> int:
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
 
+    # 数据目录：可写数据（config / 档案 / 记忆 / 会话）。
+    # 与程序目录分离的理由见 castorice/paths.py 的模块 docstring：
+    # 覆盖更新会整个替换程序目录，用户数据必须放在它之外。
+    from castorice import migration as cmigration  # noqa: PLC0415
+
+    # 先播种模板配置（新用户），再迁移老用户数据（不覆盖已存在文件）。
+    data = cmigration.ensure_and_migrate(root)
+    logging.getLogger("sidecar").info(
+        "code_root=%s data_root=%s", root, data)
+
     try:
         from ai import AI
 
         bot = AI(
-            config_path=str(root / "config.yaml"),
+            config_path=str(data / "config.yaml"),
             prompts_dir=str(root / "prompts"),
-            chroma_dir=str(root / "database"),
+            chroma_dir=str(data / "database"),
             image_dir=str(root / "Image"),
-            sessions_dir=str(root / "sessions"),
+            sessions_dir=str(data / "sessions"),
         )
     except Exception as exc:  # noqa: BLE001 - fail-fast 通知壳层
         logging.getLogger("sidecar").error("bot 构造失败: %s", exc, exc_info=True)
@@ -344,7 +359,8 @@ def main() -> int:
     server = BridgeServer(bot)
     _register_web_rpc_extensions(server, bot)
     _register_web_notifier(server)
-    qq_channel = _start_napcat_channel(bot, root)
+    # 注意传的是 data 而不是 root：渠道的可写数据不能落在程序目录里
+    qq_channel = _start_napcat_channel(bot, data)
     try:
         port = server.start()
     except Exception as exc:  # noqa: BLE001

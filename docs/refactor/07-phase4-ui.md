@@ -366,3 +366,95 @@ PyInstaller `--onedir` 产出的 `castorice-sidecar.exe` 是**引导器**，真�
 及时执行，仍有极小窗口残留。真正的兜底是第一层的 PPID 轮询（1s 内生效），
 它不依赖壳层任何代码执行。
 
+
+## 12. 程序与数据分离（A）+ 增量补丁（B）
+
+### 12.1 问题
+
+更新方式是「整个程序文件夹替换」，而 v1.4 及以前所有可写数据都在
+`resources\backend\` 里：
+
+| 数据 | v1.4 位置 |
+| :--- | :--- |
+| API Key / 模型配置 | `config.yaml` |
+| 用户档案 | `profile.json` |
+| 外观与风格 | `ui_settings.json` |
+| 记忆向量库 | `database\` |
+| 对话历史 | `sessions\` |
+
+**覆盖更新 = 配置全丢。** 这不是打包技巧能绕过的，必须先把数据和程序分开。
+
+### 12.2 A 部分：数据外置
+
+新增 `castorice/paths.py`，成为所有可写路径的**单一解析点**：
+
+```
+解析顺序：CASTORICE_DATA_ROOT（壳层传入 %APPDATA%）> 程序目录（dev 兼容）
+```
+
+| 类别 | 位置 | 理由 |
+| :--- | :--- | :--- |
+| config / profile / ui_settings / database / sessions / channels | **数据目录** | 用户可写，更新时不能动 |
+| prompts / Image / 代码 | **程序目录** | 随版本发布的只读素材 |
+
+Electron 侧 `app.getPath("userData")` 即 `%APPDATA%\CastoriceAgent`，
+经 `CASTORICE_DATA_ROOT` 传给 sidecar。dev 与 prod 用同一位置，避免
+「开发时数据在仓库、发布后在 APPDATA」的割裂。
+
+**首次启动播种**：数据目录缺 `config.yaml` 时从程序目录的模板复制一份。
+只播种**不存在**的文件——已存在的绝不覆盖，否则「升级后配置重置」会
+以另一种方式回来。
+
+**旧数据迁移**（`castorice/migration.py`）：老用户升级时，
+`config.yaml` / `profile.json` / `ui_settings.json` / `database` /
+`sessions` / `channels` 从程序目录复制到数据目录，**仅当目标不存在**。
+顺序是先播种后迁移：新用户靠播种拿模板，老用户靠迁移保住配置，两者不冲突。
+
+**顺带修掉的泄露风险**：v1.4 的 `extraResources` 会把开发机上的
+`profile.json` / `ui_settings.json` / `database` / `sessions` 一起打进
+发布包（本仓库的开发目录里确实存在这些文件）。打包脚本现在显式删除它们，
+并在发布目录放一份《数据位置说明.txt》。
+
+### 12.3 B 部分：增量补丁
+
+`scripts\打包补丁.ps1`，按 git diff 收集变更文件并映射到发布目录路径：
+
+| 仓库路径 | 发布包路径 |
+| :--- | :--- |
+| `castorice/**` | `resources\backend\castorice\**` |
+| `ai.py` / `main.py` | `resources\backend\` |
+| `prompts/**` | `resources\backend\prompts\**` |
+| `Image/**` | `Image\**` |
+| `webapp/**` | `resources\app.asar`（整体替换） |
+| `scripts/ docs/ tests/` | 不收 |
+| `config.yaml` | 不收（程序目录那份是模板） |
+
+**sidecar 按需重发**：PyInstaller 产物几百 MB，只有后端运行逻辑
+（`harness` / `bridge` / `ai.py` / `spawn-bridge.py` 等）改动时才打包
+`backend-runtime`；纯前端改动可以只发 asar（几 MB）。
+
+用法：
+
+```powershell
+pwsh -File scripts\打包补丁.ps1                      # 上一个 tag -> HEAD
+pwsh -File scripts\打包补丁.ps1 -From v1.5 -To HEAD
+pwsh -File scripts\打包补丁.ps1 -DryRun               # 只看收哪些文件
+```
+
+**打包格式**：用 `System.IO.Compression.ZipFile` 生成**真正的 zip**
+（v1.4 的「.zip 实际是 tar」问题不再出现）。包内附《补丁说明.txt》，
+写清安装步骤、数据安全说明与回滚方式。
+
+### 12.4 验证
+
+| 项 | 结果 |
+| :--- | :--- |
+| 新用户从模板播种 | PASS |
+| 老用户数据迁移（6 类） | PASS |
+| 二次迁移不覆盖用户新改的内容 | PASS |
+| 代码根 == 数据根时不迁移（dev） | PASS |
+| 细粒度 ENV（`CASTORICE_PROFILE_PATH`）仍优先 | PASS |
+| 模拟「覆盖更新后」真实 `AI` 仍读到用户 Key | PASS |
+| 补丁路径映射（v1.4→HEAD 实测） | 源码进包、文档/测试排除、config 排除 |
+| 全量测试 | 788 passed / 1 skipped |
+
