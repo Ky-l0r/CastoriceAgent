@@ -145,27 +145,89 @@ def _install_parent_watchdog() -> None:
                 # （chromadb / 渠道）在跑，正常退出流程可能被它们拖住。
                 os._exit(0)
 
-    def _watch_stdin() -> None:
+    def _stdin_is_pipe() -> bool:
+        """stdin 是否是由父进程持有的管道。
+
+        只有管道断开才意味着父进程走了。若 stdin 是 NUL / 文件 /
+        控制台，PeekNamedPipe 会失败，此时不应触发退出——所以先用
+        GetFileType 判断句柄类型，只对 PIPE 启用监控。
+
+        注意：这里完全不碰 sys.stdin 对象。打包环境里访问它会初始化
+        Python 的 IO 层，是启动死锁的诱因之一。
+        """
         try:
-            while True:
-                chunk = sys.stdin.readline()
-                if chunk == "":
-                    # EOF：父进程的管道端已关闭
-                    logger.info("stdin 已关闭（父进程退出），sidecar 自行终止")
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE
+            if not handle or handle == -1:
+                return False
+            FILE_TYPE_PIPE = 3
+            return kernel32.GetFileType(handle) == FILE_TYPE_PIPE
+        except Exception:  # noqa: BLE001 - 判断不了就当作不是管道
+            return False
+
+    def _watch_stdin() -> None:
+        """监听 stdin 管道关闭（父进程退出）。
+
+        **为什么不用 sys.stdin.readline()**：实测在 PyInstaller 打包版里，
+        一个长期阻塞的 readline 线程会让后续 import（numpy / chromadb）
+        永久卡死——进程 0% CPU、240s 不 ready。原因是 readline 在
+        冻结环境里持有解释器级 IO 锁，与 PyInstaller 的 importer 互锁。
+        这是本项目真实踩到的死锁（见 docs 里的启动故障复盘）。
+
+        改用 PeekNamedPipe 轮询：不阻塞、不需要读线程持有任何锁，
+        管道断开时返回 False。代价是每秒一次系统调用，可忽略。
+        """
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE
+        while True:
+            time.sleep(1.0)
+            try:
+                avail = wintypes.DWORD(0)
+                ok = kernel32.PeekNamedPipe(
+                    handle, None, 0, None, ctypes.byref(avail), None)
+                if not ok:
+                    # 管道已断开：父进程走了
+                    logger.info("stdin 管道已断开（父进程退出），sidecar 自行终止")
                     os._exit(0)
-        except Exception:  # noqa: BLE001 - stdin 不可用时不阻塞启动
-            return
+            except Exception:  # noqa: BLE001 - 查询失败不致死，下一轮再试
+                continue
 
     if parent_pid > 0:
         threading.Thread(target=_watchdog, name="parent-watchdog",
                          daemon=True).start()
         logger.info("父进程监控已启用（ppid=%s）", parent_pid)
-    try:
-        if sys.stdin is not None and not sys.stdin.closed:
-            threading.Thread(target=_watch_stdin, name="stdin-watchdog",
-                             daemon=True).start()
-    except Exception:  # noqa: BLE001
-        pass
+
+    # stdin 看门狗只在前者是管道时启用：它是「父进程已退出」的快速信号，
+    # 不是必需的——不是管道时由上面的 PPID 轮询兜底。
+    if _stdin_is_pipe():
+        threading.Thread(target=_watch_stdin, name="stdin-watchdog",
+                         daemon=True).start()
+        logger.info("stdin 管道监控已启用")
+    else:
+        logger.info("stdin 不是管道，跳过 EOF 监控（依赖 PPID 轮询）")
+
+
+def _install_stall_dumper(threshold_s: float = 90.0) -> None:
+    """启动停滞时 dump 全部线程栈到 stderr。
+
+    用途：用户报「启动很久没反应」时，stderr 里能直接看到卡在哪个调用
+    （chromadb 初始化 / 网络 / 文件锁）。用 faulthandler 而不是外部
+    profiler：进程内自省，不依赖用户安装额外工具。
+    """
+    import faulthandler
+
+    def _arm() -> None:
+        time.sleep(threshold_s)
+        faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+        sys.stderr.write("[sidecar] 启动超过 %.0fs，已 dump 线程栈\n" % threshold_s)
+        sys.stderr.flush()
+
+    threading.Thread(target=_arm, name="stall-dumper", daemon=True).start()
 
 
 def _emit(payload: dict) -> None:
@@ -315,6 +377,13 @@ def main() -> int:
     # CASTORICE_ROOT 环境变量显式传入，dev 默认仓库根。
     # 父进程监控必须在任何重活之前装上：bot 构造（chromadb 加载）可能
     # 耗时数十秒，这期间父进程若被强杀，没有监控就会一直挂着。
+    # 停滞诊断：设 CASTORICE_STALL_DUMP=秒数可缩短阈值（排查启动慢时用）
+    try:
+        _stall = float(os.environ.get("CASTORICE_STALL_DUMP") or 90.0)
+    except ValueError:
+        _stall = 90.0
+    _install_stall_dumper(_stall)
+
     _install_parent_watchdog()
 
     # 程序目录：代码与只读资源（prompts / Image / 模板 config）。
@@ -337,9 +406,13 @@ def main() -> int:
     logging.getLogger("sidecar").info(
         "code_root=%s data_root=%s", root, data)
 
+    _boot_logger = logging.getLogger("sidecar")
     try:
+        _tb = time.time()
         from ai import AI
+        _boot_logger.info("import ai 完成，耗时 %.2fs", time.time() - _tb)
 
+        _t = time.time()
         bot = AI(
             config_path=str(data / "config.yaml"),
             prompts_dir=str(root / "prompts"),
@@ -347,6 +420,10 @@ def main() -> int:
             image_dir=str(root / "Image"),
             sessions_dir=str(data / "sessions"),
         )
+        # 构造耗时打日志：AI() 里含 chromadb 初始化与 embedding 模型
+        # 加载，是启动阶段最大的一段。没有这条日志时，用户报「启动慢」
+        # 只能靠猜是哪一步；有了它可以直接定位。
+        _boot_logger.info("AI() 构造完成，耗时 %.2fs", time.time() - _t)
     except Exception as exc:  # noqa: BLE001 - fail-fast 通知壳层
         logging.getLogger("sidecar").error("bot 构造失败: %s", exc, exc_info=True)
         _emit({"event": "error", "message": f"初始化失败：{exc}"})

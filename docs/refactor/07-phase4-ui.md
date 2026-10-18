@@ -526,3 +526,70 @@ pwsh -File scripts\打包补丁.ps1 -DryRun               # 只看收哪些文�
 从「看一眼错误信息」变成「逐层加日志复现」，而且会误导用户以为是自己的
 操作问题。本项目此后遵循：写操作要么生效，要么抛错，不允许第三条路。
 
+
+## 14. v1.5.2 热修复：打包版启动卡死
+
+### 14.1 症状
+
+用户报告「启动后端花了 1 分钟还没有好」。实测打包版 **240 秒仍未 ready，
+进程 0% CPU、46MB 内存、不退出**。
+
+### 14.2 定位过程（不是猜的）
+
+| 步骤 | 结论 |
+| :--- | :--- |
+| 源码跑同一入口 | 21 秒正常 ready |
+| 打包版加 faulthandler 看门狗 | 卡在 `numpy\_core\multiarray.py` 的 import |
+| 最小包（只 import numpy） | 5.2 秒正常 |
+| mini2（完整 collect-all + import ai） | 4.5 秒正常 |
+| repro3（复刻全部导入顺序 + BridgeServer） | 18.7 秒正常 |
+| repro4（**加回看门狗线程**） | **卡死，复现** |
+
+**根因：`sys.stdin.readline()` 在 PyInstaller 冻结环境里会死锁。**
+
+一个长期阻塞在 `readline()` 的守护线程，会在后续 import 阶段与
+PyInstaller 的 importer 互锁：importer 等 IO 锁，readline 线程持有它不
+释放。表现就是**进程还活着、CPU 为 0、永远不 ready**。
+
+这解释了很多反直觉现象：单独 import numpy 正常、单独 import ai 正常、
+两个都有但没有 stdin 线程也正常——只有「stdin 读线程 + 打包版 import」
+同时存在才触发。
+
+### 14.3 修复
+
+**stdin 监控改用 `PeekNamedPipe` 轮询**（不阻塞、不持有 IO 锁）：
+
+```python
+avail = wintypes.DWORD(0)
+ok = kernel32.PeekNamedPipe(handle, None, 0, None, ctypes.byref(avail), None)
+if not ok:          # 管道断开 = 父进程走了
+    os._exit(0)
+```
+
+同时**彻底不碰 `sys.stdin` 对象**：打包环境里访问它会初始化 Python 的
+IO 层，是死锁的另一半诱因。句柄类型判断也改成纯 ctypes
+（`GetStdHandle` + `GetFileType`）。
+
+### 14.4 验证
+
+| 项 | 结果 |
+| :--- | :--- |
+| 打包版 ready 耗时 | **21.5 秒**（原：240 秒卡死） |
+| 父进程退出后自动结束 | 1.0 秒内（孤儿防护仍有效） |
+| 各阶段耗时 | import ai 19.1s、AI() 3.08s |
+
+### 14.5 顺带加的启动诊断
+
+`spawn-bridge.py` 现在会记录：
+- `import ai 完成，耗时 X.XXs`
+- `AI() 构造完成，耗时 X.XXs`
+- 启动超 90 秒自动 dump 全部线程栈（`CASTORICE_STALL_DUMP` 可调阈值）
+
+下次再出现「启动慢」，日志可直接定位到具体阶段，不必再从零复现。
+
+### 14.6 教训
+
+**「阻塞式 IO + 打包环境」是高风险组合。** 在源码里完全正常的
+`sys.stdin.readline()`，到了 PyInstaller 冻结环境里会与 importer 互锁。
+后续凡是引入长期阻塞线程，都必须验证打包版行为——源码通过不等于发布版通过。
+
