@@ -420,11 +420,27 @@ class ModeRegistry:
 
     # ---- 工作目录绑定（对齐 dsh-sandbox-policy 的「会话不可变 cwd」） ----
 
-    def bind_workdir(self, mode: Any, path: Any, *, source: str = "explicit") -> str:
+    def bind_workdir(
+        self,
+        mode: Any,
+        path: Any,
+        *,
+        source: str = "explicit",
+        grant: bool = False,
+    ) -> str:
         """为模式绑定根目录，返回规范化后的路径。
 
-        越界路径（不在任何可信根之内）**被拒绝**并抛出带 to_dict() 的
-        WorkdirError（结构化错误，UI 可直接展示）。
+        grant=False（默认）：路径必须在可信根之内，否则抛 WorkdirError。
+            这是**非交互**场景（配置文件、批处理）的默认行为——不能让一段
+            配置文本凭空把磁盘任意位置变成可写区。
+
+        grant=True：用户在系统目录对话框里**亲自选中**该目录，视为显式授权。
+            此时跳过可信根校验，并把该目录登记为新的可信根，使它自身及其
+            子目录都可读写。这是「绑定任意位置文件夹」的正规入口：
+            授权来自用户操作，而不是来自配置文件。
+
+        越界路径（grant=False 且不在任何可信根之内）**被拒绝**并抛出带
+        to_dict() 的 WorkdirError（结构化错误，UI 可直接展示）。
         """
         resolved = self._coerce_mode(mode)
         policy = resolved.workdir_policy
@@ -448,12 +464,23 @@ class ModeRegistry:
         normalized = os.path.normpath(str(candidate))
 
         roots = self.trusted_roots()
-        if not any(contains_path(r, normalized) for r in roots):
-            raise WorkdirError(
-                "拒绝绑定越界路径 " + repr(normalized) + "：可信根为 "
-                + repr(list(roots) or "（未配置可信根）"),
-                path=normalized, code="WORKDIR_OUT_OF_ROOT",
-            )
+        inside = any(contains_path(r, normalized) for r in roots)
+        if not inside:
+            if not grant:
+                raise WorkdirError(
+                    "拒绝绑定越界路径 " + repr(normalized) + "：可信根为 "
+                    + repr(list(roots) or "（未配置可信根）"),
+                    path=normalized, code="WORKDIR_OUT_OF_ROOT",
+                )
+            # 用户显式授权：该目录成为新的可信根。追加而不是替换，
+            # 已绑定的其它目录不受影响。
+            self._sources.setdefault("roots", [])
+            existing = self._sources["roots"]
+            if isinstance(existing, str):
+                existing = [existing]
+                self._sources["roots"] = existing
+            if normalized not in existing:
+                existing.append(normalized)
         self._roots[resolved.name] = normalized
         return normalized
 

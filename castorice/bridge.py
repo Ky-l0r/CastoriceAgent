@@ -419,8 +419,13 @@ class _RpcHandlers:
                         payload = {}
                     item: Dict[str, Any] = {"kind": kind}
                     if kind in ("user", "assistant"):
+                        # user 事件优先取 display（界面原文）；旧日志没有该
+                        # 字段时回落到 content（含注入前缀，属于历史遗留）。
                         item["text"] = str(
-                            payload.get("text") or payload.get("content") or "")
+                            payload.get("display")
+                            or payload.get("text")
+                            or payload.get("content")
+                            or "")
                     elif kind == "emoji":
                         item["name"] = str(payload.get("name") or "")
                         item["path"] = str(payload.get("path") or "")
@@ -485,11 +490,14 @@ class _RpcHandlers:
         if not mode:
             raise ChannelError("workdir.bind 需要 mode")
         path = params.get("path")
+        # grant 必须由**用户经系统目录对话框选择**这一事实驱动：
+        # 界面点了对话框才传 true，任何程序化/配置路径一律 false。
+        grant = bool(params.get("grant"))
         binder = getattr(self._bot, "bind_mode_workdir", None)
         if not callable(binder):
             raise ChannelError("bot 不支持绑定工作目录")
         try:
-            normalized = binder(mode, path if path else None)
+            normalized = binder(mode, path if path else None, grant=grant)
         except Exception as exc:
             # WorkdirError 有 to_dict()（code / message / path）
             to_dict = getattr(exc, "to_dict", None)

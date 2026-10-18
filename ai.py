@@ -2455,7 +2455,12 @@ class AI:
             # 审批、破坏 allowed-once 语义。直接调用（无此标记）会自己走
             # 完整判定——这是「所有有副作用的调用必须先过网关」的兜底。
             with self._kernel_tools.turn():
-                for kind, payload in self._harness.run_stream(kernel_user_message):
+                # display_text 只影响界面展示：事件日志里额外记一份干净的
+                # 用户原文，历史回放时不会把【当前时间】【相关记忆】这些
+                # 注入内容暴露给终端用户。
+                for kind, payload in self._harness.run_stream(
+                        kernel_user_message,
+                        display_text=(user_input or "")):
                     if kind == 'text':
                         full_reply += payload
                         yield (kind, payload)
@@ -2801,12 +2806,22 @@ class AI:
         """显式切换模式的别名（语义与 set_mode 相同，便于界面侧读代码）"""
         self.set_mode(mode, persist=persist, activate=True)
 
-    def bind_mode_workdir(self, mode: str, path: Optional[str] = None) -> str:
+    def bind_mode_workdir(
+        self,
+        mode: str,
+        path: Optional[str] = None,
+        *,
+        grant: bool = False,
+    ) -> str:
         """为某个模式绑定根目录（Code=可信代码目录，Learn=Obsidian Vault）。
 
         Args:
             mode: 模式名
             path: 根目录；留空表示解绑
+            grant: 用户经系统目录对话框亲自选中该路径时传 True——
+                视为显式授权，允许绑定磁盘任意位置并把该目录登记为可信根。
+                配置文件 / 程序化调用必须保持 False（默认），否则一段配置
+                文本就能把任意目录变成可写区。
 
         Returns:
             规范化后的根目录（解绑时为空串）
@@ -2816,7 +2831,7 @@ class AI:
                 给出结构化错误（code / message / path / root）。
         """
         name = resolve_mode_name(mode, self._mode_registry.names())
-        normalized = self._mode_registry.bind_workdir(name, path)
+        normalized = self._mode_registry.bind_workdir(name, path, grant=grant)
         if name == self._mode_name:
             self._refresh_mode_session_context()
         self.logger.info(f"模式 {name} 的工作目录: {normalized or '（未绑定）'}")

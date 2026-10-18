@@ -125,6 +125,10 @@ interface BridgeStore {
   sidebarCollapsed: boolean;
   /** 各模式当前绑定的工作目录（模式名 -> 绝对路径）。 */
   workdirs: Record<string, string>;
+  /** 各模式当前生效的沙箱级别（模式名 -> read-only / workspace-write / ...）。 */
+  sandboxes: Record<string, string>;
+  /** 全局轻提示（一次一条，2.5s 自动消失）。 */
+  toast: { ok: boolean; text: string } | null;
 
   setPhase: (phase: ConnectionPhase) => void;
   pushUser: (text: string) => void;
@@ -149,6 +153,10 @@ interface BridgeStore {
   setSessions: (sessions: SessionSummary[]) => void;
   setActiveSession: (id: string | null) => void;
   setWorkdirs: (workdirs: Record<string, string>) => void;
+  setSandbox: (mode: string, sandbox: string) => void;
+  setSandboxes: (sandboxes: Record<string, string>) => void;
+  pushToast: (toast: { ok: boolean; text: string }) => void;
+  clearToast: () => void;
   toggleSidebar: () => void;
   /** 载入历史会话（entries 整体替换）。 */
   loadEntries: (entries: TranscriptEntry[]) => void;
@@ -182,6 +190,8 @@ export const useBridgeStore = create<BridgeStore>((set) => ({
   activeSessionId: null,
   sidebarCollapsed: false,
   workdirs: {},
+  sandboxes: {},
+  toast: null,
 
   setPhase: (phase) => set({ phase }),
 
@@ -299,6 +309,15 @@ export const useBridgeStore = create<BridgeStore>((set) => ({
   setActiveSession: (activeSessionId) => set({ activeSessionId }),
 
   setWorkdirs: (workdirs) => set({ workdirs }),
+
+  setSandbox: (mode, sandbox) =>
+    set((s) => ({ sandboxes: { ...s.sandboxes, [mode]: sandbox } })),
+
+  setSandboxes: (sandboxes) => set({ sandboxes }),
+
+  pushToast: (toast) => set({ toast }),
+
+  clearToast: () => set({ toast: null }),
 
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
 

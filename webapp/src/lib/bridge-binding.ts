@@ -81,6 +81,21 @@ async function bootstrapOnce(): Promise<void> {
   // 会话列表（侧栏「最近对话」；后端未实现该 RPC 时保持空列表）。
   await refreshSessions();
 
+  // 模式能力（沙箱 / 工作目录）——输入框旁的工具条据此显示当前状态。
+  try {
+    const listing = (await invoke("mode.list")) as {
+      modes?: { name?: string; sandbox?: string; workdir?: string }[];
+    };
+    const sandboxes: Record<string, string> = {};
+    for (const m of listing.modes ?? []) {
+      const name = String(m.name ?? "");
+      if (name && m.sandbox) sandboxes[name] = String(m.sandbox);
+    }
+    useBridgeStore.getState().setSandboxes(sandboxes);
+  } catch {
+    /* fail-open：工具条显示「跟随默认」 */
+  }
+
   // 界面设置（theme / thinking 档位；fail-closed 默认值）。
   try {
     const settings = (await invoke("ui_settings.get")) as {
@@ -274,6 +289,36 @@ export function bridgeActions() {
         /* 同上 */
       }
     },
+    /** 重新拉模式能力（沙箱 / 工作目录），绑定或改权限后调用。 */
+    refreshModeInfo: async () => {
+      try {
+        const listing = (await window.castorice.invoke("mode.list")) as {
+          modes?: {
+            name?: string;
+            display_name?: string;
+            sandbox?: string;
+            workdir?: string;
+            bindable?: boolean;
+          }[];
+        };
+        const list = (listing.modes ?? []).map((m) => ({
+          name: String(m.name ?? ""),
+          display_name: m.display_name ? String(m.display_name) : undefined,
+          sandbox: m.sandbox ? String(m.sandbox) : undefined,
+          workdir: m.workdir ? String(m.workdir) : undefined,
+          bindable: m.bindable,
+        }));
+        useBridgeStore.getState().setModes(list);
+        const sandboxes: Record<string, string> = {};
+        for (const m of list) {
+          if (m.sandbox) sandboxes[m.name] = m.sandbox;
+        }
+        useBridgeStore.getState().setSandboxes(sandboxes);
+      } catch {
+        /* 保留旧值 */
+      }
+    },
+
     /** 新建会话（后端关闭旧会话、开新文件）。 */
     newSession: async () => {
       try {

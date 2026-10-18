@@ -12,6 +12,7 @@ import { ModeWorkspace } from "./components/ModeWorkspace";
 import { SettingsPage, type SettingsTab } from "./pages/SettingsPage";
 import { bridgeActions } from "./lib/bridge-binding";
 import { ConnectionBanner } from "./components/ConnectionBanner";
+import { Toast } from "./components/Toast";
 
 /**
  * 主界面组合根。
@@ -107,6 +108,7 @@ export default function App() {
 
       <ApprovalCard />
       <NotificationBanner />
+      <Toast />
     </div>
   );
 }

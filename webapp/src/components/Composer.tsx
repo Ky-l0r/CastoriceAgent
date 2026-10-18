@@ -5,6 +5,7 @@ import { bridgeActions } from "../lib/bridge-binding";
 import { Avatar } from "./Avatar";
 import { Popover, PopoverItem } from "./ui/Popover";
 import { StickerPickerButton } from "./ui/StickerPicker";
+import { ComposerToolbar } from "./ComposerToolbar";
 
 /**
  * 输入框：欢迎页居中（头像 + 欢迎语 + 大输入框）↔ 聊天态下沉为底部栏。
@@ -402,6 +403,7 @@ export function Composer({ docked }: ComposerProps) {
           {greeting()}
         </p>
         <div className="w-full max-w-2xl">
+          <ComposerToolbar />
           {inner}
           <StatusStrip />
         </div>
@@ -412,6 +414,7 @@ export function Composer({ docked }: ComposerProps) {
   return (
     <div className="shrink-0 px-6 pb-4 pt-1">
       <div className="mx-auto w-full max-w-3xl">
+        <ComposerToolbar />
         {inner}
         <StatusStrip />
       </div>

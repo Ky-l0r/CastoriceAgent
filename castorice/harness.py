@@ -462,6 +462,7 @@ class HarnessLoop:
         images: Optional[Sequence[str]] = None,
         *,
         source: str = "user",
+        display_text: Optional[str] = None,
     ) -> Iterator[Tuple[str, Any]]:
         """产出与旧实现完全一致的 ('text'|'tool'|'emoji'|'done') 事件元组。
 
@@ -474,6 +475,12 @@ class HarnessLoop:
         user_message 可以是字符串，也可以是已经组装好的 OpenAI user 消息
         （dict）——后者让 ai.py 保留「【当前时间】/【相关记忆】前缀拼装」的
         既有位置与语义。
+
+        display_text：**仅用于界面展示**的用户原文。模型仍然看到完整
+        user_message（含时间/记忆前缀），但事件日志里会额外记一份干净的
+        文本，历史回放时据此渲染气泡——否则用户会在聊天记录里看到
+        【当前时间】【相关记忆】这些本不该给终端用户看的注入内容。
+        省略时行为与旧版完全一致（展示原文 = 完整文本）。
         """
         with self._lock:
             preempted = self._running
@@ -501,7 +508,8 @@ class HarnessLoop:
                                             "source": "proactive"})
 
         try:
-            for kind, payload in self._run_steps(user_message, images, source):
+            for kind, payload in self._run_steps(
+                    user_message, images, source, display_text):
                 if kind == "text":
                     full_text += str(payload)
                 elif kind == "done":
@@ -514,7 +522,11 @@ class HarnessLoop:
     # ---- 单轮实现 ----
 
     def _run_steps(
-        self, user_message: Any, images: Optional[Sequence[str]], source: str
+        self,
+        user_message: Any,
+        images: Optional[Sequence[str]],
+        source: str,
+        display_text: Optional[str] = None,
     ) -> Iterator[Tuple[str, Any]]:
         steps: List[StepRecord] = []
         full_reply = ""
@@ -522,7 +534,7 @@ class HarnessLoop:
 
         try:
             # 1. 组装消息（历史 + 本次 user 消息）
-            self._prepare_history(user_message)
+            self._prepare_history(user_message, display_text)
             self._announce_mode_policy()
         except Exception as exc:
             stop_reason = StopReason.ERROR
@@ -645,18 +657,27 @@ class HarnessLoop:
 
     # ---- 消息组装 ----
 
-    def _prepare_history(self, user_message: Any) -> None:
+    def _prepare_history(
+        self, user_message: Any, display_text: Optional[str] = None
+    ) -> None:
         if self._system_prompt and not any(
             m.get("role") == "system" for m in self._history
         ):
             self._history.insert(0, {"role": "system", "content": self._system_prompt})
         if isinstance(user_message, Mapping):
             self._history.append(copy.deepcopy(dict(user_message)))
-            self.session.append(KIND_USER, {"content": _content_text(user_message)})
+            full = _content_text(user_message)
         else:
-            text = "" if user_message is None else str(user_message)
-            self._history.append({"role": "user", "content": text})
-            self.session.append(KIND_USER, {"content": text})
+            full = "" if user_message is None else str(user_message)
+            self._history.append({"role": "user", "content": full})
+
+        # 事件日志同时记两份：content 是模型看到的完整文本（derive_messages
+        # 依赖它重建上下文），display 是给用户看的原文（界面渲染用它）。
+        # 只多存一个字段，不改变既有投影/恢复语义。
+        payload: Dict[str, Any] = {"content": full}
+        if display_text is not None and display_text != full:
+            payload["display"] = str(display_text)
+        self.session.append(KIND_USER, payload)
 
     def _announce_mode_policy(self) -> None:
         """P19：策略变化以**追加消息**告知模型，不改写系统提示词。"""
