@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Dict, Optional, Protocol, runtime_checkable
+from typing import Any, Dict, Optional, Protocol, runtime_checkable
 
 __all__ = [
     "DeliveryResult",
@@ -54,11 +54,11 @@ class DeliveryResult:
     detail: str = ""
 
     @classmethod
-    def success(cls, target_id: str = "", detail: str = "") -> "DeliveryResult":
+    def success(cls, target_id: str = "", detail: str = "") -> DeliveryResult:
         return cls(ok=True, target_id=target_id, detail=detail)
 
     @classmethod
-    def failure(cls, target_id: str = "", detail: str = "") -> "DeliveryResult":
+    def failure(cls, target_id: str = "", detail: str = "") -> DeliveryResult:
         return cls(ok=False, target_id=target_id, detail=detail)
 
 
@@ -74,11 +74,9 @@ class DesktopNotifier(Protocol):
     * close() 幂等。
     """
 
-    def notify(self, title: str, body: str, target_id: str = "") -> DeliveryResult:
-        ...
+    def notify(self, title: str, body: str, target_id: str = "") -> DeliveryResult: ...
 
-    def close(self) -> None:
-        ...
+    def close(self) -> None: ...
 
 
 class NotifierRegistry:
@@ -94,8 +92,7 @@ class NotifierRegistry:
         self._default = default
         self._notifiers: Dict[str, DesktopNotifier] = {}
 
-    def register(self, name: str, notifier: DesktopNotifier,
-                 *, default: bool = False) -> None:
+    def register(self, name: str, notifier: DesktopNotifier, *, default: bool = False) -> None:
         """注册一个实现；default=True 时同时设为默认（最后注册者生效）。"""
         key = str(name or "").strip()
         if not key:
@@ -125,8 +122,7 @@ class NotifierRegistry:
         """便捷入口：解析实现并投递；无任何实现注册时返回失败结果。"""
         notifier = self.resolve(target_id)
         if notifier is None:
-            return DeliveryResult.failure(
-                target_id=target_id, detail="没有已注册的桌面通知实现")
+            return DeliveryResult.failure(target_id=target_id, detail="没有已注册的桌面通知实现")
         return notifier.notify(title, body, target_id=target_id)
 
     def close(self) -> None:
@@ -162,7 +158,7 @@ class WebNotifier:
         if self._server is not None:
             return self._server
         try:  # 延迟解析进程级桥接服务器（避免 import 环）
-            from .bridge import active_server  # noqa: PLC0415
+            from .bridge import active_server
         except ImportError:
             return None
         return active_server()
@@ -170,25 +166,26 @@ class WebNotifier:
     def notify(self, title: str, body: str, target_id: str = "") -> DeliveryResult:
         server = self._resolve_server()
         if server is None:
-            return DeliveryResult.failure(
-                target_id=target_id, detail="桥接服务器未运行")
+            return DeliveryResult.failure(target_id=target_id, detail="桥接服务器未运行")
         send = getattr(server, "send_event", None)
         if not callable(send):
-            return DeliveryResult.failure(
-                target_id=target_id, detail="桥接服务器不支持事件广播")
+            return DeliveryResult.failure(target_id=target_id, detail="桥接服务器不支持事件广播")
         try:
-            delivered = bool(send("notification", {
-                "title": str(title or ""),
-                "body": str(body or ""),
-                "target_id": str(target_id or ""),
-            }))
+            delivered = bool(
+                send(
+                    "notification",
+                    {
+                        "title": str(title or ""),
+                        "body": str(body or ""),
+                        "target_id": str(target_id or ""),
+                    },
+                )
+            )
         except Exception as exc:  # pragma: no cover - 广播竞态
             logger.warning("Web 通知投递异常: %s", exc)
-            return DeliveryResult.failure(
-                target_id=target_id, detail="通知投递异常: " + str(exc))
+            return DeliveryResult.failure(target_id=target_id, detail="通知投递异常: " + str(exc))
         if not delivered:
-            return DeliveryResult.failure(
-                target_id=target_id, detail="当前没有已握手的 Web 客户端")
+            return DeliveryResult.failure(target_id=target_id, detail="当前没有已握手的 Web 客户端")
         return DeliveryResult.success(target_id=target_id)
 
     def close(self) -> None:
@@ -217,8 +214,7 @@ class SystemTrayNotifier:
     * 实现内部异常不外抛（通知是锦上添花），统一翻译成失败结果。
     """
 
-    def __init__(self, *, fallback_log: bool = True,
-                 app_icon_title: str = "Castorice") -> None:
+    def __init__(self, *, fallback_log: bool = True, app_icon_title: str = "Castorice") -> None:
         self._fallback_log = bool(fallback_log)
         self._app_icon_title = app_icon_title
         self._tray = None  # QSystemTrayIcon，延迟创建
@@ -245,6 +241,7 @@ class SystemTrayNotifier:
             return None
         try:
             from PySide6.QtWidgets import QSystemTrayIcon
+
             tray = QSystemTrayIcon(app)
             icon = app.windowIcon()
             if icon is not None and not icon.isNull():
@@ -274,12 +271,16 @@ class SystemTrayNotifier:
         tray = self._ensure_tray()
         if tray is None:
             if self._fallback_log:
-                logger.info("[桌面通知降级-仅日志] target=%s title=%s body=%s",
-                            target_id or "-", title, body)
-                return DeliveryResult.success(target_id=target_id,
-                                              detail="托盘不可用，降级为日志")
+                logger.info(
+                    "[桌面通知降级-仅日志] target=%s title=%s body=%s",
+                    target_id or "-",
+                    title,
+                    body,
+                )
+                return DeliveryResult.success(target_id=target_id, detail="托盘不可用，降级为日志")
             return DeliveryResult.failure(target_id=target_id, detail="托盘不可用")
         from PySide6.QtWidgets import QSystemTrayIcon
+
         tray.showMessage(title, body, QSystemTrayIcon.Information, 8000)
         return DeliveryResult.success(target_id=target_id)
 

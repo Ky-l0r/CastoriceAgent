@@ -20,15 +20,14 @@ from __future__ import annotations
 import html as html_module
 import os
 import re
-from typing import Any, Dict, List, Mapping, Optional, Sequence
-from urllib.parse import urlparse, parse_qs, unquote
+from typing import Any, ClassVar, Dict, List, Mapping, Optional, Sequence
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .base import (
     TOOL_KIND_NETWORK,
     ToolContext,
     ToolSpec,
     error_text,
-    truncate_text,
 )
 
 #: 工具结果里标记外部内容不可信（R18）
@@ -66,6 +65,7 @@ def _html_to_text(html: str, max_len: int = 500) -> str:
 
 class SearchBackend:
     """搜索后端基类"""
+
     name = "base"
 
     def __init__(self, api_key: str = "", base_url: str = ""):
@@ -78,6 +78,7 @@ class SearchBackend:
 
 class BingHTMLSearch(SearchBackend):
     """Bing 网页搜索（HTML 解析，无需 key）"""
+
     name = "bing_html"
 
     @staticmethod
@@ -85,30 +86,34 @@ class BingHTMLSearch(SearchBackend):
         results = []
         # 每个结果块: <li class="b_algo"> <h2><a href="URL">标题</a></h2> <p>摘要</p>
         for block in re.findall(r'<li class="b_algo".*?</li>', html, re.S):
-            m = re.search(
-                r'<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
-                block, re.S
-            )
+            m = re.search(r'<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', block, re.S)
             if not m:
                 continue
             url = m.group(1)
             title = re.sub(r"<[^>]+>", "", m.group(2)).strip()
-            sm = re.search(r'<p[^>]*>(.*?)</p>', block, re.S)
+            sm = re.search(r"<p[^>]*>(.*?)</p>", block, re.S)
             snippet = re.sub(r"<[^>]+>", "", sm.group(1)).strip() if sm else ""
-            results.append({
-                "title": title, "url": url, "snippet": snippet,
-            })
+            results.append(
+                {
+                    "title": title,
+                    "url": url,
+                    "snippet": snippet,
+                }
+            )
             if len(results) >= max_results:
                 break
         return results
 
     def search(self, query: str, max_results: int) -> List[Dict[str, str]]:
         import requests
+
         resp = requests.get(
             "https://www.bing.com/search",
             params={
-                "q": query, "setlang": "zh-hans",
-                "cc": "CN", "count": max_results,
+                "q": query,
+                "setlang": "zh-hans",
+                "cc": "CN",
+                "count": max_results,
             },
             headers={"User-Agent": _UA},
             timeout=10,
@@ -119,15 +124,13 @@ class BingHTMLSearch(SearchBackend):
 
 class DDGHTMLSearch(SearchBackend):
     """DuckDuckGo 网页搜索（HTML 解析，无需 key，作为兜底）"""
+
     name = "ddg_html"
 
     @staticmethod
     def parse_html(html: str, max_results: int) -> List[Dict[str, str]]:
         results = []
-        pattern = re.compile(
-            r'<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
-            re.S
-        )
+        pattern = re.compile(r'<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.S)
         for m in pattern.finditer(html):
             link = m.group(1)
             title = re.sub(r"<[^>]+>", "", m.group(2)).strip()
@@ -147,6 +150,7 @@ class DDGHTMLSearch(SearchBackend):
 
     def search(self, query: str, max_results: int) -> List[Dict[str, str]]:
         import requests
+
         resp = requests.get(
             "https://html.duckduckgo.com/html/",
             params={"q": query},
@@ -159,10 +163,12 @@ class DDGHTMLSearch(SearchBackend):
 
 class TavilySearch(SearchBackend):
     """Tavily（专为 LLM 设计的搜索 API，直接返回正文摘要）"""
+
     name = "tavily"
 
     def search(self, query: str, max_results: int) -> List[Dict[str, str]]:
         import requests
+
         if not self.api_key:
             raise RuntimeError("未配置 Tavily api_key")
         resp = requests.post(
@@ -189,10 +195,12 @@ class TavilySearch(SearchBackend):
 
 class SerperSearch(SearchBackend):
     """Serper.dev（Google 搜索结果 API）"""
+
     name = "serper"
 
     def search(self, query: str, max_results: int) -> List[Dict[str, str]]:
         import requests
+
         if not self.api_key:
             raise RuntimeError("未配置 Serper api_key")
         resp = requests.post(
@@ -215,10 +223,12 @@ class SerperSearch(SearchBackend):
 
 class BingAPISearch(SearchBackend):
     """Bing Web Search API（Azure，免费额度）"""
+
     name = "bing_api"
 
     def search(self, query: str, max_results: int) -> List[Dict[str, str]]:
         import requests
+
         if not self.api_key:
             raise RuntimeError("未配置 Bing API key")
         resp = requests.get(
@@ -241,10 +251,12 @@ class BingAPISearch(SearchBackend):
 
 class BochaSearch(SearchBackend):
     """博查（国内可用的中文搜索 API，专为 LLM agent 设计）"""
+
     name = "bocha"
 
     def search(self, query: str, max_results: int) -> List[Dict[str, str]]:
         import requests
+
         if not self.api_key:
             raise RuntimeError("未配置 Bocha api_key")
         resp = requests.post(
@@ -281,13 +293,13 @@ class SearchManager:
         fetch_top_n: 抓取前 N 条正文（默认 2）
     """
 
-    _KEY_BACKENDS = {
+    _KEY_BACKENDS: ClassVar[Dict[str, Any]] = {
         "tavily": TavilySearch,
         "serper": SerperSearch,
         "bing_api": BingAPISearch,
         "bocha": BochaSearch,
     }
-    _HTML_BACKENDS = {
+    _HTML_BACKENDS: ClassVar[Dict[str, Any]] = {
         "bing_html": BingHTMLSearch,
         "ddg_html": DDGHTMLSearch,
     }
@@ -318,9 +330,7 @@ class SearchManager:
         backends.append(DDGHTMLSearch())
         return backends
 
-    def search(
-        self, query: str, max_results: Optional[int] = None
-    ) -> List[Dict[str, str]]:
+    def search(self, query: str, max_results: Optional[int] = None) -> List[Dict[str, str]]:
         """依次尝试各后端，返回第一条成功的非空结果"""
         limit = max(1, max_results or self.max_results)
         errors = []
@@ -335,9 +345,7 @@ class SearchManager:
             raise RuntimeError("；".join(errors))
         return []
 
-    def _enrich(
-        self, results: List[Dict[str, str]], limit: int
-    ) -> List[Dict[str, str]]:
+    def _enrich(self, results: List[Dict[str, str]], limit: int) -> List[Dict[str, str]]:
         """给前 fetch_top_n 条结果抓取网页正文，提升信息量"""
         enriched = []
         for i, r in enumerate(results[:limit]):
@@ -350,9 +358,12 @@ class SearchManager:
     def _fetch_content(self, url: str) -> str:
         try:
             import requests
+
             resp = requests.get(
-                url, headers={"User-Agent": _UA},
-                timeout=8, allow_redirects=True,
+                url,
+                headers={"User-Agent": _UA},
+                timeout=8,
+                allow_redirects=True,
             )
             resp.raise_for_status()
             return _html_to_text(resp.text, max_len=SEARCH_CONTENT_MAX_LEN)
@@ -391,10 +402,10 @@ class WebSearchTool:
         return UNTRUSTED_NOTICE + "\n\n" + format_search_results(results)
 
 
-
 # ----------------------------------------------------------------------------
 # web_search / web_fetch 工具定义
 # ----------------------------------------------------------------------------
+
 
 def _schema(properties: Mapping[str, Any], required: Sequence[str] = ()) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
@@ -421,8 +432,7 @@ class WebFetchTool:
             return error_text("必须提供 url", "BAD_ARGUMENTS")
         parsed = urlparse(target)
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
-            return error_text(
-                "只支持 http/https 的绝对地址: " + repr(target), "BAD_ARGUMENTS")
+            return error_text("只支持 http/https 的绝对地址: " + repr(target), "BAD_ARGUMENTS")
         limit = int(max_len or self.max_len)
         try:
             import requests
@@ -436,15 +446,15 @@ class WebFetchTool:
             response.raise_for_status()
             text = _html_to_text(response.text, max_len=limit)
         except Exception as exc:
-            return error_text("抓取网页失败（" + target + "）：" + str(exc),
-                              "FETCH_FAILED")
+            return error_text("抓取网页失败（" + target + "）：" + str(exc), "FETCH_FAILED")
         if not text:
             return "已抓取 " + target + "，但没有提取到可读正文。"
         return UNTRUSTED_NOTICE + "\n\n来源: " + target + "\n正文摘要:\n" + text
 
 
-def build_web_tools(config: Optional[Dict[str, Any]] = None,
-                    context: Optional[ToolContext] = None) -> List[ToolSpec]:
+def build_web_tools(
+    config: Optional[Dict[str, Any]] = None, context: Optional[ToolContext] = None
+) -> List[ToolSpec]:
     """构造联网工具集（web_search / web_fetch）。"""
     settings = dict(config or {})
     return [
@@ -454,10 +464,13 @@ def build_web_tools(config: Optional[Dict[str, Any]] = None,
                 "在互联网上搜索最新信息，返回标题、链接、摘要以及部分网页正文。"
                 "当用户询问实时、新闻、未知知识时使用。"
             ),
-            parameters=_schema({
-                "query": {"type": "string", "description": "搜索关键词"},
-                "max_results": {"type": "integer", "description": "返回结果数量，默认5"},
-            }, ["query"]),
+            parameters=_schema(
+                {
+                    "query": {"type": "string", "description": "搜索关键词"},
+                    "max_results": {"type": "integer", "description": "返回结果数量，默认5"},
+                },
+                ["query"],
+            ),
             handler=WebSearchTool(settings),
             read_only=True,
             parallel_safe=True,
@@ -469,10 +482,13 @@ def build_web_tools(config: Optional[Dict[str, Any]] = None,
                 "抓取指定网页并提取可读正文（去掉 HTML 标签、脚本与样式）。"
                 "需要查看某个搜索结果的具体内容时使用。"
             ),
-            parameters=_schema({
-                "url": {"type": "string", "description": "网页地址（http/https）"},
-                "max_len": {"type": "integer", "description": "正文长度上限，默认 4000"},
-            }, ["url"]),
+            parameters=_schema(
+                {
+                    "url": {"type": "string", "description": "网页地址（http/https）"},
+                    "max_len": {"type": "integer", "description": "正文长度上限，默认 4000"},
+                },
+                ["url"],
+            ),
             handler=WebFetchTool(settings),
             read_only=True,
             parallel_safe=True,

@@ -5,6 +5,7 @@ import {
   type ModeName,
   type TranscriptEntry,
 } from "../store/bridge-store";
+import { enqueueChat, resetChatQueue } from "./chat-queue";
 
 /**
  * 把 preload 暴露的 API 绑定到 zustand store。
@@ -20,12 +21,18 @@ export function useBridgeBinding(): void {
   useEffect(() => {
     const offState = window.castorice.onConnectionState((phase) => {
       setPhase(phase);
+      // 后端重新就绪 = 可能刚重启过（例如用户点了「重启后端」）：
+      // 每次都重新装配，配置/模式/会话列表跟着刷新（首次也是这条路径）。
       if (phase === "ready") void bootstrapOnce();
     });
     const offEvent = window.castorice.onEvent(applyEvent);
+    const offError = window.castorice.onBackendError?.((info) => {
+      useBridgeStore.getState().setBackendError(info ? info.message : null);
+    });
     return () => {
       offState();
       offEvent();
+      offError?.();
     };
   }, [setPhase, applyEvent]);
 
@@ -39,70 +46,94 @@ export function useBridgeBinding(): void {
   }, []);
 }
 
-let bootstrapped = false;
-
-/** 一次性装配（连接抖动后幂等）。 */
+/**
+ * 装配（每次连接就绪都跑一遍）。
+ *
+ * 为什么不再「只跑一次」：后端重启（保存渠道配置后点「重启后端」、
+ * sidecar 崩溃自愈）会重新触发 ready，这时必须重新拉配置与模式，
+ * 否则界面还显示重启前的旧值。每个步骤都是 fail-open 的读操作，
+ * 重复执行的代价可以忽略。
+ */
 async function bootstrapOnce(): Promise<void> {
-  if (bootstrapped) return;
-  bootstrapped = true;
   const { invoke } = bridgeActions();
 
-  // 模式清单（失败静默：保持默认 chat + 空 Tab 集）。
-  try {
-    const listing = (await invoke("mode.list")) as {
-      modes?: { name?: string; display_name?: string }[];
-      active?: string;
-    };
-    const modes = (listing.modes ?? []).map((m) => ({
-      name: String(m.name ?? ""),
-      display_name: m.display_name ? String(m.display_name) : undefined,
-    }));
-    useBridgeStore.getState().setModes(modes, (listing.active ?? "chat") as ModeName);
-  } catch {
-    /* fail-open：模式 Tab 退化为本地四模式 */
-  }
+  // mode.list 会同时给出模式清单与各模式的沙箱/工作目录，原实现调了两次
+  // （串行往返 × 2）。这里合成一次，之后并发拉其它独立数据。
+  const modesPromise = (async () => {
+    try {
+      const listing = (await invoke("mode.list")) as {
+        modes?: {
+          name?: string;
+          display_name?: string;
+          sandbox?: string;
+          workdir?: string;
+        }[];
+        active?: string;
+      };
+      const raw = listing.modes ?? [];
+      useBridgeStore.getState().setModes(
+        raw.map((m) => ({
+          name: String(m.name ?? ""),
+          display_name: m.display_name ? String(m.display_name) : undefined,
+          sandbox: m.sandbox ? String(m.sandbox) : undefined,
+          workdir: m.workdir ? String(m.workdir) : undefined,
+        })),
+        (listing.active ?? "chat") as ModeName,
+      );
+      const sandboxes: Record<string, string> = {};
+      for (const m of raw) {
+        const name = String(m.name ?? "");
+        if (name && m.sandbox) sandboxes[name] = String(m.sandbox);
+      }
+      useBridgeStore.getState().setSandboxes(sandboxes);
+    } catch {
+      /* fail-open：模式 Tab 退化为本地四模式、工具条显示「跟随默认」 */
+    }
+  })();
 
-  // vision 能力：active_provider 下是否 vision（config.get 无键时默认关闭）。
-  try {
-    const provider = (await invoke("config.get", { key: "active_provider" })) as {
-      value?: unknown;
-    };
-    const name = String(provider.value ?? "");
-    if (name) {
+  const visionPromise = (async () => {
+    // vision 能力：active_provider 下是否 vision（config.get 无键时默认关闭）。
+    try {
+      const provider = (await invoke("config.get", { key: "active_provider" })) as {
+        value?: unknown;
+      };
+      const name = String(provider.value ?? "");
+      if (!name) return;
       const section = (await invoke("config.get", { key: "providers." + name })) as {
         value?: Record<string, unknown>;
       };
       useBridgeStore.getState().setVision(Boolean(section.value?.vision));
+    } catch {
+      /* fail-open */
     }
-  } catch {
-    /* fail-open */
-  }
+  })();
 
-  // 会话列表（侧栏「最近对话」；后端未实现该 RPC 时保持空列表）。
-  await refreshSessions();
+  // 三组读取彼此独立：并发发出，总耗时约等于最长的那一个。
+  await Promise.all([modesPromise, visionPromise, refreshSessions(), refreshUiSettings()]);
+}
 
-  // 模式能力（沙箱 / 工作目录）——输入框旁的工具条据此显示当前状态。
-  try {
-    const listing = (await invoke("mode.list")) as {
-      modes?: { name?: string; sandbox?: string; workdir?: string }[];
-    };
-    const sandboxes: Record<string, string> = {};
-    for (const m of listing.modes ?? []) {
-      const name = String(m.name ?? "");
-      if (name && m.sandbox) sandboxes[name] = String(m.sandbox);
-    }
-    useBridgeStore.getState().setSandboxes(sandboxes);
-  } catch {
-    /* fail-open：工具条显示「跟随默认」 */
-  }
-
-  // 界面设置（theme / thinking 档位；fail-closed 默认值）。
+/**
+ * 拉取界面设置（主题 / 思考档位 / 风格 / 外观 / 连发合并参数）。
+ *
+ * 独立成函数是因为它有两个调用点：连接就绪时装配一次，设置中心保存后
+ * 再拉一次——否则在主界面调整的「连发合并」参数要等重启后端才生效。
+ * 缺省项一律保持默认值（不做 fail-closed 清零），读失败静默。
+ */
+export async function refreshUiSettings(): Promise<void> {
+  const { invoke } = bridgeActions();
+  const num = (v: unknown, min: number, max: number, fb: number) => {
+    const n = typeof v === "number" ? v : Number(v);
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fb;
+  };
+  const bool = (v: unknown, fb: boolean) =>
+    typeof v === "boolean" ? v : v === undefined ? fb : Boolean(v);
   try {
     const settings = (await invoke("ui_settings.get")) as {
       settings?: Record<string, unknown>;
     };
     const s = settings.settings ?? {};
     if (s.theme === "light") useBridgeStore.getState().setTheme("light");
+    else if (s.theme === "dark") useBridgeStore.getState().setTheme("dark");
     if (typeof s.thinkingLevel === "string" && s.thinkingLevel) {
       useBridgeStore.getState().setThinkingLevel(s.thinkingLevel);
     }
@@ -110,15 +141,21 @@ async function bootstrapOnce(): Promise<void> {
       useBridgeStore.getState().setStyle(s.style);
     }
     // 外观偏好（缺省项保持默认，不做 fail-closed 清零）。
-    const num = (v: unknown, min: number, max: number, fb: number) => {
-      const n = typeof v === "number" ? v : Number(v);
-      return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fb;
-    };
     useBridgeStore.getState().setAppearance({
       bubbleRadius: num(s.bubbleRadius, 0, 32, 16),
       lineHeight: num(s.lineHeight, 1.2, 2.2, 1.6),
       sectionGap: num(s.sectionGap, 8, 40, 16),
       bubbles: s.bubbles === undefined ? true : Boolean(s.bubbles),
+    });
+    // 连发合并（聊天模式的「整理后再回复」）。
+    const batch = (s.chatBatch && typeof s.chatBatch === "object")
+      ? (s.chatBatch as Record<string, unknown>)
+      : {};
+    useBridgeStore.getState().setChatBatch({
+      enabled: bool(batch.enabled, true),
+      threshold: Math.round(num(batch.threshold, 2, 10, 3)),
+      windowSeconds: Math.round(num(batch.windowSeconds, 5, 600, 180)),
+      quietSeconds: Math.round(num(batch.quietSeconds, 2, 60, 8)),
     });
   } catch {
     /* fail-closed：保持默认 dark */
@@ -239,11 +276,21 @@ async function pollApproval(): Promise<void> {
 /** 组件侧动作包装。 */
 export function bridgeActions() {
   return {
+    /**
+     * 发送一条用户消息：先画进聊天流，再交给出站队列决定何时真正发出。
+     *
+     * 为什么不再直接 window.castorice.chat：busy 期间桥接层会拒绝请求，
+     * 消息画出来了却没有回复，用户就会重复发送（「反复回答」的根因）。
+     * 队列在本轮 done 之后自动补发，并对连发的多条消息做合并。
+     */
     chat: (text: string, images?: string[]) => {
-      useBridgeStore.getState().pushUser(text);
-      useBridgeStore.getState().markChatStarted();
-      return window.castorice.chat(text, images);
+      const store = useBridgeStore.getState();
+      store.pushUser(text);
+      store.markChatStarted();
+      enqueueChat({ text, images });
+      return Promise.resolve({ ok: true });
     },
+
     interrupt: () => window.castorice.interrupt(),
     invoke: (method: string, params?: Record<string, unknown>) =>
       window.castorice.invoke(method, params),
@@ -322,6 +369,7 @@ export function bridgeActions() {
     /** 新建会话（后端关闭旧会话、开新文件）。 */
     newSession: async () => {
       try {
+        resetChatQueue();
         const r = (await window.castorice.invoke("session.new")) as { session_id?: string };
         useBridgeStore.getState().reset();
         if (r.session_id) useBridgeStore.getState().setActiveSession(r.session_id);
@@ -335,6 +383,8 @@ export function bridgeActions() {
     /** 切换会话（后端恢复历史；成功后重载消息流）。 */
     switchSession: async (sessionId: string) => {
       try {
+        // 旧会话里还没发出的消息不能发到新会话（会话语义），直接丢弃。
+        resetChatQueue();
         await window.castorice.invoke("session.switch", { session_id: sessionId });
         useBridgeStore.getState().setActiveSession(sessionId);
         const entries = await loadSessionEntries(sessionId);

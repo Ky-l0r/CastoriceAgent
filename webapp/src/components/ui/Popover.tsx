@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { motion, AnimatePresence } from "motion/react";
 
 /**
  * 轻量弹层：点击外部 / Esc 关闭，向上或向下展开。
@@ -44,26 +43,22 @@ export function Popover({
   return (
     <div ref={rootRef} className="relative">
       {trigger({ open, toggle: () => setOpen((v) => !v) })}
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            initial={{ opacity: 0, y: side === "top" ? 6 : -6, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: side === "top" ? 4 : -4, scale: 0.98 }}
-            transition={{ duration: 0.14, ease: "easeOut" }}
-            className={
-              "ui-popover absolute z-50 overflow-hidden p-1 " + (panelClassName ?? "")
-            }
-            style={{
-              width,
-              ...(side === "top" ? { bottom: "calc(100% + 6px)" } : { top: "calc(100% + 6px)" }),
-              ...(align === "left" ? { left: 0 } : { right: 0 }),
-            }}
-          >
-            {children({ close: () => setOpen(false) })}
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {open && (
+        /* 入场动画走 CSS（ui-pop-in）：motion 会为每个弹层建 JS 动画实例，
+           而这里只有「状态条下拉 / 贴纸面板」两处用，纯 CSS 更省更稳。 */
+        <div
+          className={
+            "ui-popover ui-pop-in absolute z-50 overflow-hidden p-1 " + (panelClassName ?? "")
+          }
+          style={{
+            width,
+            ...(side === "top" ? { bottom: "calc(100% + 6px)" } : { top: "calc(100% + 6px)" }),
+            ...(align === "left" ? { left: 0 } : { right: 0 }),
+          }}
+        >
+          {children({ close: () => setOpen(false) })}
+        </div>
+      )}
     </div>
   );
 }

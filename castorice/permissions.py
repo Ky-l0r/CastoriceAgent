@@ -49,9 +49,7 @@ from .modes import (
     SANDBOX_DANGER_FULL_ACCESS,
     SANDBOX_MODES,
     SANDBOX_READ_ONLY,
-    SANDBOX_WORKSPACE_WRITE,
 )
-
 
 # ----------------------------------------------------------------------------
 # 决策词汇（与 castorice.harness.PermissionDecision.decision 一致）
@@ -62,9 +60,14 @@ DECISION_DENY = "deny"
 DECISION_ASK = "ask"
 DECISION_UNAVAILABLE = "unavailable"
 
-DECISIONS: FrozenSet[str] = frozenset({
-    DECISION_ALLOW, DECISION_DENY, DECISION_ASK, DECISION_UNAVAILABLE,
-})
+DECISIONS: FrozenSet[str] = frozenset(
+    {
+        DECISION_ALLOW,
+        DECISION_DENY,
+        DECISION_ASK,
+        DECISION_UNAVAILABLE,
+    }
+)
 
 #: 审批策略只有两个值（对齐 dsh-user-approval：ask | never）
 APPROVAL_ASK = "ask"
@@ -101,26 +104,89 @@ COMMAND_TOOL_NAMES: FrozenSet[str] = frozenset({"run_command"})
 
 #: 内置只读命令白名单（对齐 01-gap-matrix.md 第 3 节的清单，与 modes.READONLY_COMMANDS 取并集）
 DEFAULT_COMMAND_ALLOWLIST: Tuple[str, ...] = (
-    "dir", "ls", "type", "cat", "head", "tail", "findstr", "grep",
-    "git status", "git diff", "git log", "git show",
-    "python -m pytest", "python -m compileall",
+    "dir",
+    "ls",
+    "type",
+    "cat",
+    "head",
+    "tail",
+    "findstr",
+    "grep",
+    "git status",
+    "git diff",
+    "git log",
+    "git show",
+    "python -m pytest",
+    "python -m compileall",
 )
 
 #: 明确拒绝的命令（即使被配置追加进白名单也拒绝，防御性）。
 #: 对齐 01-gap-matrix.md 第 3 节：「明确不包含 rm/del/Remove-Item/pip install/
 #: curl/Invoke-WebRequest/powershell」。
-DENIED_COMMANDS: FrozenSet[str] = frozenset({
-    "rm", "rmdir", "del", "erase", "rd",
-    "mv", "move", "copy", "xcopy", "robocopy", "rename", "ren",
-    "format", "diskpart", "shutdown", "restart-computer", "stop-computer",
-    "reg", "regedit", "sc", "net", "netsh", "taskkill", "tasklist",
-    "curl", "wget", "invoke-webrequest", "iwr", "invoke-restmethod",
-    "pip", "pip3", "conda", "npm", "yarn", "pnpm", "npx",
-    "powershell", "pwsh", "cmd", "bash", "sh", "zsh", "wsl", "start", "runas",
-    "invoke-expression", "iex", "remove-item", "ri",
-    "set-executionpolicy", "chmod", "chown", "sudo", "attrib", "icacls",
-    "takeown", "cacls", "schtasks", "at", "wmic",
-})
+DENIED_COMMANDS: FrozenSet[str] = frozenset(
+    {
+        "rm",
+        "rmdir",
+        "del",
+        "erase",
+        "rd",
+        "mv",
+        "move",
+        "copy",
+        "xcopy",
+        "robocopy",
+        "rename",
+        "ren",
+        "format",
+        "diskpart",
+        "shutdown",
+        "restart-computer",
+        "stop-computer",
+        "reg",
+        "regedit",
+        "sc",
+        "net",
+        "netsh",
+        "taskkill",
+        "tasklist",
+        "curl",
+        "wget",
+        "invoke-webrequest",
+        "iwr",
+        "invoke-restmethod",
+        "pip",
+        "pip3",
+        "conda",
+        "npm",
+        "yarn",
+        "pnpm",
+        "npx",
+        "powershell",
+        "pwsh",
+        "cmd",
+        "bash",
+        "sh",
+        "zsh",
+        "wsl",
+        "start",
+        "runas",
+        "invoke-expression",
+        "iex",
+        "remove-item",
+        "ri",
+        "set-executionpolicy",
+        "chmod",
+        "chown",
+        "sudo",
+        "attrib",
+        "icacls",
+        "takeown",
+        "cacls",
+        "schtasks",
+        "at",
+        "wmic",
+    }
+)
 
 #: 解释器别名归一化：python3 / py / pythonw 都当作 python
 PYTHON_ALIASES: FrozenSet[str] = frozenset({"python", "python3", "py", "pythonw"})
@@ -152,9 +218,7 @@ def _allowlist_entry_tokens(entry: Any) -> List[str]:
     return [normalize_command_token(parts[0])] + [p.lower() for p in parts[1:]]
 
 
-def match_command_allowlist(
-    argv: Sequence[Any], allowlist: Iterable[str]
-) -> Optional[str]:
+def match_command_allowlist(argv: Sequence[Any], allowlist: Iterable[str]) -> Optional[str]:
     """命令是否命中白名单；命中返回命中的白名单条目，否则返回 None。
 
     匹配规则：把白名单条目按空白切成 token，要求 argv 的**前缀**与之逐一相等。
@@ -162,9 +226,7 @@ def match_command_allowlist(
     """
     if not argv:
         return None
-    lowered = [normalize_command_token(argv[0])] + [
-        str(item).lower() for item in argv[1:]
-    ]
+    lowered = [normalize_command_token(argv[0])] + [str(item).lower() for item in argv[1:]]
     for entry in allowlist:
         tokens = _allowlist_entry_tokens(entry)
         if not tokens or len(tokens) > len(lowered):
@@ -193,6 +255,7 @@ def is_denied_command(argv: Sequence[Any]) -> Optional[str]:
 # 异常（结构化错误，to_dict() 供 UI 直接展示）
 # ----------------------------------------------------------------------------
 
+
 class PermissionConfigurationError(ValueError):
     """权限配置非法（沙箱模式未知、审批策略未知等）——启动期即报错。"""
 
@@ -202,8 +265,9 @@ class SandboxDenied(RuntimeError):
 
     code = CODE_SANDBOX_DENIED
 
-    def __init__(self, message: str, *, path: Any = None, root: Any = None,
-                 code: Optional[str] = None) -> None:
+    def __init__(
+        self, message: str, *, path: Any = None, root: Any = None, code: Optional[str] = None
+    ) -> None:
         super().__init__(message)
         self.path = "" if path is None else str(path)
         self.root = "" if root is None else str(root)
@@ -224,8 +288,9 @@ class CommandDenied(RuntimeError):
 
     code = CODE_COMMAND_DENIED
 
-    def __init__(self, message: str, *, command: Any = None, allowed: Any = None,
-                 code: Optional[str] = None) -> None:
+    def __init__(
+        self, message: str, *, command: Any = None, allowed: Any = None, code: Optional[str] = None
+    ) -> None:
         super().__init__(message)
         self.command = "" if command is None else str(command)
         self.allowed = tuple(allowed or ())
@@ -244,6 +309,7 @@ class CommandDenied(RuntimeError):
 # ----------------------------------------------------------------------------
 # 路径策略（对齐 dsh-sandbox-policy / dsh-fs-sandbox）
 # ----------------------------------------------------------------------------
+
 
 def normalize_path(path: Any, cwd: Any = None) -> str:
     """把路径归一化成绝对路径。
@@ -304,17 +370,17 @@ class PathPolicy:
     def __post_init__(self) -> None:
         if self.sandbox not in SANDBOX_MODES:
             raise PermissionConfigurationError(
-                "未知沙箱模式 " + repr(self.sandbox)
-                + "，可选: " + repr(sorted(SANDBOX_MODES))
+                "未知沙箱模式 " + repr(self.sandbox) + "，可选: " + repr(sorted(SANDBOX_MODES))
             )
 
     # ---- 构造 ----
 
-    def with_workdir(self, workdir: Any = None, *, roots: Any = None,
-                     sandbox: Optional[str] = None) -> "PathPolicy":
+    def with_workdir(
+        self, workdir: Any = None, *, roots: Any = None, sandbox: Optional[str] = None
+    ) -> PathPolicy:
         """派生出「某个模式/会话」的策略（不改原对象）。"""
         resolved: List[str] = []
-        for item in (roots if roots is not None else self.roots):
+        for item in roots if roots is not None else self.roots:
             try:
                 normalized = normalize_path(item)
             except SandboxDenied:
@@ -345,8 +411,7 @@ class PathPolicy:
             candidate = str(explicit)
             if candidate not in SANDBOX_MODES:
                 raise PermissionConfigurationError(
-                    "未知沙箱模式 " + repr(candidate)
-                    + "，可选: " + repr(sorted(SANDBOX_MODES))
+                    "未知沙箱模式 " + repr(candidate) + "，可选: " + repr(sorted(SANDBOX_MODES))
                 )
             return candidate
         folded = None
@@ -375,8 +440,7 @@ class PathPolicy:
             return self.roots
         return (self.effective_workspace,)
 
-    def is_readable(self, path: Any, *, cwd: Any = None,
-                    sandbox: Optional[str] = None) -> bool:
+    def is_readable(self, path: Any, *, cwd: Any = None, sandbox: Optional[str] = None) -> bool:
         mode = sandbox or self.sandbox
         if mode == SANDBOX_DANGER_FULL_ACCESS:
             return True
@@ -386,8 +450,7 @@ class PathPolicy:
             return False
         return any(path_within(root, target) for root in self.effective_roots)
 
-    def is_writable(self, path: Any, *, cwd: Any = None,
-                    sandbox: Optional[str] = None) -> bool:
+    def is_writable(self, path: Any, *, cwd: Any = None, sandbox: Optional[str] = None) -> bool:
         mode = sandbox or self.sandbox
         if mode == SANDBOX_READ_ONLY:
             return False
@@ -399,8 +462,7 @@ class PathPolicy:
             return False
         return path_within(self.effective_workspace, target)
 
-    def check_read(self, path: Any, *, cwd: Any = None,
-                   sandbox: Optional[str] = None) -> str:
+    def check_read(self, path: Any, *, cwd: Any = None, sandbox: Optional[str] = None) -> str:
         """读取判定：越界抛 SandboxDenied，否则返回归一化路径。"""
         target = normalize_path(path, cwd)
         mode = sandbox or self.sandbox
@@ -409,14 +471,15 @@ class PathPolicy:
         if any(path_within(root, target) for root in self.effective_roots):
             return target
         raise SandboxDenied(
-            "拒绝读取 " + repr(target) + "：不在可信根内 "
+            "拒绝读取 "
+            + repr(target)
+            + "：不在可信根内 "
             + repr(list(self.effective_roots))
             + "（策略级隔离，不是内核级沙箱）",
             path=target,
         )
 
-    def check_write(self, path: Any, *, cwd: Any = None,
-                    sandbox: Optional[str] = None) -> str:
+    def check_write(self, path: Any, *, cwd: Any = None, sandbox: Optional[str] = None) -> str:
         """写入判定：越界抛 SandboxDenied，否则返回归一化路径。"""
         target = normalize_path(path, cwd)
         mode = sandbox or self.sandbox
@@ -434,14 +497,18 @@ class PathPolicy:
         if path_within(workspace, target):
             return target
         raise SandboxDenied(
-            "拒绝写入 " + repr(target) + "：不在工作区 "
-            + repr(workspace) + " 之内（策略级隔离，不是内核级沙箱）",
+            "拒绝写入 "
+            + repr(target)
+            + "：不在工作区 "
+            + repr(workspace)
+            + " 之内（策略级隔离，不是内核级沙箱）",
             path=target,
             root=workspace,
         )
 
-    def check(self, path: Any, *, write: bool = False, cwd: Any = None,
-              sandbox: Optional[str] = None) -> str:
+    def check(
+        self, path: Any, *, write: bool = False, cwd: Any = None, sandbox: Optional[str] = None
+    ) -> str:
         if write:
             return self.check_write(path, cwd=cwd, sandbox=sandbox)
         return self.check_read(path, cwd=cwd, sandbox=sandbox)
@@ -503,6 +570,7 @@ class CommandPolicy:
 # ----------------------------------------------------------------------------
 # 审批（对齐 dsh-user-approval 的应答者 waterfall）
 # ----------------------------------------------------------------------------
+
 
 def coerce_decision(value: Any) -> PermissionDecision:
     """把应答者的返回值规范化；**无法识别的一律按拒绝关闭**（fail-closed）。"""
@@ -626,8 +694,7 @@ class ApprovalBroker:
         candidate = str(policy or DEFAULT_APPROVAL_POLICY).strip().lower()
         if candidate not in APPROVAL_POLICIES:
             raise PermissionConfigurationError(
-                "未知审批策略 " + repr(policy)
-                + "，可选: " + repr(sorted(APPROVAL_POLICIES))
+                "未知审批策略 " + repr(policy) + "，可选: " + repr(sorted(APPROVAL_POLICIES))
             )
         return candidate
 
@@ -702,14 +769,18 @@ class ApprovalBroker:
 
         # 1) never：分发前确定性拒绝，且不调用应答者（P6）
         if self.policy == APPROVAL_NEVER:
-            self._record(AuditEntry(
-                "approval/asked", request.tool, request.mode, request_id))
-            self._record(AuditEntry(
-                "approval/decided", request.tool, request.mode, request_id,
-                decision=DECISION_DENY,
-                reason="审批策略为 never",
-                code=CODE_APPROVAL_POLICY_NEVER,
-            ))
+            self._record(AuditEntry("approval/asked", request.tool, request.mode, request_id))
+            self._record(
+                AuditEntry(
+                    "approval/decided",
+                    request.tool,
+                    request.mode,
+                    request_id,
+                    decision=DECISION_DENY,
+                    reason="审批策略为 never",
+                    code=CODE_APPROVAL_POLICY_NEVER,
+                )
+            )
             return PermissionDecision(
                 DECISION_DENY,
                 "审批策略为 never：该操作在分发之前被确定性拒绝",
@@ -727,14 +798,14 @@ class ApprovalBroker:
             self._in_flight.add(request_id)
 
         try:
-            self._record(AuditEntry(
-                "approval/asked", request.tool, request.mode, request_id))
+            self._record(AuditEntry("approval/asked", request.tool, request.mode, request_id))
 
             callback = self._ask_callback
             if callback is None:
                 # 3) 无应答者 -> unavailable（P7）
                 return self._finish_unavailable(
-                    request, request_id,
+                    request,
+                    request_id,
                     "没有可用的审批应答者，按拒绝关闭（fail-closed）",
                     CODE_APPROVAL_NO_RESPONDER,
                 )
@@ -744,16 +815,17 @@ class ApprovalBroker:
                 answer = self._invoke(callback, request, request_id, wait_for)
             except Exception as exc:
                 return self._finish_unavailable(
-                    request, request_id,
+                    request,
+                    request_id,
                     "审批应答者异常，按拒绝关闭: " + str(exc),
                     CODE_APPROVAL_RESPONDER_FAILED,
                 )
 
             if answer is None:
                 return self._finish_unavailable(
-                    request, request_id,
-                    "审批无应答或超时（" + str(wait_for)
-                    + "s）或窗口已关闭，按拒绝关闭",
+                    request,
+                    request_id,
+                    "审批无应答或超时（" + str(wait_for) + "s）或窗口已关闭，按拒绝关闭",
                     CODE_APPROVAL_TIMEOUT,
                 )
 
@@ -762,10 +834,17 @@ class ApprovalBroker:
             code = ""
             if isinstance(info, Mapping):
                 code = str(info.get("code", "") or "")
-            self._record(AuditEntry(
-                "approval/decided", request.tool, request.mode, request_id,
-                decision=decision.decision, reason=decision.reason, code=code,
-            ))
+            self._record(
+                AuditEntry(
+                    "approval/decided",
+                    request.tool,
+                    request.mode,
+                    request_id,
+                    decision=decision.decision,
+                    reason=decision.reason,
+                    code=code,
+                )
+            )
             return decision
         finally:
             with self._lock:
@@ -773,20 +852,30 @@ class ApprovalBroker:
                 self._pending.pop(request_id, None)
                 self._results.pop(request_id, None)
 
-    def _finish_unavailable(self, request: PermissionRequest, request_id: str,
-                            reason: str, code: str) -> PermissionDecision:
+    def _finish_unavailable(
+        self, request: PermissionRequest, request_id: str, reason: str, code: str
+    ) -> PermissionDecision:
         decision = PermissionDecision(
-            DECISION_UNAVAILABLE, reason,
+            DECISION_UNAVAILABLE,
+            reason,
             {"code": code, "request_id": request_id},
         )
-        self._record(AuditEntry(
-            "approval/decided", request.tool, request.mode, request_id,
-            decision=decision.decision, reason=reason, code=code,
-        ))
+        self._record(
+            AuditEntry(
+                "approval/decided",
+                request.tool,
+                request.mode,
+                request_id,
+                decision=decision.decision,
+                reason=reason,
+                code=code,
+            )
+        )
         return decision
 
-    def _invoke(self, callback, request: PermissionRequest,
-                request_id: str, wait_for: float) -> Any:
+    def _invoke(
+        self, callback, request: PermissionRequest, request_id: str, wait_for: float
+    ) -> Any:
         """调用应答者；返回 None 表示需要等待主线程 resolve()。
 
         注意顺序：先调用应答者、再查待决事件——应答者通常会在回调里
@@ -810,6 +899,7 @@ class ApprovalBroker:
 # 权限网关
 # ----------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class ToolRequirement:
     """网关从工具描述符里读出的判定所需信息（鸭子类型，不 import tools/）。
@@ -825,7 +915,7 @@ class ToolRequirement:
     parallel_safe: bool = True
 
     @classmethod
-    def from_spec(cls, spec: Any, fallback_name: str = "") -> "ToolRequirement":
+    def from_spec(cls, spec: Any, fallback_name: str = "") -> ToolRequirement:
         name = str(getattr(spec, "name", None) or fallback_name or "")
         read_only = bool(getattr(spec, "read_only", False))
         requires = getattr(spec, "requires_approval", None)
@@ -886,24 +976,30 @@ class PermissionGateway:
         self._logger = logger
         self._mode = str(mode or "chat")
 
-        configured_sandbox = sandbox or settings.get("sandbox_default") \
-            or settings.get("sandbox") or SANDBOX_READ_ONLY
+        configured_sandbox = (
+            sandbox
+            or settings.get("sandbox_default")
+            or settings.get("sandbox")
+            or SANDBOX_READ_ONLY
+        )
         if str(configured_sandbox) not in SANDBOX_MODES:
             raise PermissionConfigurationError(
                 "配置 permissions.sandbox_default 为未知沙箱模式 "
                 + repr(configured_sandbox)
-                + "，可选: " + repr(sorted(SANDBOX_MODES))
+                + "，可选: "
+                + repr(sorted(SANDBOX_MODES))
             )
 
         self._roots: Tuple[str, ...] = self._normalized_roots(roots or ())
         self._workspace: Optional[str] = None
         self._path_policy = path_policy or PathPolicy(
-            roots=self._roots, workspace=None, sandbox=str(configured_sandbox),
+            roots=self._roots,
+            workspace=None,
+            sandbox=str(configured_sandbox),
         )
 
         self._extra_commands: Tuple[str, ...] = tuple(
-            str(item) for item in (settings.get("command_allowlist") or ())
-            if str(item).strip()
+            str(item) for item in (settings.get("command_allowlist") or ()) if str(item).strip()
         )
         self._mode_command_allowlist: Dict[str, Tuple[str, ...]] = {
             str(name): tuple(str(c) for c in (entries or ()))
@@ -911,16 +1007,20 @@ class PermissionGateway:
         }
 
         self._requirements: Dict[str, ToolRequirement] = {}
-        for spec in (tool_specs or ()):
+        for spec in tool_specs or ():
             requirement = ToolRequirement.from_spec(spec)
             if requirement.name:
                 self._requirements[requirement.name] = requirement
 
         self._visibility = visibility
         self._guards: List[Callable[[PermissionRequest], Optional[str]]] = []
-        self._broker = broker if broker is not None else ApprovalBroker(
-            settings.get("approval_policy", DEFAULT_APPROVAL_POLICY),
-            logger=logger,
+        self._broker = (
+            broker
+            if broker is not None
+            else ApprovalBroker(
+                settings.get("approval_policy", DEFAULT_APPROVAL_POLICY),
+                logger=logger,
+            )
         )
 
         self.configure(workdir=workdir, mode=self._mode)
@@ -1105,8 +1205,11 @@ class PermissionGateway:
                 )
             if not visible:
                 return self._deny(
-                    "工具 " + repr(request.tool) + " 在模式 "
-                    + repr(request.mode) + " 下不可见，拒绝执行",
+                    "工具 "
+                    + repr(request.tool)
+                    + " 在模式 "
+                    + repr(request.mode)
+                    + " 下不可见，拒绝执行",
                     CODE_TOOL_NOT_VISIBLE,
                 )
 
@@ -1117,41 +1220,36 @@ class PermissionGateway:
         # 3) 路径边界：只读工具走读判定，有副作用工具走写判定
         for raw in request.target_paths:
             try:
-                self._path_policy.check(
-                    raw, write=not read_only, cwd=cwd, sandbox=sandbox)
+                self._path_policy.check(raw, write=not read_only, cwd=cwd, sandbox=sandbox)
             except SandboxDenied as exc:
-                return self._deny(
-                    str(exc), exc.code, path=exc.path, root=exc.root)
+                return self._deny(str(exc), exc.code, path=exc.path, root=exc.root)
 
         # 4) 命令白名单
         if request.tool in COMMAND_TOOL_NAMES:
             argv = command_argv(request.arguments)
             try:
-                self._mode_command_policy(request.mode).check(
-                    argv, self._extra_commands)
+                self._mode_command_policy(request.mode).check(argv, self._extra_commands)
             except CommandDenied as exc:
                 return self._deny(str(exc), exc.code, command=exc.command)
 
         # 5) 只读工具直接放行
         if read_only:
-            return PermissionDecision(
-                DECISION_ALLOW, "", {"code": "READ_ONLY_TOOL"})
+            return PermissionDecision(DECISION_ALLOW, "", {"code": "READ_ONLY_TOOL"})
 
         # 6) read-only 沙箱下拒绝有副作用操作
         if sandbox == SANDBOX_READ_ONLY:
             return self._deny(
                 "当前沙箱为 read-only（故障安全默认），拒绝有副作用的工具 "
-                + repr(request.tool) + "；请在已授权模式下绑定工作目录",
+                + repr(request.tool)
+                + "；请在已授权模式下绑定工作目录",
                 CODE_SANDBOX_READ_ONLY,
             )
 
         # 7) 无需审批（但已过沙箱与路径判定）
         if requirement is not None and not requirement.requires_approval:
-            return PermissionDecision(
-                DECISION_ALLOW, "", {"code": "NO_APPROVAL_REQUIRED"})
+            return PermissionDecision(DECISION_ALLOW, "", {"code": "NO_APPROVAL_REQUIRED"})
 
-        return PermissionDecision(
-            DECISION_ASK, "需要用户审批", {"code": "APPROVAL_REQUIRED"})
+        return PermissionDecision(DECISION_ASK, "需要用户审批", {"code": "APPROVAL_REQUIRED"})
 
     def evaluate(self, request: PermissionRequest) -> PermissionDecision:
         """完整判定：单调 guard -> pre_execute -> 审批分发。
@@ -1171,8 +1269,7 @@ class PermissionGateway:
             try:
                 reason = guard(request)
             except Exception as exc:
-                return self._deny(
-                    "权限守卫异常，按拒绝关闭: " + str(exc), CODE_GUARD_DENIED)
+                return self._deny("权限守卫异常，按拒绝关闭: " + str(exc), CODE_GUARD_DENIED)
             if reason:
                 return self._deny(str(reason), CODE_GUARD_DENIED)
 
@@ -1180,8 +1277,7 @@ class PermissionGateway:
 
         # 2) 只有 ask 才分发审批；never / 无应答者 / 超时一律按拒绝关闭
         if decision.decision == DECISION_ASK:
-            return self._broker.request(
-                request, key=request.call_id or request.tool)
+            return self._broker.request(request, key=request.call_id or request.tool)
         return decision
 
     # ---- 便捷入口（UI / 测试用） ----
@@ -1200,17 +1296,22 @@ class PermissionGateway:
         from .harness import _target_paths
 
         args = dict(arguments or {})
-        paths = tuple(str(item) for item in target_paths) \
-            if target_paths is not None else _target_paths(args)
-        return self.evaluate(PermissionRequest(
-            tool=str(tool),
-            arguments=args,
-            mode=str(mode or self._mode),
-            call_id=str(call_id or ""),
-            reason="decide",
-            target_paths=paths,
-            cwd=cwd,
-        ))
+        paths = (
+            tuple(str(item) for item in target_paths)
+            if target_paths is not None
+            else _target_paths(args)
+        )
+        return self.evaluate(
+            PermissionRequest(
+                tool=str(tool),
+                arguments=args,
+                mode=str(mode or self._mode),
+                call_id=str(call_id or ""),
+                reason="decide",
+                target_paths=paths,
+                cwd=cwd,
+            )
+        )
 
     def check(
         self,
@@ -1223,7 +1324,11 @@ class PermissionGateway:
     ) -> str:
         """只返回判定词（allow | ask | deny | unavailable），便于断言。"""
         return self.decide(
-            tool, arguments, mode=mode, target_paths=target_paths, call_id=call_id,
+            tool,
+            arguments,
+            mode=mode,
+            target_paths=target_paths,
+            call_id=call_id,
         ).decision
 
 
@@ -1248,8 +1353,6 @@ def command_argv(arguments: Mapping[str, Any]) -> List[str]:
     return []
 
 
-def build_gateway(
-    config: Optional[Mapping[str, Any]] = None, **kwargs: Any
-) -> PermissionGateway:
+def build_gateway(config: Optional[Mapping[str, Any]] = None, **kwargs: Any) -> PermissionGateway:
     """工厂入口（ai.py 的接线点）。"""
     return PermissionGateway(config, **kwargs)

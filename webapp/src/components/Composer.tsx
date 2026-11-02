@@ -241,6 +241,7 @@ export function Composer({ docked }: ComposerProps) {
   const busy = useBridgeStore((s) => s.busy);
   const vision = useBridgeStore((s) => s.vision);
   const phase = useBridgeStore((s) => s.phase);
+  const pending = useBridgeStore((s) => s.pendingChat);
   const [value, setValue] = useState("");
   const [images, setImages] = useState<string[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -254,10 +255,18 @@ export function Composer({ docked }: ComposerProps) {
     el.style.height = Math.min(el.scrollHeight, 200) + "px";
   }, [value]);
 
+  /**
+   * 发送：**busy 时也允许**（消息进排队，等这一轮结束后自动发出）。
+   *
+   * 原来 busy 时直接 return：界面已经把用户消息画出来了却没有请求，
+   * 用户以为没发出去就再发一遍——这就是「连发重复消息、AI 反复回答」的
+   * 直接原因。现在统一交给出站队列（lib/chat-queue），它负责忙时排队与
+   * 连发合并，用户侧永远「按一下就发出去了」。
+   */
   const submit = () => {
     const text = value.trim();
     const hasImages = images.length > 0;
-    if ((!text && !hasImages) || busy || phase !== "ready") return;
+    if ((!text && !hasImages) || phase !== "ready") return;
     setValue("");
     setImages([]);
     void bridgeActions().chat(text, hasImages ? images : undefined);
@@ -316,7 +325,11 @@ export function Composer({ docked }: ComposerProps) {
         rows={1}
         className="w-full flex-1 resize-none bg-transparent text-[13.5px] leading-6 outline-none placeholder:text-[var(--c-input-placeholder)]"
         style={{ color: "var(--c-input-text)", maxHeight: 200 }}
-        placeholder={busy ? "遐蝶正在思考…" : "给遐蝶发消息…"}
+        placeholder={
+          busy
+            ? "遐蝶正在回复…（现在发的内容会排队，等这一轮结束后一起看）"
+            : "给遐蝶发消息…"
+        }
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={(e) => {
@@ -344,38 +357,48 @@ export function Composer({ docked }: ComposerProps) {
 
         <span className="flex-1" />
 
+        {pending > 0 && (
+          <span
+            className="mr-1 rounded-full px-2 py-[2px] text-[10.5px]"
+            style={{ background: "var(--c-status-chip-bg)", color: "var(--c-highlight)" }}
+            title="这些消息会在遐蝶空闲后合并发出"
+          >
+            {pending} 条待发送
+          </span>
+        )}
+
         <span className="mr-1 text-[10.5px]" style={{ color: "var(--c-muted)" }}>
           Enter 发送 · Shift+Enter 换行
         </span>
 
-        {busy ? (
+        {busy && (
           <button
             type="button"
-            title="停止"
+            title="停止本轮回复"
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors"
-            style={{ background: "var(--c-send-bg)", color: "var(--c-highlight-text)" }}
+            style={{ background: "var(--c-send-bg-disabled)", color: "var(--c-bubble-text)" }}
             onClick={() => bridgeActions().interrupt()}
           >
             <Square size={12} />
           </button>
-        ) : (
-          <button
-            type="button"
-            title="发送"
-            disabled={(!value.trim() && images.length === 0) || phase !== "ready"}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-40"
-            style={{
-              background:
-                value.trim() || images.length > 0
-                  ? "var(--c-send-bg)"
-                  : "var(--c-send-bg-disabled)",
-              color: "var(--c-highlight-text)",
-            }}
-            onClick={submit}
-          >
-            <ArrowUp size={15} />
-          </button>
         )}
+
+        <button
+          type="button"
+          title={busy ? "发送（排队，等本轮结束后发出）" : "发送"}
+          disabled={(!value.trim() && images.length === 0) || phase !== "ready"}
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-40"
+          style={{
+            background:
+              value.trim() || images.length > 0
+                ? "var(--c-send-bg)"
+                : "var(--c-send-bg-disabled)",
+            color: "var(--c-highlight-text)",
+          }}
+          onClick={submit}
+        >
+          <ArrowUp size={15} />
+        </button>
       </div>
 
       <input

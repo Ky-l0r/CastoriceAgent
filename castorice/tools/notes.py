@@ -20,6 +20,7 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from ..permissions import SandboxDenied
 from .base import (
     TOOL_KIND_GENERIC,
     TOOL_KIND_WRITE,
@@ -36,7 +37,6 @@ from .fs import (
     _read_text,
     _sha1_text,
 )
-from ..permissions import SandboxDenied
 
 #: 识别的笔记扩展名
 NOTE_SUFFIXES = frozenset({".md", ".markdown", ".txt"})
@@ -72,7 +72,7 @@ def split_frontmatter(text: str) -> Tuple[str, str]:
     match = FRONTMATTER_RE.match(text or "")
     if not match:
         return "", text or ""
-    return match.group(0), (text or "")[match.end():]
+    return match.group(0), (text or "")[match.end() :]
 
 
 def extract_title(text: str) -> str:
@@ -128,8 +128,7 @@ def normalize_note(body: str) -> str:
 def iter_notes(root: str, limit: int = DEFAULT_SEARCH_LIMIT * 5) -> List[str]:
     found: List[str] = []
     for current, dirs, files in os.walk(root):
-        dirs[:] = sorted(d for d in dirs
-                         if d not in SKIP_DIRS and not d.startswith("."))
+        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and not d.startswith("."))
         for name in sorted(files):
             if os.path.splitext(name)[1].lower() not in NOTE_SUFFIXES:
                 continue
@@ -142,8 +141,9 @@ def iter_notes(root: str, limit: int = DEFAULT_SEARCH_LIMIT * 5) -> List[str]:
 
 
 def make_search_notes(context: ToolContext):
-    def search_notes(query: str = "", max_results: int = 20,
-                     tags: Optional[Sequence[str]] = None) -> str:
+    def search_notes(
+        query: str = "", max_results: int = 20, tags: Optional[Sequence[str]] = None
+    ) -> str:
         root = vault_root(context)
         if not root or not os.path.isdir(root):
             return not_bound_message()
@@ -181,9 +181,14 @@ def make_search_notes(context: ToolContext):
             scored.append((score, path, title, note_tags))
 
         if not scored:
-            return ("没有找到匹配的笔记（" + ("关键词 " + repr(query) if needle else "")
-                    + (" 标签 " + repr(wanted) if wanted else "")
-                    + "，笔记库: " + root + "）")
+            return (
+                "没有找到匹配的笔记（"
+                + ("关键词 " + repr(query) if needle else "")
+                + (" 标签 " + repr(wanted) if wanted else "")
+                + "，笔记库: "
+                + root
+                + "）"
+            )
         scored.sort(key=lambda item: (-item[0], item[1]))
         lines = []
         for _score, path, title, note_tags in scored[:limit]:
@@ -191,8 +196,9 @@ def make_search_notes(context: ToolContext):
             suffix = ("  #" + " #".join(note_tags)) if note_tags else ""
             lines.append("- " + relative + ("（" + title + "）" if title else "") + suffix)
         return truncate_text(
-            "找到 " + str(len(scored)) + " 篇笔记（笔记库: " + root + "）：\n"
-            + "\n".join(lines), 8000)
+            "找到 " + str(len(scored)) + " 篇笔记（笔记库: " + root + "）：\n" + "\n".join(lines),
+            8000,
+        )
 
     return search_notes
 
@@ -208,8 +214,9 @@ def make_read_note(context: ToolContext):
         if not os.path.splitext(target)[1]:
             target += ".md"
         try:
-            resolved = context.check_read(os.path.join(root, target)
-                                          if not os.path.isabs(target) else target)
+            resolved = context.check_read(
+                os.path.join(root, target) if not os.path.isabs(target) else target
+            )
         except SandboxDenied as exc:
             return error_text(str(exc), exc.code)
         if not os.path.exists(resolved):
@@ -224,19 +231,29 @@ def make_read_note(context: ToolContext):
             pass
         title = extract_title(text)
         tags = extract_tags(text)
-        header = ("笔记: " + os.path.relpath(resolved, root).replace(os.sep, "/")
-                  + ("（" + title + "）" if title else "")
-                  + ("  标签: " + ", ".join(tags) if tags else ""))
-        return truncate_text(header + "\n\n" + text, max(1, int(max_chars)),
-                             note="…（笔记过长，已截断；可用 max_chars 调整）…")
+        header = (
+            "笔记: "
+            + os.path.relpath(resolved, root).replace(os.sep, "/")
+            + ("（" + title + "）" if title else "")
+            + ("  标签: " + ", ".join(tags) if tags else "")
+        )
+        return truncate_text(
+            header + "\n\n" + text,
+            max(1, int(max_chars)),
+            note="…（笔记过长，已截断；可用 max_chars 调整）…",
+        )
 
     return read_note
 
 
 def make_write_note(context: ToolContext):
-    def write_note(path: str, content: str, title: str = "",
-                   tags: Optional[Sequence[str]] = None,
-                   update_frontmatter: bool = False) -> str:
+    def write_note(
+        path: str,
+        content: str,
+        title: str = "",
+        tags: Optional[Sequence[str]] = None,
+        update_frontmatter: bool = False,
+    ) -> str:
         root = vault_root(context)
         if not root or not os.path.isdir(root):
             return not_bound_message()
@@ -246,25 +263,29 @@ def make_write_note(context: ToolContext):
         if not os.path.splitext(target)[1]:
             target += ".md"
         try:
-            resolved = context.check_write(os.path.join(root, target)
-                                           if not os.path.isabs(target) else target)
+            resolved = context.check_write(
+                os.path.join(root, target) if not os.path.isabs(target) else target
+            )
         except SandboxDenied as exc:
             return error_text(str(exc), exc.code)
 
         body = normalize_note(content)
         existing = _read_text(resolved) if os.path.exists(resolved) else None
         if existing is None:
-            frontmatter = default_frontmatter(title or os.path.splitext(
-                os.path.basename(resolved))[0], tags)
+            frontmatter = default_frontmatter(
+                title or os.path.splitext(os.path.basename(resolved))[0], tags
+            )
             rendered = frontmatter + "\n" + body
             action = "新建笔记"
         else:
             current_frontmatter, _current_body = split_frontmatter(existing)
             if update_frontmatter or not current_frontmatter:
                 frontmatter = default_frontmatter(
-                    title or extract_title(existing)
+                    title
+                    or extract_title(existing)
                     or os.path.splitext(os.path.basename(resolved))[0],
-                    tags or extract_tags(existing))
+                    tags or extract_tags(existing),
+                )
                 rendered = frontmatter + "\n" + body
                 action = "更新笔记（frontmatter 已更新）"
             else:
@@ -278,7 +299,7 @@ def make_write_note(context: ToolContext):
         except OSError as exc:
             return error_text("写入笔记失败: " + str(exc), "FS_WRITE_FAILED")
         context.remember(resolved, stat, _sha1_text(rendered))
-        return ("已" + action + " " + resolved + "（" + str(len(rendered)) + " 字符）")
+        return "已" + action + " " + resolved + "（" + str(len(rendered)) + " 字符）"
 
     return write_note
 
@@ -301,12 +322,17 @@ def build_note_tools(context: ToolContext) -> List[ToolSpec]:
         ToolSpec(
             name="search_notes",
             description="在笔记库（Obsidian Vault）里按关键词或标签查找笔记。",
-            parameters=_schema({
-                "query": {"type": "string", "description": "关键词（文件名 / 标题 / 正文）"},
-                "tags": {"type": "array", "description": "标签过滤",
-                         "items": {"type": "string"}},
-                "max_results": {"type": "integer", "description": "最多返回多少条"},
-            }),
+            parameters=_schema(
+                {
+                    "query": {"type": "string", "description": "关键词（文件名 / 标题 / 正文）"},
+                    "tags": {
+                        "type": "array",
+                        "description": "标签过滤",
+                        "items": {"type": "string"},
+                    },
+                    "max_results": {"type": "integer", "description": "最多返回多少条"},
+                }
+            ),
             handler=make_search_notes(context),
             read_only=True,
             modes=learn_only,
@@ -315,10 +341,13 @@ def build_note_tools(context: ToolContext) -> List[ToolSpec]:
         ToolSpec(
             name="read_note",
             description="读取笔记库里的某篇笔记（含 frontmatter 与标签）。",
-            parameters=_schema({
-                "path": {"type": "string", "description": "相对笔记库的路径，如 学习/算法.md"},
-                "max_chars": {"type": "integer", "description": "读取字符上限"},
-            }, ["path"]),
+            parameters=_schema(
+                {
+                    "path": {"type": "string", "description": "相对笔记库的路径，如 学习/算法.md"},
+                    "max_chars": {"type": "integer", "description": "读取字符上限"},
+                },
+                ["path"],
+            ),
             handler=make_read_note(context),
             read_only=True,
             modes=learn_only,
@@ -330,16 +359,19 @@ def build_note_tools(context: ToolContext) -> List[ToolSpec]:
                 "写入笔记库（新建或更新）；更新时**保留既有 frontmatter**，"
                 "只替换正文，避免覆盖用户手工维护的元数据。"
             ),
-            parameters=_schema({
-                "path": {"type": "string", "description": "相对笔记库的路径"},
-                "content": {"type": "string", "description": "笔记正文（Markdown）"},
-                "title": {"type": "string", "description": "标题（新建时写入 frontmatter）"},
-                "tags": {"type": "array", "description": "标签", "items": {"type": "string"}},
-                "update_frontmatter": {
-                    "type": "boolean",
-                    "description": "是否连 frontmatter 一起更新，默认 false",
+            parameters=_schema(
+                {
+                    "path": {"type": "string", "description": "相对笔记库的路径"},
+                    "content": {"type": "string", "description": "笔记正文（Markdown）"},
+                    "title": {"type": "string", "description": "标题（新建时写入 frontmatter）"},
+                    "tags": {"type": "array", "description": "标签", "items": {"type": "string"}},
+                    "update_frontmatter": {
+                        "type": "boolean",
+                        "description": "是否连 frontmatter 一起更新，默认 false",
+                    },
                 },
-            }, ["path", "content"]),
+                ["path", "content"],
+            ),
             handler=make_write_note(context),
             read_only=False,
             requires_approval=True,

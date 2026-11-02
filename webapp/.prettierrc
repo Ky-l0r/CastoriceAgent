@@ -1,0 +1,23 @@
+# ============================================================
+#  Prettier —— 前端代码格式标准
+# ============================================================
+#  用法（在 webapp/ 下）：
+#      pnpm run format          # 格式化 src/ 与 electron/
+#      pnpm run format:check    # 只检查，CI/提交前用
+#
+#  说明：历史文件尚未整体重排（避免一次性 diff 掩盖真实改动），
+#  新代码请保持本配置产出的风格；后续可在单独提交中全量执行。
+# ============================================================
+
+{
+  "semi": true,
+  "singleQuote": false,
+  "jsxSingleQuote": false,
+  "trailingComma": "all",
+  "printWidth": 100,
+  "tabWidth": 2,
+  "useTabs": false,
+  "arrowParens": "always",
+  "endOfLine": "lf",
+  "bracketSpacing": true
+}

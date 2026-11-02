@@ -55,7 +55,10 @@ def mcp_tool_name(server: str, tool: str) -> str:
     for label, value in (("server", server_name), ("tool", tool_name)):
         if not _NAME_RE.match(value):
             raise ToolDefinitionError(
-                "MCP 的 " + label + " 名非法: " + repr(value)
+                "MCP 的 "
+                + label
+                + " 名非法: "
+                + repr(value)
                 + "（只允许字母数字与 _ . -，且不能以符号开头）"
             )
     return MCP_PREFIX + server_name + MCP_SEPARATOR + tool_name
@@ -66,7 +69,7 @@ def parse_mcp_tool_name(name: str) -> Optional[Tuple[str, str]]:
     text = str(name or "")
     if not text.startswith(MCP_PREFIX):
         return None
-    rest = text[len(MCP_PREFIX):]
+    rest = text[len(MCP_PREFIX) :]
     if MCP_SEPARATOR not in rest:
         return None
     server, tool = rest.split(MCP_SEPARATOR, 1)
@@ -82,7 +85,8 @@ class McpToolDescriptor:
     name: str
     description: str = ""
     parameters: Mapping[str, Any] = field(
-        default_factory=lambda: {"type": "object", "properties": {}})
+        default_factory=lambda: {"type": "object", "properties": {}}
+    )
     read_only: bool = False
     parallel_safe: bool = False
     modes: Iterable[str] = ("work", "code", "learn")
@@ -112,7 +116,8 @@ class McpServer:
             return str(self.call_tool(tool, dict(arguments or {})))
         except Exception as exc:
             return error_text(
-                "MCP 工具 " + repr(tool) + " 调用失败: " + str(exc), "MCP_CALL_FAILED")
+                "MCP 工具 " + repr(tool) + " 调用失败: " + str(exc), "MCP_CALL_FAILED"
+            )
 
 
 class McpRegistry:
@@ -161,7 +166,8 @@ class McpRegistry:
             key = str(descriptor.name)
             if key in seen:
                 raise ToolDefinitionError(
-                    "MCP server " + repr(server_name) + " 内的工具名重复: " + repr(key))
+                    "MCP server " + repr(server_name) + " 内的工具名重复: " + repr(key)
+                )
             seen.add(key)
         self._servers[server_name] = server
         return server
@@ -190,8 +196,9 @@ class McpRegistry:
                 result.append(self.build_spec(server, descriptor, parameters))
         return result
 
-    def build_spec(self, server: McpServer, descriptor: McpToolDescriptor,
-                   parameters: Mapping[str, Any]) -> ToolSpec:
+    def build_spec(
+        self, server: McpServer, descriptor: McpToolDescriptor, parameters: Mapping[str, Any]
+    ) -> ToolSpec:
         tool_name = str(descriptor.name)
 
         def handler(**arguments: Any) -> str:
@@ -228,7 +235,10 @@ def register_mcp_server(
 ) -> McpServer:
     """第一期唯一的外部扩展登记入口（对齐 R17 的接入点约定）。"""
     return mcp_registry.register_server(
-        name, tools, call_tool=call_tool, connected=connected,
+        name,
+        tools,
+        call_tool=call_tool,
+        connected=connected,
         replace_existing=replace_existing,
     )
 
@@ -244,8 +254,12 @@ def mcp_prompt_text(mcp_registry: McpRegistry) -> str:
     lines = ["\n\n【外部工具（MCP）】"]
     for server in mcp_registry.servers():
         for descriptor in server.tools:
-            lines.append("- " + mcp_tool_name(server.name, str(descriptor.name))
-                         + "：" + str(descriptor.description or ""))
+            lines.append(
+                "- "
+                + mcp_tool_name(server.name, str(descriptor.name))
+                + "："
+                + str(descriptor.description or "")
+            )
     if len(lines) == 1:
         return ""
     lines.append("这些工具来自外部 MCP 服务，调用前同样需要经过权限审批。")

@@ -17,7 +17,7 @@ packages = [
     "chromadb",
     "requests",
     "pyside6",
-    "pillow",       # 发送图片给视觉模型时需要
+    "pillow",  # 发送图片给视觉模型时需要
     "pyinstaller",  # 打包成 exe 时需要
 ]
 

@@ -16,6 +16,8 @@ export function TitleBar({
   onToggleTheme: () => void;
 }) {
   const [maximized, setMaximized] = useState(false);
+  /** 关闭按钮的提示文案要反映真实行为（跟随「关闭时最小化到托盘」）。 */
+  const [closeToTray, setCloseToTray] = useState(true);
 
   useEffect(() => {
     let alive = true;
@@ -23,9 +25,21 @@ export function TitleBar({
       if (alive) setMaximized(Boolean(v));
     }).catch(() => undefined);
     const off = window.castorice.onMaximizedChanged?.((v) => setMaximized(v));
+    // 关闭行为的当前设置（设置页开关会推送变更，托盘菜单也会）。
+    void window.castorice
+      .getCloseAction?.()
+      .then((v) => {
+        if (alive) setCloseToTray(Boolean(v));
+      })
+      .catch(() => undefined);
+    const offShell = window.castorice.onShellStateChanged?.((state) => {
+      if (!alive) return;
+      if (typeof state?.closeToTray === "boolean") setCloseToTray(state.closeToTray);
+    });
     return () => {
       alive = false;
       off?.();
+      offShell?.();
     };
   }, []);
 
@@ -78,9 +92,9 @@ export function TitleBar({
         </button>
         <button
           type="button"
-          title="关闭（隐藏到托盘）"
+          title={closeToTray ? "关闭（最小化到托盘）" : "关闭程序"}
           className={btn + " hover:bg-rose-500 hover:text-white"}
-          onClick={() => window.castorice.hide()}
+          onClick={() => window.castorice.requestClose()}
         >
           <X size={14} />
         </button>

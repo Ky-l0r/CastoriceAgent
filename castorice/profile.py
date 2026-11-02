@@ -29,11 +29,11 @@ from typing import Any, Dict
 from . import paths as cpaths
 
 __all__ = [
-    "UserProfile",
-    "PROFILE_FIELDS",
     "FIELD_LABELS",
-    "system_prompt_section",
+    "PROFILE_FIELDS",
+    "UserProfile",
     "memory_query_suffix",
+    "system_prompt_section",
 ]
 
 #: 环境变量覆盖档案文件路径（便携运行 / 多份配置并存时有用；
@@ -43,12 +43,12 @@ ENV_PATH = "CASTORICE_PROFILE_PATH"
 #: 档案字段白名单（bridge profile.set 只接受这些键；未知键拒绝，
 #: 防止前端把任意数据塞进落盘文件）
 PROFILE_FIELDS = (
-    "nickname",       # 昵称（AI 称呼用户时的首选）
-    "appellation",    # 称呼偏好（如「阁下」；空 = 用昵称或通用称呼）
-    "gender",         # 性别（自由文本，交由提示词层解释）
-    "birthday",       # 生日（YYYY-MM-DD 形式的自由文本，不强制校验）
-    "city",           # 城市（天气 / 地理语境 / 记忆检索定位）
-    "timezone",       # 时区（IANA 名，如 Asia/Shanghai；用于时间提示）
+    "nickname",  # 昵称（AI 称呼用户时的首选）
+    "appellation",  # 称呼偏好（如「阁下」；空 = 用昵称或通用称呼）
+    "gender",  # 性别（自由文本，交由提示词层解释）
+    "birthday",  # 生日（YYYY-MM-DD 形式的自由文本，不强制校验）
+    "city",  # 城市（天气 / 地理语境 / 记忆检索定位）
+    "timezone",  # 时区（IANA 名，如 Asia/Shanghai；用于时间提示）
 )
 
 #: 字段中文名（前端表单与错误信息共用）
@@ -69,8 +69,7 @@ def _profile_file() -> Path:
     数据目录由 castorice.paths 统一解析——生产环境是 %APPDATA%，
     开发环境回落到程序目录，两者行为与改造前保持兼容。
     """
-    return cpaths.resolve_data_file(
-        "profile.json", os.environ.get(ENV_PATH))
+    return cpaths.resolve_data_file("profile.json", os.environ.get(ENV_PATH))
 
 
 class UserProfile:
@@ -156,8 +155,7 @@ def system_prompt_section() -> str:
     nickname = _field("nickname")
     appellation = _field("appellation")
     if nickname and appellation and nickname != appellation:
-        lines.append(
-            "   （用户的昵称是「" + nickname + "」，称呼偏好是「" + appellation + "」）")
+        lines.append("   （用户的昵称是「" + nickname + "」，称呼偏好是「" + appellation + "」）")
     gender = _field("gender")
     if gender:
         lines.append("2. 用户性别：" + gender + "。")
@@ -166,8 +164,7 @@ def system_prompt_section() -> str:
         lines.append("3. 用户生日：" + birthday + "（生日临近时可以送上祝福）。")
     city = _field("city")
     if city:
-        lines.append(
-            "4. 用户所在城市：" + city + "（天气、地理、本地生活类问题以此为准）。")
+        lines.append("4. 用户所在城市：" + city + "（天气、地理、本地生活类问题以此为准）。")
     tz = _field("timezone")
     if tz:
         lines.append("5. 用户时区：" + tz + "（时间相关回答与日程以此为准）。")

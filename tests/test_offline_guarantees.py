@@ -54,9 +54,9 @@ def test_tests_only_patch_approved_targets():
     for path in sorted((PROJECT_ROOT / "tests").glob("test_*.py")):
         for target in _patch_targets(path):
             checked += 1
-            assert target in ALLOWED_PATCH_TARGETS or target.startswith(
-                ALLOWED_LOCAL_PREFIXES
-            ), f"{path.name} 里出现了越界的 patch 目标: {target}"
+            assert target in ALLOWED_PATCH_TARGETS or target.startswith(ALLOWED_LOCAL_PREFIXES), (
+                f"{path.name} 里出现了越界的 patch 目标: {target}"
+            )
     assert checked > 0, "自检本身要能扫到 patch 调用，否则形同虚设"
 
 

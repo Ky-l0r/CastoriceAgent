@@ -1,28 +1,47 @@
-"""
-AI核心模块
+"""AI 核心模块。
+
+**关于启动速度**（第五期性能改造）
+
+chromadb 与 openai 都改成了惰性导入——它们合计占后端 import 时间的大头
+（实测 chromadb 冷导入 14~43 秒、openai 约 15 秒），而那段时间里 Electron
+壳只能停在「正在启动后端…」。
+
+* chromadb：见 :class:`_LazyChroma`，第一次检索 / 写入记忆时才加载；
+* openai：见 :class:`OpenAICompatibleProvider._setup_client`，构造 provider
+  时加载（AI() 初始化必然发生，但它本身比 chromadb 快得多）。
+
+**不要把这两行 import 挪回文件顶部**：它们看起来只是两条语句，实际是
+启动卡顿的主要来源。
 """
 
-import os
-import re
-import io
-import json
 import base64
-import random
-import html as html_module
-import logging
 import contextlib
+import io
+import logging
+import os
+import random
+import re
 import threading
-from datetime import datetime
 from dataclasses import dataclass
-from typing import Optional, List, Dict, Any, Union, Sequence, Callable, Tuple
+from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs, unquote
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    ClassVar,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 import yaml
-import chromadb
-from chromadb.api.models.Collection import Collection
-from openai import OpenAI
-from openai.types.chat import ChatCompletionMessageParam
+
+if TYPE_CHECKING:  # pragma: no cover - 仅类型检查期
+    from chromadb.api.models.Collection import Collection
 
 import castorice
 import castorice.profile as cprofile
@@ -39,30 +58,27 @@ from castorice import (
     StopReason,
     ToolSpec,
     WorkdirError,
-    build_harness_registry,
     resolve_mode_name,
 )
 from castorice import permissions as cpermissions
 from castorice import providers as cproviders
 
-
 # ============================================================================
 # 日志配置
 # ============================================================================
+
 
 def setup_logger(name: str = "AI") -> logging.Logger:
 
     logger = logging.getLogger(name)
     logger.setLevel(logging.INFO)
-    
+
     if not logger.handlers:
         handler = logging.StreamHandler()
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
+        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         handler.setFormatter(formatter)
         logger.addHandler(handler)
-    
+
     return logger
 
 
@@ -70,15 +86,37 @@ def setup_logger(name: str = "AI") -> logging.Logger:
 # 配置管理
 # ============================================================================
 
+
 def _yaml_scalar_text(value: Any) -> str:
     """把 Python 值格式化成 YAML 标量文本（字符串统一加双引号）"""
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (int, float)):
         return str(value)
+    if value is None:
+        # 空值统一写成空字符串：此前 str(None) 会渲染成字符串 "None"，
+        # 写回后再读出来就是字面量 None，属于静默的数据污染。
+        return '""'
     text = str(value)
     escaped = text.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def _yaml_inline_value(value: Any) -> str:
+    """把 Python 值格式化成 YAML 单行文本（列表 / 映射走 flow 形式）。
+
+    用途：写回 config.yaml 时**从不**引入多行块结构——单行渲染能保证
+    插入的键不会因为缩进猜测错误而破坏整份文件的 YAML 结构。
+    """
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_yaml_inline_value(item) for item in value) + "]"
+    if isinstance(value, dict):
+        return (
+            "{"
+            + ", ".join(f"{key}: {_yaml_inline_value(item)}" for key, item in value.items())
+            + "}"
+        )
+    return _yaml_scalar_text(value)
 
 
 def _yaml_key_of(line: str) -> Tuple[int, Optional[str]]:
@@ -90,14 +128,34 @@ def _yaml_key_of(line: str) -> Tuple[int, Optional[str]]:
     """
     raw = line.rstrip("\n")
     stripped = raw.strip()
-    if not stripped or stripped.startswith("#") or stripped.startswith("- "):
+    if not stripped or stripped.startswith(("#", "- ")):
         return (-1, None)
     indent = len(raw) - len(raw.lstrip(" "))
     match = re.match(r"^([^:#]+?)\s*:(?:\s|$)", stripped)
     if not match:
         return (indent, None)
-    key = match.group(1).strip().strip('"\'')
+    key = match.group(1).strip().strip("\"'")
     return (indent, key)
+
+
+def _first_indented_content_index(
+    lines: List[str], parent_index: int, parent_indent: int, default: int
+) -> int:
+    """父块内第一个「缩进内容行」的下标（跳过注释与空行）。
+
+    找不到（父块只有注释）时返回 default——调用方据此决定兜底插入点。
+    """
+    for index in range(parent_index + 1, len(lines)):
+        raw = lines[index]
+        if not raw.strip():
+            continue
+        indent = len(raw) - len(raw.lstrip(" "))
+        if indent <= parent_indent:
+            break
+        if raw.lstrip().startswith("#"):
+            continue  # 注释原地保留，不并入父块的子级
+        return index
+    return default
 
 
 def _locate_yaml_key(lines: List[str], path: Tuple[str, ...]) -> Optional[int]:
@@ -115,9 +173,7 @@ def _locate_yaml_key(lines: List[str], path: Tuple[str, ...]) -> Optional[int]:
     return None
 
 
-def update_yaml_scalars(
-    text: str, updates: Dict[Tuple[str, ...], Any]
-) -> str:
+def update_yaml_scalars(text: str, updates: Dict[Tuple[str, ...], Any]) -> str:
     """更新 YAML 文本中指定路径的标量值（保留注释与排版）。
 
     不存在的路径会被**跳过**（本函数不创造新结构）。需要「知道哪些没写
@@ -146,7 +202,7 @@ def update_yaml_scalars_ex(
     missed: List[Tuple[str, ...]] = []
 
     for path, value in updates.items():
-        rendered = _yaml_scalar_text(value)
+        rendered = _yaml_inline_value(value)
         index = _locate_yaml_key(lines, path)
 
         if index is not None:
@@ -175,8 +231,17 @@ def update_yaml_scalars_ex(
             missed.append(path)
             continue
         parent_indent, _ = _yaml_key_of(lines[parent_index])
-        
+
+        # 插入点 = 父块**最后一个真实子级内容行**之后。
+        #
+        # 关键修复（真实踩坑）：注释行不是块内容。旧逻辑把紧跟在父块
+        # 后面的注释当成子级，于是「新键」被插到注释堆中间，而注释下面
+        # 若跟着下一个顶层键（模板里 channels: 前面就是一整段注释），
+        # 结果就是「子级缩进行跟在顶层键之后」——整份 config.yaml 变成
+        # 无法解析的 YAML，下次启动直接 ValueError，界面表现为
+        # 「保存失败：config.yaml 写回被拒绝」。
         insert_at = parent_index + 1
+        last_child = parent_index
         for index in range(parent_index + 1, len(lines)):
             raw = lines[index]
             if not raw.strip():
@@ -184,11 +249,15 @@ def update_yaml_scalars_ex(
             current_indent = len(raw) - len(raw.lstrip(" "))
             if current_indent <= parent_indent:
                 break
+            last_child = index
             insert_at = index + 1
-        
+        if last_child == parent_index:
+            # 父块还没有任何子键：插在第一个缩进内容行之前，
+            # 父子行紧邻，不被中间的说明注释隔开。
+            insert_at = _first_indented_content_index(lines, parent_index, parent_indent, insert_at)
+
         lines.insert(
-            insert_at,
-            f"{' ' * (parent_indent + 2)}{path[-1]}: {rendered}"
+            insert_at, f"{' ' * (parent_indent + 2)}{path[-1]}: {_yaml_inline_value(value)}"
         )
 
     result = "\n".join(lines)
@@ -197,36 +266,191 @@ def update_yaml_scalars_ex(
     return result, missed
 
 
-class ConfigManager:
+def _render_yaml_scalar(value: Any) -> str:
+    """单行渲染一个值（标量 / 列表 / 一层嵌套映射）。"""
+    if isinstance(value, dict):
+        inner = ", ".join(f"{key}: {_render_yaml_scalar(item)}" for key, item in value.items())
+        return "{" + inner + "}"
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_render_yaml_scalar(item) for item in value) + "]"
+    return _yaml_scalar_text(value)
 
-    
+
+def _render_yaml_node(name: str, value: Any, indent: int) -> List[str]:
+    """递归渲染一个「名字 + 值」（映射展开成多行，其余单行）。"""
+    pad = " " * max(0, indent)
+    if isinstance(value, dict) and value:
+        lines = [f"{pad}{name}:"]
+        for key, item in value.items():
+            lines.extend(_render_yaml_node(str(key), item, indent + 2))
+        return lines
+    if isinstance(value, dict):
+        return [f"{pad}{name}: {{}}"]
+    return [f"{pad}{name}: {_render_yaml_scalar(value)}"]
+
+
+def _render_yaml_section(name: str, values: Dict[str, Any], indent: int = 0) -> str:
+    """把一整节配置渲染成 YAML 文本块（子级比节名多缩进 2 空格）。"""
+    pad = " " * max(0, indent)
+    lines = [f"{pad}{name}:"]
+    for key, value in values.items():
+        lines.extend(_render_yaml_node(str(key), value, indent + 2))
+    return "\n".join(lines)
+
+
+def _wrap_nested(parts: Tuple[str, ...], values: Dict[str, Any]) -> Any:
+    """把 values 包成 parts 指定的嵌套结构（parts 为空时就是 values）。"""
+    node: Any = dict(values)
+    for part in reversed(parts):
+        node = {part: node}
+    return node
+
+
+def _dedent_odd_blocks(lines: List[str]) -> bool:
+    """把「整体多缩进 1 格」的畸形块左移一格（返回是否改动）。
+
+    真实损坏形态（旧版本插入算法）：渠道节被整块多缩进了一格，
+    即 channels: 变成「空格 + channels:」，子级也跟着多一格。这种文件
+    解析不了，但内容其实是完好的，整块左移一格就恢复成合法的顶层节。
+
+    判定条件很保守：只处理「最小缩进恰好是 1 格」的块，避免误改用户
+    手写的、确实有意的缩进。
+    """
+    changed = False
+    index = 0
+    while index < len(lines):
+        raw = lines[index]
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            index += 1
+            continue
+        indent = len(raw) - len(raw.lstrip(" "))
+        if indent != 1:
+            index += 1
+            continue
+        end = index
+        while end < len(lines):
+            look = lines[end]
+            if not look.strip():
+                end += 1
+                continue
+            look_indent = len(look) - len(look.lstrip(" "))
+            if look_indent == 0:
+                break
+            end += 1
+        for cursor in range(index, end):
+            line = lines[cursor]
+            if not line.strip():
+                continue
+            if len(line) - len(line.lstrip(" ")) < 1:
+                break
+            lines[cursor] = line[1:]
+        changed = True
+        index = end
+    return changed
+
+
+def repair_yaml_prefix(text: str) -> Optional[Tuple[str, int]]:
+    """把「尾部被写坏」的 YAML 截断到最长可解析前缀。
+
+    为什么需要它：写入路径已经做了「先校验再落盘」，但历史版本写坏过
+    的文件仍在用户机器上（真实案例：渠道节被插到了下一个顶层键之后）。
+    那种文件下次启动直接 ValueError，程序永远起不来，用户也看不懂
+    错在哪。这里用「保留能解析的最长前缀」把文件救回来——丢掉的基本
+    只是文件尾部的注释块，API Key、模型、渠道配置都还在。
+
+    Returns:
+        (可用的文本, 丢弃的行数)；整份本来就合法时返回 None。
+    """
+    try:
+        yaml.safe_load(text)
+        return None
+    except yaml.YAMLError:
+        pass
+
+    lines = text.splitlines()
+    original_count = len(lines)
+
+    def longest_parsable(candidate_lines: List[str]) -> int:
+        best = 0
+        for end in range(1, len(candidate_lines) + 1):
+            candidate = "\n".join(candidate_lines[:end]) + "\n"
+            try:
+                loaded = yaml.safe_load(candidate)
+            except yaml.YAMLError:
+                continue
+            if isinstance(loaded, dict) and loaded:
+                best = end
+        return best
+
+    # 先试「畸形块整体左移一格」：内容完好、只是缩进多了，修完能全保住。
+    cleaned = list(lines)
+    if _dedent_odd_blocks(cleaned):
+        try:
+            if isinstance(yaml.safe_load("\n".join(cleaned)), dict):
+                return ("\n".join(cleaned) + "\n", 0)
+        except yaml.YAMLError:
+            pass
+
+    # 退一步：截断到最长可解析前缀（丢掉尾部被写坏的行）。
+    cleaned = list(lines)
+    best = longest_parsable(cleaned)
+    if best <= 0:
+        return None
+    return "\n".join(cleaned[:best]) + "\n", original_count - best
+
+
+class ConfigManager:
     DEFAULT_CONFIG_PATH = "config.yaml"
-    
+
     def __init__(self, config_path: str = DEFAULT_CONFIG_PATH):
 
         self.config_path = Path(config_path)
         self._config: Optional[Dict[str, Any]] = None
+        #: 本次加载是否自动修复过损坏的配置文件（消息给日志/界面用）。
+        self.self_healed: str = ""
         self._load_config()
-    
+
     def _load_config(self) -> None:
-        """加载配置文件"""
+        """加载配置文件（损坏时尝试截断修复，坏文件另存备份）。"""
         if not self.config_path.exists():
             raise FileNotFoundError(f"配置文件不存在: {self.config_path}")
-        
+
         try:
-            with open(self.config_path, "r", encoding="utf-8") as f:
+            with open(self.config_path, encoding="utf-8-sig") as f:
                 self._config = yaml.safe_load(f)
+            return
         except yaml.YAMLError as e:
-            raise ValueError(f"配置文件格式错误: {e}")
-    
+            error = e
+
+        repaired = repair_yaml_prefix(self.config_path.read_text(encoding="utf-8-sig"))
+        if repaired is None:
+            # 前缀也解析不出来（例如文件开头就坏了）：保持 fail-fast，
+            # 由上层按「配置格式错误」明确告知，不擅自重置用户数据。
+            raise ValueError(f"配置文件格式错误: {error}")
+
+        fixed_text, dropped = repaired
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup = self.config_path.with_name(self.config_path.name + ".broken-" + stamp)
+        try:
+            backup.write_text(self.config_path.read_text(encoding="utf-8-sig"), encoding="utf-8")
+            self.config_path.write_text(fixed_text, encoding="utf-8")
+        except OSError as exc:
+            raise ValueError(f"配置文件格式错误: {error}") from exc
+
+        self.self_healed = (
+            f"config.yaml 尾部有 {dropped} 行格式损坏，已自动修复；原文件备份在 {backup.name}"
+        )
+        self._config = yaml.safe_load(fixed_text)
+
     def get(self, key: str, default: Any = None) -> Any:
 
         if self._config is None:
             return default
-        
-        keys = key.split('.')
+
+        keys = key.split(".")
         value = self._config
-        
+
         for k in keys:
             if isinstance(value, dict):
                 value = value.get(k)
@@ -234,65 +458,193 @@ class ConfigManager:
                     return default
             else:
                 return default
-        
+
         return value
-    
+
     def get_provider_config(self, provider_name: str) -> Dict[str, Any]:
 
-        provider_config = self.get(f'providers.{provider_name}')
+        provider_config = self.get(f"providers.{provider_name}")
         if not provider_config:
             raise ValueError(f"未找到提供商配置: {provider_name}")
-        
+
         return provider_config
-    
+
     def get_active_provider(self) -> str:
         """
         获取当前激活的提供商
-        
+
         Returns:
             提供商名称
         """
-        provider = self.get('active_provider')
+        provider = self.get("active_provider")
         if not provider:
             raise ValueError("未配置 active_provider")
         return provider
-    
+
     @property
     def provider_names(self) -> List[str]:
         """所有已配置的提供商名称"""
-        providers = self.get('providers') or {}
+        providers = self.get("providers") or {}
         if not isinstance(providers, dict):
             return []
         return list(providers.keys())
-    
-    def set_values(
-        self, updates: Dict[Tuple[str, ...], Any]
-    ) -> None:
+
+    def _read_config_text(self) -> str:
+        """读取配置原文（去掉 UTF-8 BOM；不存在则抛 FileNotFoundError）。"""
+        if not self.config_path.exists():
+            raise FileNotFoundError(f"配置文件不存在: {self.config_path}")
+        text = self.config_path.read_text(encoding="utf-8-sig")
+        # 统一换行：CRLF 输入会退化成 LF，这里记住原风格，写回时还原，
+        # 避免每次保存都把整份文件的换行符改写一遍。
+        return text
+
+    def _config_newline(self) -> str:
+        """探测配置文件当前的换行风格（保持用户文件的原样式）。"""
+        try:
+            with open(self.config_path, encoding="utf-8", newline="") as fh:
+                chunk = fh.read(4096)
+        except OSError:
+            return "\n"
+        return "\r\n" if "\r\n" in chunk else "\n"
+
+    def _commit(self, new_text: str, *, original: str = "") -> None:
+        """校验 + 原子写 + 重新加载（写配置的唯一出口）。
+
+        **为什么必须先校验**：文本级写回（保留注释与排版）靠缩进推断
+        插入位置，一旦写坏，用户下次启动就拿到「配置文件格式错误」，
+        界面表现为后端连不上、保存按钮一律失败。写完先 yaml.safe_load
+        一遍：解析不过就抛错并把文件原样留在磁盘上，绝不落盘坏配置。
+        """
+        try:
+            yaml.safe_load(new_text)
+        except yaml.YAMLError as exc:
+            raise ValueError(
+                "写回后的 config.yaml 不是合法 YAML，已放弃这次写入（原文件未改动）: " + str(exc)
+            ) from exc
+
+        if original and original.endswith("\n") and not new_text.endswith("\n"):
+            new_text += "\n"
+
+        tmp_path = self.config_path.with_name(self.config_path.name + ".tmp")
+        try:
+            tmp_path.write_text(new_text, encoding="utf-8", newline=self._config_newline())
+            os.replace(tmp_path, self.config_path)
+        finally:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+        self._load_config()
+
+    def set_values(self, updates: Dict[Tuple[str, ...], Any]) -> None:
         """
         写回配置项（保留 config.yaml 的注释与排版），随后重新加载
 
         Args:
             updates: {(键路径...): 新值}
         """
-        if not self.config_path.exists():
-            raise FileNotFoundError(f"配置文件不存在: {self.config_path}")
-        
-        text = self.config_path.read_text(encoding="utf-8")
+        text = self._read_config_text()
         new_text, missed = update_yaml_scalars_ex(text, updates)
         if missed:
             # 静默跳过是本项目踩过的真实坑：界面点「添加」既不报错也不
             # 生效，用户完全无从判断。这里把未命中的路径原样报出来，
-            # 需要创造新结构的调用方应改用 set_provider_values 等方法。
+            # 需要创造新结构的调用方应改用 set_provider_values /
+            # set_section_values 等方法。
             raise KeyError(
                 "以下配置路径在 config.yaml 中不存在，未能写入: "
                 + ", ".join(".".join(p) for p in missed)
             )
-        self.config_path.write_text(new_text, encoding="utf-8")
-        self._load_config()
-    
-    def set_provider_values(
-        self, provider_name: str, values: Dict[str, Any]
-    ) -> None:
+        self._commit(new_text, original=text)
+
+    # ---- 整节写入（渠道这类「整块配置」的入口）----
+
+    def set_section_values(self, section: str, values: Dict[str, Any]) -> None:
+        """写入一整个配置节（节不存在则新建整节）。
+
+        与 set_values 的区别：set_values 逐键定位，要求键已存在；
+        这里面向「界面上直接填一整节」的场景（例如 channels.napcat）。
+
+        Args:
+            section: 节名或点分路径（如 "channels.napcat"）。
+            values: {键: 值}；值支持标量 / 列表 / 一层嵌套映射。
+        """
+        path = tuple(part.strip() for part in str(section or "").split(".") if part.strip())
+        if not path:
+            raise ValueError("配置节名不能为空")
+        if not isinstance(values, dict):
+            raise ValueError("set_section_values 需要 values 映射")
+
+        # 节已存在且是映射（常见情形）：逐键写入，保留用户在该节里写的注释
+        node: Any = self._config
+        for part in path:
+            node = node.get(part) if isinstance(node, dict) else None
+        if isinstance(node, dict):
+            self.set_values({(*path, str(key)): value for key, value in values.items()})
+            return
+
+        text = self._read_config_text()
+        lines = text.splitlines()
+        existing = _locate_yaml_key(lines, path)
+
+        if existing is not None:
+            # 节名存在但不是映射（例如模板里只留了 "channels:" 这一行）：
+            # 整行替换成完整块，并沿用这一行原本的缩进。
+            block_indent = len(lines[existing]) - len(lines[existing].lstrip(" "))
+            del lines[existing]
+            insert_at = existing
+            block = _render_yaml_section(path[-1], values, indent=block_indent)
+        else:
+            # 找到最深的「已存在且是映射」的祖先（可能一个都没有）。
+            # 从这一层往后整体渲染，缺的中间层一并创建。
+            prefix_len = 0
+            node = self._config
+            for index, part in enumerate(path):
+                node = node.get(part) if isinstance(node, dict) else None
+                if isinstance(node, dict):
+                    prefix_len = index + 1
+                else:
+                    break
+            remaining = path[prefix_len:]
+            body = _wrap_nested(remaining[1:], values)
+            block_name = remaining[0]
+
+            if prefix_len == 0:
+                block_indent = 0
+                if lines and lines[-1].strip():
+                    lines.append("")
+                insert_at = len(lines)
+            else:
+                parent_index = _locate_yaml_key(lines, path[:prefix_len])
+                if parent_index is None:
+                    raise KeyError(
+                        "父配置节未在 config.yaml 中找到，无法写入: " + ".".join(path[:prefix_len])
+                    )
+                parent_indent = len(lines[parent_index]) - len(lines[parent_index].lstrip(" "))
+                block_indent = parent_indent + 2
+                insert_at = parent_index + 1
+                last_child = parent_index
+                for index in range(parent_index + 1, len(lines)):
+                    raw = lines[index]
+                    if not raw.strip():
+                        continue
+                    current_indent = len(raw) - len(raw.lstrip(" "))
+                    if current_indent <= parent_indent:
+                        break
+                    last_child = index
+                    insert_at = index + 1
+                if last_child == parent_index:
+                    insert_at = _first_indented_content_index(
+                        lines, parent_index, parent_indent, insert_at
+                    )
+
+            block = _render_yaml_node(block_name, body, block_indent)
+            block = "\n".join(block) if isinstance(block, list) else block
+
+        lines.insert(insert_at, block)
+        self._commit("\n".join(lines), original=text)
+
+    def set_provider_values(self, provider_name: str, values: Dict[str, Any]) -> None:
         """更新某个提供商的配置字段（不存在则新建整块）。
 
         为什么不能用 set_values 逐字段写：底层 update_yaml_scalars 只能
@@ -303,10 +655,7 @@ class ConfigManager:
         这里改为：先确保 providers.<name> 这一块存在，再逐字段写。
         """
         self.ensure_provider_block(provider_name)
-        updates = {
-            ("providers", provider_name, key): value
-            for key, value in values.items()
-        }
+        updates = {("providers", provider_name, key): value for key, value in values.items()}
         self.set_values(updates)
 
     def ensure_provider_block(self, provider_name: str) -> bool:
@@ -319,8 +668,7 @@ class ConfigManager:
         if not name:
             raise ValueError("provider_name 不能为空")
         if not self.config_path.exists():
-            raise FileNotFoundError(
-                f"配置文件不存在: {self.config_path}")
+            raise FileNotFoundError(f"配置文件不存在: {self.config_path}")
 
         text = self.config_path.read_text(encoding="utf-8")
         lines = text.splitlines()
@@ -329,11 +677,13 @@ class ConfigManager:
 
         parent_index = _locate_yaml_key(lines, ("providers",))
         if parent_index is None:
-            raise ValueError(
-                "config.yaml 缺少顶层 providers 段，无法新增提供商")
+            raise ValueError("config.yaml 缺少顶层 providers 段，无法新增提供商")
 
-        # 找到 providers 段的最后一个子行，插在它后面
+        # 找到 providers 段的最后一个**子键**，插在它后面。
+        # 注释行不属于块内容（见 update_yaml_scalars_ex 的同款说明）。
+        comment_from = parent_index + 1
         insert_at = parent_index + 1
+        last_child = parent_index
         for index in range(parent_index + 1, len(lines)):
             raw = lines[index]
             if not raw.strip():
@@ -341,24 +691,28 @@ class ConfigManager:
             indent = len(raw) - len(raw.lstrip(" "))
             if indent <= 0:
                 break
+            last_child = index
             insert_at = index + 1
+        if last_child == parent_index:
+            insert_at = _first_indented_content_index(lines, parent_index, 0, insert_at)
 
+        # 新块紧跟在 providers: 之后、说明注释之前，
+        # 保留「每个提供商上面一行注释」的排版习惯。
+        comment_from = insert_at
+        del comment_from
         lines.insert(insert_at, "  " + name + ":")
         result = "\n".join(lines)
-        if text.endswith("\n"):
-            result += "\n"
-        self.config_path.write_text(result, encoding="utf-8")
-        self._load_config()
+        self._commit(result, original=text)
         return True
-    
+
     def set_active_provider(self, provider_name: str) -> None:
         """切换当前激活的提供商"""
         self.set_values({("active_provider",): provider_name})
-    
+
     def reload(self) -> None:
         """重新读取配置文件（外部修改后同步内存中的配置）"""
         self._load_config()
-    
+
     @property
     def config(self) -> Dict[str, Any]:
         """获取完整配置"""
@@ -370,6 +724,7 @@ class ConfigManager:
 # ============================================================================
 # 提示词管理
 # ============================================================================
+
 
 class PromptModule:
     """一个基础提示词文件（prompts/*.md）解析后的形态。
@@ -411,14 +766,12 @@ class PromptModule:
     def _parse_entries(self) -> None:
         """把文件切成「文件头 + 条目列表」；无条目标注时保持整段常驻。"""
         lines = self.content.split("\n")
-        heading_indexes = [
-            i for i, line in enumerate(lines) if self._HEADING_RE.match(line)
-        ]
+        heading_indexes = [i for i, line in enumerate(lines) if self._HEADING_RE.match(line)]
         if not heading_indexes:
             return  # 整个文件是常驻模块
-        self.header = "\n".join(lines[:heading_indexes[0]]).strip()
+        self.header = "\n".join(lines[: heading_indexes[0]]).strip()
 
-        bounds = heading_indexes + [len(lines)]
+        bounds = [*heading_indexes, len(lines)]
         for start, stop in zip(bounds, bounds[1:]):
             block = lines[start:stop]
             title = block[0].lstrip("# ").strip()
@@ -431,16 +784,13 @@ class PromptModule:
                 hit = self._TRIGGER_RE.match(line)
                 if hit:
                     triggers = [
-                        word.strip()
-                        for word in re.split(r"[,，、]", hit.group(1))
-                        if word.strip()
+                        word.strip() for word in re.split(r"[,，、]", hit.group(1)) if word.strip()
                     ]
                     body_start = offset + 1
                     continue
                 hit = self._RESIDENT_RE.match(line)
                 if hit:
-                    resident = hit.group(1).strip().lower() in (
-                        "是", "true", "yes", "1")
+                    resident = hit.group(1).strip().lower() in ("是", "true", "yes", "1")
                     body_start = offset + 1
                     continue
                 hit = self._PRIORITY_RE.match(line)
@@ -455,13 +805,15 @@ class PromptModule:
             content = "## " + title
             if body:
                 content = content + "\n" + body
-            self.entries.append({
-                "title": title,
-                "triggers": tuple(triggers),
-                "resident": resident is True,
-                "priority": priority,
-                "content": content,
-            })
+            self.entries.append(
+                {
+                    "title": title,
+                    "triggers": tuple(triggers),
+                    "resident": resident is True,
+                    "priority": priority,
+                    "content": content,
+                }
+            )
 
         # 文件里出现过「触发词」标注才算条目化模块；否则全部还原为常驻
         # （防止只写了标题结构、忘了写触发词的文件被整体漏掉）
@@ -479,9 +831,7 @@ class PromptModule:
     def resident_content(self) -> str:
         """常驻部分：文件头 + 标记为「常驻: 是」的条目。"""
         parts = [self.header] if self.header else []
-        parts.extend(
-            entry["content"] for entry in self.entries if entry["resident"]
-        )
+        parts.extend(entry["content"] for entry in self.entries if entry["resident"])
         return "\n\n".join(part for part in parts if part)
 
     def matched_entries(self, message: str) -> List[Dict[str, Any]]:
@@ -497,9 +847,7 @@ class PromptModule:
         for index, entry in enumerate(self.entries):
             if entry["resident"] or not entry["triggers"]:
                 continue
-            count = sum(
-                1 for word in entry["triggers"] if word.lower() in haystack
-            )
+            count = sum(1 for word in entry["triggers"] if word.lower() in haystack)
             if count:
                 snapshot = dict(entry)
                 snapshot["_hits"] = count
@@ -512,7 +860,7 @@ class PromptModule:
 class PromptManager:
     """
     提示词管理器
-    
+
     负责加载和管理AI提示词模板。
 
     触发词注入（第二期）：基础提示词文件可按条目携带触发词标注，
@@ -520,7 +868,7 @@ class PromptManager:
     不传 user_message（或 config 的 prompts.enabled 未开启）时保持
     全量拼接的旧行为，旧配置零改动即可运行。
     """
-    
+
     DEFAULT_PROMPTS_DIR = "prompts"
 
     #: 模式化提示词分层目录（由 castorice.Mode.system_prompt_sections 选择）
@@ -530,12 +878,13 @@ class PromptManager:
     MODES_ALIAS = ("talk", "chat")
 
     #: config.yaml prompts 节的缺省值：关闭动态筛选 = 现全量拼接
-    DEFAULT_DYNAMIC_CONFIG: Dict[str, Any] = {
+    #: ClassVar 声明：这是类级只读缺省值，不在实例上被修改（RUF012）
+    DEFAULT_DYNAMIC_CONFIG: ClassVar[Dict[str, Any]] = {
         "enabled": False,
-        "resident_modules": [],   # 空 = 按文件自身标注自动判定
-        "max_entries": 0,         # 0 = 不限制单轮注入的命中条目数
+        "resident_modules": [],  # 空 = 按文件自身标注自动判定
+        "max_entries": 0,  # 0 = 不限制单轮注入的命中条目数
     }
-    
+
     def __init__(
         self,
         prompts_dir: str = DEFAULT_PROMPTS_DIR,
@@ -548,36 +897,34 @@ class PromptManager:
         self._modules: List[PromptModule] = []
         self._dynamic: Dict[str, Any] = dict(self.DEFAULT_DYNAMIC_CONFIG)
         if isinstance(config, dict):
-            self._dynamic.update({
-                key: value for key, value in config.items()
-                if key in self.DEFAULT_DYNAMIC_CONFIG
-            })
+            self._dynamic.update(
+                {key: value for key, value in config.items() if key in self.DEFAULT_DYNAMIC_CONFIG}
+            )
         self._load_prompts()
 
     def _sections_dir(self) -> Path:
         return self.prompts_dir / self.MODES_SUBDIR
-    
+
     def _load_prompts(self) -> None:
         """加载所有提示词文件"""
         if not self.prompts_dir.exists():
             self._prompt = ""
             return
-        
+
         prompt_parts = []
         modules: List[PromptModule] = []
-        
+
         for filepath in sorted(self.prompts_dir.iterdir()):
-            if filepath.suffix.lower() in ['.md', '.txt']:
+            if filepath.suffix.lower() in [".md", ".txt"]:
                 try:
-                    with open(filepath, "r", encoding="utf-8") as f:
+                    with open(filepath, encoding="utf-8") as f:
                         content = f.read().strip()
                         if content:
                             prompt_parts.append(content)
-                            modules.append(
-                                PromptModule(filepath.name, content))
+                            modules.append(PromptModule(filepath.name, content))
                 except Exception as e:
                     print(f"警告: 无法读取提示词文件 {filepath}: {e}")
-        
+
         self._prompt = "\n\n".join(prompt_parts)
         self._modules = modules
         self._load_sections()
@@ -594,7 +941,7 @@ class PromptManager:
         if not sections_dir.is_dir():
             return
         for filepath in sorted(sections_dir.iterdir()):
-            if filepath.suffix.lower() not in ('.md', '.txt'):
+            if filepath.suffix.lower() not in (".md", ".txt"):
                 continue
             try:
                 content = filepath.read_text(encoding="utf-8").strip()
@@ -631,13 +978,11 @@ class PromptManager:
         prompt = self._select_base_prompt(user_message)
 
         if mode is not None:
-            prompt += self.compose_sections(
-                getattr(mode, 'system_prompt_sections', ()) or ()
-            )
-        
+            prompt += self.compose_sections(getattr(mode, "system_prompt_sections", ()) or ())
+
         if memory_context:
             prompt += f"\n\n【联想到的相关记忆】：\n{memory_context}"
-        
+
         return prompt
 
     # -- 触发词注入（第二期 t2） ------------------------------------------------
@@ -652,10 +997,7 @@ class PromptManager:
         configured = self._dynamic.get("resident_modules") or []
         if configured:
             wanted = {str(name).strip().lower() for name in configured}
-            return [
-                module.name for module in self._modules
-                if module.name.lower() in wanted
-            ]
+            return [module.name for module in self._modules if module.name.lower() in wanted]
         return [module.name for module in self._modules if not module.is_entry_based]
 
     def _select_base_prompt(self, user_message: Optional[str]) -> str:
@@ -690,7 +1032,7 @@ class PromptManager:
             # （各文件的 matched_entries 已带 priority/_hits/_order 排序键）
             limit = self._dynamic.get("max_entries") or 0
             if limit and limit > 0:
-                matched = matched[:int(limit)]
+                matched = matched[: int(limit)]
             parts.extend(entry["content"] for entry in matched)
         if not parts and self._modules:
             parts.append(self._modules[0].content)  # 兜底：绝不返回空提示词
@@ -711,8 +1053,7 @@ class PromptManager:
         prompt = self._select_base_prompt(message)
         stats = dict(getattr(self, "last_selection", {}))
         full = int(stats.get("full_bytes") or 0)
-        selected = int(stats.get("selected_bytes")
-                       or len(prompt.encode("utf-8")))
+        selected = int(stats.get("selected_bytes") or len(prompt.encode("utf-8")))
         report = {
             "resident": stats.get("resident", []),
             "matched": stats.get("matched", []),
@@ -720,8 +1061,7 @@ class PromptManager:
             "full_bytes": full,
             "saved_bytes": max(full - selected, 0),
         }
-        report["saved_ratio"] = (
-            round(report["saved_bytes"] / full, 4) if full else 0.0)
+        report["saved_ratio"] = round(report["saved_bytes"] / full, 4) if full else 0.0
         return report
 
     def compose_sections(self, names: Sequence[str]) -> str:
@@ -739,7 +1079,7 @@ class PromptManager:
         if not parts:
             return ""
         return "\n\n" + "\n\n".join(parts)
-    
+
     @property
     def prompt(self) -> str:
         """获取基础提示词"""
@@ -750,44 +1090,103 @@ class PromptManager:
 # 记忆管理
 # ============================================================================
 
+
+class _LazyChroma:
+    """ChromaDB 的惰性句柄：第一次真正访问记忆库时才付导入 + 初始化的代价。
+
+    为什么不直接在 MemoryManager.__init__ 里拿 chromadb.PersistentClient：
+    AI() 构造发生在 sidecar 握手的路径上，而 chromadb 冷导入实测 14s 以上
+    （含着 onnxruntime 的 embedding 函数探测）。把这一步推迟到「第一次
+    检索/写入记忆」，界面就能立刻连上后端。代价是第一次对话会多等一会儿
+    ——但那时用户已经在等模型回复了，感知上完全不是同一回事。
+
+    线程安全：sidecar 里记忆读写可能来自 RPC 线程池与对话线程，用锁保护
+    初始化，避免并发建两个 PersistentClient（chromadb 对同目录双实例会
+    争用 sqlite 锁）。
+    """
+
+    def __init__(self, path: Path, collection_name: str) -> None:
+        self._path = path
+        self._collection_name = collection_name
+        self._lock = threading.Lock()
+        self._client: Any = None
+        self._collection: Any = None
+
+    def _ensure(self) -> Any:
+        if self._collection is not None:
+            return self._collection
+        with self._lock:
+            if self._collection is not None:
+                return self._collection
+            import chromadb
+
+            self._client = chromadb.PersistentClient(path=str(self._path))
+            self._collection = self._client.get_or_create_collection(name=self._collection_name)
+        return self._collection
+
+    def recreate(self) -> Any:
+        """清空集合（删除后重建），返回新的集合对象。"""
+        with self._lock:
+            import chromadb
+
+            if self._client is None:
+                self._client = chromadb.PersistentClient(path=str(self._path))
+            self._client.delete_collection(self._collection_name)
+            self._collection = self._client.create_collection(name=self._collection_name)
+        return self._collection
+
+    @property
+    def client(self) -> Any:
+        with self._lock:
+            if self._client is None:
+                import chromadb
+
+                self._client = chromadb.PersistentClient(path=str(self._path))
+            return self._client
+
+
 class MemoryManager:
     """
     记忆管理器
-    
+
     负责管理向量数据库中的记忆存储和检索。
     """
-    
+
     DEFAULT_COLLECTION_NAME = "memories"
     DEFAULT_CHROMA_DIR = "database"
     DEFAULT_SEARCH_RESULTS = 5
-    
+
     def __init__(
-        self,
-        chroma_dir: str = DEFAULT_CHROMA_DIR,
-        collection_name: str = DEFAULT_COLLECTION_NAME
+        self, chroma_dir: str = DEFAULT_CHROMA_DIR, collection_name: str = DEFAULT_COLLECTION_NAME
     ):
         """
         初始化记忆管理器
-        
+
         Args:
             chroma_dir: ChromaDB数据存储目录
             collection_name: 集合名称
         """
         self.chroma_dir = Path(chroma_dir)
         self.collection_name = collection_name
-        
-        # 确保数据目录存在
+
+        # 确保数据目录存在（只是 mkdir，不触发 chromadb 导入）
         self.chroma_dir.mkdir(parents=True, exist_ok=True)
-        
-        # 初始化ChromaDB客户端
-        self._client = chromadb.PersistentClient(path=str(self.chroma_dir))
-        self._collection = self._client.get_or_create_collection(
-            name=collection_name
-        )
-    
-    def add_memory(
-        self, content: str, timestamp: Optional[datetime] = None
-    ) -> str:
+
+        # ChromaDB 客户端与集合都延迟到首次访问（见 _LazyChroma）：
+        # 构造 AI() 时不再为向量库付十几秒的冷导入代价。
+        self._chroma = _LazyChroma(self.chroma_dir, collection_name)
+
+    @property
+    def _client(self) -> Any:
+        """ChromaDB 客户端（惰性；兼容旧代码 / 测试直接读 _client）。"""
+        return self._chroma.client
+
+    @property
+    def _collection(self) -> Any:
+        """ChromaDB 集合（惰性；首次访问时才真正建库）。"""
+        return self._chroma._ensure()
+
+    def add_memory(self, content: str, timestamp: Optional[datetime] = None) -> str:
         """
         添加记忆到数据库（同时记录写入时刻的日期与时间）
 
@@ -805,25 +1204,23 @@ class MemoryManager:
         moment = timestamp or datetime.now()
         stamp = moment.strftime("%Y-%m-%d %H:%M:%S")
         memory_id = str(self._collection.count() + 1)
-        
+
         self._collection.add(
             documents=[content],
-            metadatas=[{
-                "timestamp": stamp,
-                "date": moment.strftime("%Y-%m-%d"),
-                "time": moment.strftime("%H:%M:%S"),
-                "weekday": moment.strftime("%A"),
-            }],
-            ids=[memory_id]
+            metadatas=[
+                {
+                    "timestamp": stamp,
+                    "date": moment.strftime("%Y-%m-%d"),
+                    "time": moment.strftime("%H:%M:%S"),
+                    "weekday": moment.strftime("%A"),
+                }
+            ],
+            ids=[memory_id],
         )
-        
+
         return memory_id
-    
-    def search_memories(
-        self,
-        query: str,
-        n_results: int = DEFAULT_SEARCH_RESULTS
-    ) -> List[str]:
+
+    def search_memories(self, query: str, n_results: int = DEFAULT_SEARCH_RESULTS) -> List[str]:
         """
         检索相关记忆
 
@@ -839,42 +1236,37 @@ class MemoryManager:
         """
         try:
             results = self._collection.query(
-                query_texts=[query],
-                n_results=n_results,
-                include=["documents", "metadatas"]
+                query_texts=[query], n_results=n_results, include=["documents", "metadatas"]
             )
-            
-            documents = (results or {}).get('documents') or [[]]
-            metadatas = (results or {}).get('metadatas') or [[]]
+
+            documents = (results or {}).get("documents") or [[]]
+            metadatas = (results or {}).get("metadatas") or [[]]
             docs = documents[0] if documents else []
             metas = metadatas[0] if metadatas else []
-            
+
             memories: List[str] = []
             for index, doc in enumerate(docs):
                 if not doc:
                     continue
                 meta = metas[index] if index < len(metas) else None
-                stamp = (meta or {}).get('timestamp')
+                stamp = (meta or {}).get("timestamp")
                 memories.append(f"[{stamp}] {doc}" if stamp else doc)
             return memories
-            
+
         except Exception as e:
             print(f"搜索记忆时出错: {e}")
             return []
-    
+
     def clear(self) -> None:
         """清空所有记忆"""
-        # 删除并重新创建集合
-        self._client.delete_collection(self.collection_name)
-        self._collection = self._client.create_collection(
-            name=self.collection_name
-        )
-    
+        # 删除并重新创建集合（由惰性句柄统一持锁处理）
+        self._chroma.recreate()
+
     @property
-    def collection(self) -> Collection:
+    def collection(self) -> "Collection":
         """获取ChromaDB集合"""
         return self._collection
-    
+
     @property
     def count(self) -> int:
         """获取记忆数量"""
@@ -885,27 +1277,25 @@ class MemoryManager:
 # LLM提供商适配器
 # ============================================================================
 
+
 class LLMProvider:
     """
     LLM提供商基类
-    
+
     定义统一的LLM接口。
     """
-    
+
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self._client = None
         self._setup_client()
-    
+
     def _setup_client(self) -> None:
         """设置客户端"""
         raise NotImplementedError("子类必须实现 _setup_client 方法")
-    
+
     def chat_completion(
-        self,
-        messages: Sequence[Dict[str, Any]],
-        stream: bool = True,
-        **kwargs
+        self, messages: Sequence[Dict[str, Any]], stream: bool = True, **kwargs
     ) -> Tuple[str, List[Dict[str, Any]]]:
         """
         执行聊天补全
@@ -924,30 +1314,55 @@ class LLMProvider:
 class OpenAICompatibleProvider(LLMProvider):
     """
     OpenAI兼容的LLM提供商
-    
+
     支持OpenAI、DeepSeek、阿里云等兼容OpenAI API的服务。
+
+    客户端是**惰性创建**的：openai 包冷导入实测 ~13s（它会拉起 httpx /
+    pydantic / 一大串 provider 子模块），而 AI() 构造发生在 sidecar 握手
+    路径上。把导入推迟到「第一次真的要发请求」，界面就能立刻连上后端。
     """
-    
+
     def _setup_client(self) -> None:
-        """设置OpenAI客户端"""
-        api_key = self.config.get('api_key')
-        base_url = self.config.get('base_url')
-        
+        """记录连接参数并准备惰性客户端（不导入 openai）。"""
+        api_key = self.config.get("api_key")
+        base_url = self.config.get("base_url")
+
         if not api_key:
             raise ValueError("缺少 api_key 配置")
-        
-        client_kwargs = {'api_key': api_key}
-        if base_url:
-            client_kwargs['base_url'] = base_url
-        
-        self._client = OpenAI(**client_kwargs)
-        self._model = self.config.get('model', 'gpt-3.5-turbo')
-    
+
+        self._api_key = api_key
+        self._base_url = base_url
+        self._model = self.config.get("model", "gpt-3.5-turbo")
+        self._client_obj: Any = None
+        self._client_lock = threading.Lock()
+
+    @property
+    def _client(self) -> Any:
+        """OpenAI 客户端（第一次访问时才创建；旧代码直接读这个属性依然可用）。"""
+        return self._ensure_client()
+
+    @_client.setter
+    def _client(self, value: Any) -> None:
+        # 允许外部注入（测试会替换成假的客户端对象）
+        self._client_obj = value
+
+    def _ensure_client(self) -> Any:
+        """第一次发请求时创建 OpenAI 客户端（线程安全）。"""
+        if self._client_obj is not None:
+            return self._client_obj
+        with self._client_lock:
+            if self._client_obj is not None:
+                return self._client_obj
+            from openai import OpenAI
+
+            client_kwargs: Dict[str, Any] = {"api_key": self._api_key}
+            if self._base_url:
+                client_kwargs["base_url"] = self._base_url
+            self._client_obj = OpenAI(**client_kwargs)
+        return self._client_obj
+
     def chat_completion(
-        self,
-        messages: Sequence[Dict[str, Any]],
-        stream: bool = True,
-        **kwargs
+        self, messages: Sequence[Dict[str, Any]], stream: bool = True, **kwargs
     ) -> Tuple[str, List[Dict[str, Any]]]:
         """
         执行聊天补全，支持流式文本与流式工具调用（function calling）
@@ -959,96 +1374,96 @@ class OpenAICompatibleProvider(LLMProvider):
               'function': {'name': str, 'arguments': str}}]
         """
         try:
+            client = self._ensure_client()
             # 构建请求参数
             request_params = {
-                'model': self._model,
-                'messages': messages,
-                'stream': stream,
-                **kwargs
+                "model": self._model,
+                "messages": messages,
+                "stream": stream,
+                **kwargs,
             }
-            
+
             # 添加可选参数
-            if 'temperature' in self.config:
-                request_params['temperature'] = self.config['temperature']
-            
+            if "temperature" in self.config:
+                request_params["temperature"] = self.config["temperature"]
+
             if stream:
                 # 流式输出：同时累积文本和工具调用增量
-                stream_response = self._client.chat.completions.create(**request_params)
-                
+                stream_response = client.chat.completions.create(**request_params)
+
                 full_reply = ""
                 tool_slots: Dict[int, Dict[str, str]] = {}
-                
+
                 for chunk in stream_response:
                     if not chunk.choices or len(chunk.choices) == 0:
                         continue
                     delta = chunk.choices[0].delta
-                    
+
                     if delta.content:
-                        content = delta.content.replace('\n\n', '\n')
+                        content = delta.content.replace("\n\n", "\n")
                         full_reply += content
-                    
+
                     if delta.tool_calls:
                         for tc in delta.tool_calls:
                             slot = tool_slots.setdefault(
-                                tc.index, {'id': '', 'name': '', 'args': ''}
+                                tc.index, {"id": "", "name": "", "args": ""}
                             )
                             if tc.id:
-                                slot['id'] = tc.id
+                                slot["id"] = tc.id
                             if tc.function:
                                 if tc.function.name:
-                                    slot['name'] += tc.function.name
+                                    slot["name"] += tc.function.name
                                 if tc.function.arguments:
-                                    slot['args'] += tc.function.arguments
-                
+                                    slot["args"] += tc.function.arguments
+
                 tool_calls = [
                     {
-                        'id': slot['id'] or f"call_{i}",
-                        'type': 'function',
-                        'function': {
-                            'name': slot['name'],
-                            'arguments': slot['args']
-                        }
+                        "id": slot["id"] or f"call_{i}",
+                        "type": "function",
+                        "function": {"name": slot["name"], "arguments": slot["args"]},
                     }
                     for i, slot in sorted(tool_slots.items())
                 ]
                 return full_reply, tool_calls
             else:
                 # 非流式输出
-                response = self._client.chat.completions.create(**request_params)
+                response = client.chat.completions.create(**request_params)
                 message = response.choices[0].message
                 tool_calls = []
-                if getattr(message, 'tool_calls', None):
+                if getattr(message, "tool_calls", None):
                     for tc in message.tool_calls:
-                        tool_calls.append({
-                            'id': tc.id or f"call_{len(tool_calls)}",
-                            'type': 'function',
-                            'function': {
-                                'name': tc.function.name,
-                                'arguments': tc.function.arguments or '{}'
+                        tool_calls.append(
+                            {
+                                "id": tc.id or f"call_{len(tool_calls)}",
+                                "type": "function",
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments or "{}",
+                                },
                             }
-                        })
+                        )
                 return message.content or "", tool_calls
-                
+
         except Exception as e:
-            raise Exception(f"LLM API调用失败: {e}")
+            raise Exception(f"LLM API调用失败: {e}") from e
 
 
 class LLMProviderFactory:
     """
     LLM提供商工厂
-    
+
     根据配置创建相应的LLM提供商实例。
     """
-    
+
     @staticmethod
     def create_provider(provider_name: str, config: Dict[str, Any]) -> LLMProvider:
         """
         创建LLM提供商实例
-        
+
         Args:
             provider_name: 提供商名称
             config: 提供商配置
-            
+
         Returns:
             LLM提供商实例
         """
@@ -1060,6 +1475,7 @@ class LLMProviderFactory:
 # ============================================================================
 # 工具系统（Agent 的核心）
 # ============================================================================
+
 
 @dataclass
 class Tool:
@@ -1076,6 +1492,7 @@ class Tool:
         parameters: JSON Schema 格式的参数定义
         function: 实际执行的函数，接收参数字典并返回字符串结果
     """
+
     name: str
     description: str
     parameters: Dict[str, Any]
@@ -1125,8 +1542,9 @@ class ToolRegistry:
         self._registry.register(spec, replace_existing=replace_existing)
         return tool
 
-    def register_spec(self, spec: "ctools.ToolSpec",
-                      *, replace_existing: bool = True) -> "ctools.ToolSpec":
+    def register_spec(
+        self, spec: "ctools.ToolSpec", *, replace_existing: bool = True
+    ) -> "ctools.ToolSpec":
         """直接注册内核形态的工具描述（castorice.tools 用）。"""
         return self._registry.register(spec, replace_existing=replace_existing)
 
@@ -1172,6 +1590,7 @@ class ToolRegistry:
 # 内置工具实现
 # ----------------------------------------------------------------------------
 
+
 def tool_get_current_time() -> str:
     """查询当前日期和时间"""
     now = datetime.now()
@@ -1205,6 +1624,7 @@ WebFetchTool = tools_web.WebFetchTool
 # ----------------------------------------------------------------------------
 # 内置工具注册表（构造期校验 + 能力元数据）
 # ----------------------------------------------------------------------------
+
 
 def create_builtin_tools(
     search_config: Optional[Dict[str, Any]] = None,
@@ -1275,26 +1695,41 @@ DEFAULT_EMOJI_MOODS: Dict[str, str] = {
 # 名称 -> 心情关键词（用于从回复文本猜心情）
 # 说明：关键词长度需 >= 2，避免「想」「累」这类单字误命中
 DEFAULT_EMOJI_KEYWORDS: Dict[str, List[str]] = {
-    "喜欢": ["喜欢", "心动", "好可爱", "爱你", "在意你", "想你", "好喜欢",
-             "舍不得", "中意", "偏爱"],
+    "喜欢": [
+        "喜欢",
+        "心动",
+        "好可爱",
+        "爱你",
+        "在意你",
+        "想你",
+        "好喜欢",
+        "舍不得",
+        "中意",
+        "偏爱",
+    ],
     "喜欢1": ["偷偷喜欢", "忍不住看", "多看一眼", "着迷", "移不开眼"],
-    "害羞": ["害羞", "不好意思", "脸红", "羞", "别夸我", "讨厌啦", "被你发现",
-             "难为情"],
+    "害羞": ["害羞", "不好意思", "脸红", "羞", "别夸我", "讨厌啦", "被你发现", "难为情"],
     "害羞1": ["捂脸", "不敢看", "羞死", "太羞", "躲起来", "别看我"],
     "惊讶": ["惊讶", "吃惊", "没想到", "竟然", "居然", "真的吗", "不会吧"],
     "惊讶1": ["吓了一跳", "愣住", "震惊", "天啊", "怎么会", "不敢相信"],
-    "生气": ["生气", "过分", "气死", "不理你", "讨厌你", "欺负", "别闹",
-             "哼"],
-    "疑问": ["疑问", "不解", "为什么", "什么意思", "没听懂", "不太明白",
-             "确定吗", "是这样吗"],
+    "生气": ["生气", "过分", "气死", "不理你", "讨厌你", "欺负", "别闹", "哼"],
+    "疑问": ["疑问", "不解", "为什么", "什么意思", "没听懂", "不太明白", "确定吗", "是这样吗"],
     "疑问1": ["想不通", "有点懵", "迷惑", "搞不懂", "奇怪", "哪里不对"],
-    "哭泣": ["难过", "伤心", "委屈", "想哭", "低落", "不开心", "失落",
-             "难受", "撑不住", "崩溃"],
-    "困倦": ["困了", "好累", "疲惫", "想睡", "睡觉", "打哈欠", "没精神",
-             "熬夜", "晚安", "睁不开眼"],
+    "哭泣": ["难过", "伤心", "委屈", "想哭", "低落", "不开心", "失落", "难受", "撑不住", "崩溃"],
+    "困倦": [
+        "困了",
+        "好累",
+        "疲惫",
+        "想睡",
+        "睡觉",
+        "打哈欠",
+        "没精神",
+        "熬夜",
+        "晚安",
+        "睁不开眼",
+    ],
     "欣赏": ["欣赏", "有品味", "认可", "佩服", "不错", "挺好的", "很赞"],
-    "称赞": ["称赞", "夸", "好棒", "真棒", "厉害", "优秀", "干得好",
-             "太强了", "了不起"],
+    "称赞": ["称赞", "夸", "好棒", "真棒", "厉害", "优秀", "干得好", "太强了", "了不起"],
     "耍帅": ["耍帅", "帅气", "得意", "自信", "很酷", "骄傲", "厉害吧"],
     "苦恼": ["苦恼", "烦恼", "纠结", "为难", "头疼", "怎么办", "麻烦了"],
     "苦恼1": ["叹气", "无奈", "想不出", "没办法", "发愁", "难办", "没辙"],
@@ -1309,10 +1744,11 @@ _FALLBACK_MOOD_ORDER = ["欣赏", "害羞", "疑问", "耍帅", "喜欢", "惊�
 @dataclass
 class EmojiSticker:
     """一个表情包贴纸"""
-    name: str                      # 标签名，也是文件名主干
-    path: str                      # 图片绝对路径
-    mood: str = ""                 # 心情描述（给模型看）
-    keywords: Tuple[str, ...] = () # 心情关键词（无标签时兜底用）
+
+    name: str  # 标签名，也是文件名主干
+    path: str  # 图片绝对路径
+    mood: str = ""  # 心情描述（给模型看）
+    keywords: Tuple[str, ...] = ()  # 心情关键词（无标签时兜底用）
 
     @property
     def file_name(self) -> str:
@@ -1329,8 +1765,10 @@ class EmojiCatalog:
     会归到同名的多个贴纸，发送时随机挑一个，避免重复。
     """
 
-    SUPPORTED_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
-    SKIP_PREFIXES = ("_", ".")
+    SUPPORTED_SUFFIXES: ClassVar[frozenset] = frozenset(
+        {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+    )
+    SKIP_PREFIXES: ClassVar[tuple] = ("_", ".")
     # 表情包专用子目录名
     SUBDIR_NAME = "表情包"
 
@@ -1567,13 +2005,14 @@ def _to_int(value: Any, default: int) -> int:
 # AI聊天机器人
 # ============================================================================
 
+
 class AI:
     """
     AI聊天机器人核心类
-    
+
     整合大模型API、记忆系统和提示词管理。
     """
-    
+
     def __init__(
         self,
         config_path: str = "config.yaml",
@@ -1583,27 +2022,28 @@ class AI:
         provider_name: Optional[str] = None,
         image_dir: str = "Image",
         sessions_dir: str = "sessions",
-        mode: Optional[str] = None
-    ):  
-        
+        mode: Optional[str] = None,
+    ):
+
         # 初始化日志
         self.logger = setup_logger("AI")
-        
+
         # 初始化配置管理器
         self.config_manager = ConfigManager(config_path)
-        
+
         # 初始化提示词管理器（触发词注入配置走 config.yaml 的 prompts 节，
         # 缺省关闭 = 全量拼接旧行为，旧配置零改动可跑）
         self.prompt_manager = PromptManager(
-            prompts_dir, config=self.config_manager.get('prompts') or {})
-        
+            prompts_dir, config=self.config_manager.get("prompts") or {}
+        )
+
         # 初始化记忆管理器
         self.memory_manager = MemoryManager(chroma_dir, collection_name)
-        
+
         # 初始化LLM提供商
         self._provider_name = provider_name or self.config_manager.get_active_provider()
         self._setup_provider()
-        
+
         # 工具执行上下文（工作区 / 沙箱 / 权限网关），先于工具注册表建立：
         # 工具闭包在调用时读它，因此绑定目录变化后无需重建工具。
         self._tool_context = self._build_tool_context()
@@ -1613,15 +2053,15 @@ class AI:
 
         # 初始化工具系统（传入搜索配置与工具上下文）
         self.tool_registry = create_builtin_tools(
-            self.config_manager.get('search', {}),
-            tools_config=self.config_manager.get('tools') or {},
+            self.config_manager.get("search", {}),
+            tools_config=self.config_manager.get("tools") or {},
             context=self._tool_context,
             mcp=self._mcp_registry,
         )
-        
+
         # 初始化表情包系统（扫描 Image 目录 + 读取 emoji 配置）
         self._init_emoji(image_dir)
-        
+
         # 初始化对话历史（消息可包含 content=None 与 tool_calls，故用 Any 值）
         self._messages: List[Dict[str, Any]] = []
 
@@ -1631,7 +2071,7 @@ class AI:
         # 按 config.yaml 的 mode 字段（可用 mode 参数覆盖）选择模式；
         # 切换即激活该模式自己的会话，因此四个模式的对话历史天然相互隔离
         self.set_mode(mode or self._config_mode(), persist=False)
-        
+
         self.logger.info(
             f"AI聊天机器人初始化完成 (提供商: {self._provider_name}, "
             f"模式: {self._mode_name}, 内核: castorice {castorice.__version__}, "
@@ -1641,24 +2081,34 @@ class AI:
     #: 只读工具（兼容保留）：真正的判定已交给 castorice/permissions.py 的
     #: PermissionGateway，它按每个 ToolSpec 的 read_only 元数据裁决；
     #: 这张表仍然放行同名工具，用于兼容旧路径与「网关不可用」时的降级。
-    READONLY_TOOLS = frozenset({
-        'get_current_time', 'web_search', 'web_fetch',
-        'read_file', 'list_dir', 'glob_files', 'grep_files',
-        'search_notes', 'read_note', 'list_reminders', 'system_info',
-    })
+    READONLY_TOOLS = frozenset(
+        {
+            "get_current_time",
+            "web_search",
+            "web_fetch",
+            "read_file",
+            "list_dir",
+            "glob_files",
+            "grep_files",
+            "search_notes",
+            "read_note",
+            "list_reminders",
+            "system_info",
+        }
+    )
 
     def _build_tool_context(self) -> "ctools.ToolContext":
         """构造工具执行上下文（工作区 / 沙箱 / 可信根）。"""
-        modes_config = self.config_manager.get('modes') or {}
+        modes_config = self.config_manager.get("modes") or {}
         workspace = ""
         if isinstance(modes_config, dict):
-            for key in ('code', 'work', 'learn'):
+            for key in ("code", "work", "learn"):
                 node = modes_config.get(key)
                 if isinstance(node, dict):
-                    workspace = node.get('workdir') or node.get('vault') or ""
+                    workspace = node.get("workdir") or node.get("vault") or ""
                     if workspace:
                         break
-        workspace = workspace or self.config_manager.get('workdir') or str(Path.cwd())
+        workspace = workspace or self.config_manager.get("workdir") or str(Path.cwd())
         # 此处 _mode_registry 还没建立（工具上下文先于 _init_harness 构造），
         # 因此只能取「与模式无关」的全局配置；随后 _sync_permission_context
         # 会用 resolve_sandbox(模式) 把它校正成该模式的实际生效值。
@@ -1667,8 +2117,8 @@ class AI:
             workspace=str(workspace),
             cwd=os.getcwd(),
             sandbox=self._config_sandbox_default() or cpermissions.SANDBOX_READ_ONLY,
-            mode='chat',
-            roots=tuple(self._workdir_sources().get('roots') or ()),
+            mode="chat",
+            roots=tuple(self._workdir_sources().get("roots") or ()),
         )
 
     def _init_harness(self, sessions_dir: str) -> None:
@@ -1688,8 +2138,11 @@ class AI:
 
         self._permissions = self._init_permissions()
         self._kernel_tools = _KernelTools(
-            self.tool_registry, self._mode_registry.all_tools(),
-            gateway=self._permissions, mode=self._mode_name)
+            self.tool_registry,
+            self._mode_registry.all_tools(),
+            gateway=self._permissions,
+            mode=self._mode_name,
+        )
         self._harness = HarnessLoop(
             session=self._placeholder_session(),
             provider=self._provider,
@@ -1721,10 +2174,10 @@ class AI:
         # （整表禁用），deny-ALL 又放行了拒绝表之外的提醒/音乐等工具。
         # 正确来源就是注册表里全部已注册工具名；allowed 只是每个工具声明
         # 自己可见模式的镜像，不再参与裁剪。
-        declared = frozenset(
-            spec.name for spec in self.tool_registry.specs())
-        assert not (declared & set(ctools.KNOWN_MODES)), (
-            "工具名与模式名出现重名，builtin_modes 的裁剪语义会被破坏")
+        declared = frozenset(spec.name for spec in self.tool_registry.specs())
+        assert not (declared & set(ctools.KNOWN_MODES)), (  # noqa: S101 - 启动期不变式
+            "工具名与模式名出现重名，builtin_modes 的裁剪语义会被破坏"
+        )
         modes = []
         for mode in castorice.builtin_modes(declared):
             names = tuple(sorted(allowed.get(mode.name, set()) & set(mode.tool_allowlist)))
@@ -1732,7 +2185,8 @@ class AI:
                 modes.append(mode)
                 continue
             modes.append(
-                mode if names == tuple(sorted(mode.tool_allowlist))
+                mode
+                if names == tuple(sorted(mode.tool_allowlist))
                 else type(mode)(
                     name=mode.name,
                     display_name=mode.display_name,
@@ -1740,9 +2194,9 @@ class AI:
                     system_prompt_sections=mode.system_prompt_sections,
                     workdir_policy=mode.workdir_policy,
                     tool_policy=(
-                        mode.tool_policy if names
-                        else castorice.ToolPolicy(allow=None,
-                                                  deny=castorice.ALL_TOOLS_DENIED)
+                        mode.tool_policy
+                        if names
+                        else castorice.ToolPolicy(allow=None, deny=castorice.ALL_TOOLS_DENIED)
                     ),
                     supports_vision_input=mode.supports_vision_input,
                 )
@@ -1756,35 +2210,35 @@ class AI:
     def _config_mode(self) -> str:
         """读取 config.yaml 的 mode 字段（缺失 / 非法一律回退到 chat）"""
         return resolve_mode_name(
-            self.config_manager.get('mode'),
+            self.config_manager.get("mode"),
             self._mode_registry.names(),
         )
 
     def _workdir_sources(self) -> Dict[str, Any]:
         """可信根目录来源：配置里的显式根 + 程序当前目录"""
         sources: Dict[str, Any] = {}
-        modes_config = self.config_manager.get('modes') or {}
-        for key in ('code', 'learn', 'work'):
+        modes_config = self.config_manager.get("modes") or {}
+        for key in ("code", "learn", "work"):
             node = modes_config.get(key) if isinstance(modes_config, dict) else None
             if isinstance(node, dict):
-                for field in ('workdir', 'vault'):
+                for field in ("workdir", "vault"):
                     if node.get(field):
-                        sources.setdefault('roots', []).append(node[field])
-        for extra in ('workdir', 'code_root', 'vault'):
+                        sources.setdefault("roots", []).append(node[field])
+        for extra in ("workdir", "code_root", "vault"):
             if self.config_manager.get(extra):
-                sources.setdefault('roots', []).append(self.config_manager.get(extra))
-        sources.setdefault('roots', []).append(str(Path.cwd()))
+                sources.setdefault("roots", []).append(self.config_manager.get(extra))
+        sources.setdefault("roots", []).append(str(Path.cwd()))
         return sources
 
     def _bind_configured_workdirs(self) -> None:
         """把 config.yaml 里的 modes.* 目录绑定到对应模式（越界即忽略）"""
-        modes_config = self.config_manager.get('modes') or {}
+        modes_config = self.config_manager.get("modes") or {}
         if not isinstance(modes_config, dict):
             return
         for name, node in modes_config.items():
             if not isinstance(node, dict) or not self._mode_registry.has(name):
                 continue
-            for field in ('workdir', 'vault'):
+            for field in ("workdir", "vault"):
                 if node.get(field):
                     try:
                         self._mode_registry.bind_workdir(name, node[field])
@@ -1888,7 +2342,7 @@ class AI:
         （fail-closed）。界面侧接上之后才能产生真正的 allow
         （见 AI.set_approval_responder）。
         """
-        config = self.config_manager.get('permissions') or {}
+        config = self.config_manager.get("permissions") or {}
         if not isinstance(config, dict):
             config = {}
         mode_command_allowlist = {
@@ -1899,10 +2353,10 @@ class AI:
             config,
             tool_specs=self.tool_registry.specs(),
             mode=self._mode_name,
-            roots=list(self._workdir_sources().get('roots') or ()),
+            roots=list(self._workdir_sources().get("roots") or ()),
             sandbox=self.resolve_sandbox(self._mode_name),
             mode_command_allowlist=mode_command_allowlist,
-            visibility=lambda mode, tool: self._mode_registry.is_visible(mode, tool),
+            visibility=self._mode_registry.is_visible,
             logger=self.logger,
         )
         # 旧的只读白名单作为一条单调 guard：即使网关配置被写坏，
@@ -1938,12 +2392,14 @@ class AI:
         except OSError:
             session_id = None
         store = SessionStore(
-            self.sessions_dir, self._mode_name, session_id=session_id,
+            self.sessions_dir,
+            self._mode_name,
+            session_id=session_id,
             cwd=self._workdir_for_session(),
         )
         self._pending_session = store
         return store
-    
+
     # agent 循环最大迭代次数（防止无限调用工具）
     MAX_ITERATIONS = 8
 
@@ -1971,9 +2427,7 @@ class AI:
 
     # 时间说明的补充条目：仅当该模式可见 get_current_time 时才拼接
     # （R19-1：Chat 模式无任何可见工具，system prompt 不得出现工具名字样）
-    TIME_TOOL_INSTRUCTION = (
-        "\n3. 需要更精确的时间时也可以调用 get_current_time 工具。"
-    )
+    TIME_TOOL_INSTRUCTION = "\n3. 需要更精确的时间时也可以调用 get_current_time 工具。"
 
     # 表情包说明模板（{catalog} 处填入可用贴纸列表）
     # 注意：表情包由程序在回复末尾自动附带，模型只负责产出纯文本，
@@ -1994,18 +2448,18 @@ class AI:
 
     def _init_emoji(self, image_dir: str) -> None:
         """初始化表情包目录与会话状态"""
-        emoji_config = self.config_manager.get('emoji', {}) or {}
+        emoji_config = self.config_manager.get("emoji", {}) or {}
 
         self.emoji_catalog = EmojiCatalog(
             image_dir=image_dir,
-            moods=emoji_config.get('moods') or {},
-            keywords=emoji_config.get('keywords') or {},
+            moods=emoji_config.get("moods") or {},
+            keywords=emoji_config.get("keywords") or {},
         )
         self.emoji_session = EmojiSession(
-            enabled=_to_bool(emoji_config.get('enabled'), True),
-            probability=_to_float(emoji_config.get('probability'), 0.35),
-            cooldown_turns=_to_int(emoji_config.get('cooldown_turns'), 2),
-            max_per_session=_to_int(emoji_config.get('max_per_session'), 0),
+            enabled=_to_bool(emoji_config.get("enabled"), True),
+            probability=_to_float(emoji_config.get("probability"), 0.35),
+            cooldown_turns=_to_int(emoji_config.get("cooldown_turns"), 2),
+            max_per_session=_to_int(emoji_config.get("max_per_session"), 0),
         )
 
         if not self.emoji_catalog:
@@ -2023,26 +2477,24 @@ class AI:
         （native / json / text），供系统提示词注入与请求体裁剪使用。
         """
         provider_config = self.config_manager.get_provider_config(self._provider_name)
-        self._provider = LLMProviderFactory.create_provider(
-            self._provider_name,
-            provider_config
-        )
+        self._provider = LLMProviderFactory.create_provider(self._provider_name, provider_config)
         # 能力适配层（castorice/providers）：只做「能力 -> 协议」的判定，
         # 不改动 provider 本身的调用方式，因此不产生行为回归。
         try:
             self._capabilities = cproviders.resolve_capabilities(
-                self._provider_name, provider_config)
+                self._provider_name, provider_config
+            )
             self._tool_protocol = self._capabilities.protocol(tools_requested=True)
         except Exception as e:
             self._capabilities = None
             self._tool_protocol = cproviders.TOOL_PROTOCOL_NATIVE
             self.logger.warning(f"能力表解析失败，按 native 协议继续: {e}")
-        harness = getattr(self, '_harness', None)
+        harness = getattr(self, "_harness", None)
         if harness is not None:
             # provider 自持 model（见 OpenAICompatibleProvider._setup_client），
             # 因此不把 model 塞进请求体，避免两处来源互相覆盖。
             harness.provider = self._provider
-    
+
     def _build_system_prompt(
         self,
         memory_context: Optional[str] = None,
@@ -2058,8 +2510,7 @@ class AI:
         与命中条目（prompts.enabled，第二期 t2）；缺省保持全量拼接。
         """
         resolved_mode = self._mode_object(mode)
-        prompt = self.prompt_manager.get_prompt(
-            mode=resolved_mode, user_message=user_message)
+        prompt = self.prompt_manager.get_prompt(mode=resolved_mode, user_message=user_message)
         if self.emoji_catalog:
             prompt += self._build_emoji_instructions()
         # 用户档案小节（第三期 t4）：称呼 / 性别 / 生日 / 城市 / 时区。
@@ -2070,8 +2521,7 @@ class AI:
         # 未选择 / 选「默认」时不注入，保持既有提示词不变。
         prompt += self._style_section()
         time_instructions = self.TIME_INSTRUCTIONS
-        if "get_current_time" in self._mode_registry.visible_tool_names(
-                resolved_mode):
+        if "get_current_time" in self._mode_registry.visible_tool_names(resolved_mode):
             # 只有该模式真的可见 get_current_time，才注入第 3 条工具指引
             # （R19-1：Chat 的 system prompt 不得含 get_current_time 字样）
             time_instructions += self.TIME_TOOL_INSTRUCTION
@@ -2093,7 +2543,7 @@ class AI:
         模型改走 castorice.providers.json_protocol 的提示词内 JSON 约定；
         没有可见工具时不注入任何文本。
         """
-        protocol = getattr(self, '_tool_protocol', cproviders.TOOL_PROTOCOL_NATIVE)
+        protocol = getattr(self, "_tool_protocol", cproviders.TOOL_PROTOCOL_NATIVE)
         if protocol != cproviders.TOOL_PROTOCOL_JSON:
             return ""
         specs = self._visible_tool_specs(mode)
@@ -2129,7 +2579,7 @@ class AI:
         return self.mode_registry.get(name)
 
     #: 语气风格 -> 提示词片段。键与界面状态条的「风格」下拉一一对应。
-    STYLE_SECTIONS = {
+    STYLE_SECTIONS: ClassVar[Dict[str, str]] = {
         "温柔": "语气温柔耐心，多用缓和的表达，避免命令式措辞；即使对方急躁也保持稳定。",
         "简洁": "表达尽量精简，直给结论，不铺垫、不重复、不写多余的客套。",
         "活泼": "语气轻快俏皮，可以适度使用口语与语气词，让对话有活力但不吵闹。",
@@ -2160,8 +2610,9 @@ class AI:
             except Exception:
                 return ""
         try:
-            import json  # noqa: PLC0415
-            from pathlib import Path  # noqa: PLC0415
+            import json
+            from pathlib import Path
+
             path = Path(__file__).resolve().parent / "ui_settings.json"
             data = json.loads(path.read_text(encoding="utf-8"))
             return str((data or {}).get("style") or "")
@@ -2203,11 +2654,11 @@ class AI:
             config = self.config_manager.get_provider_config(name)
         except ValueError:
             return False
-        
-        explicit = config.get('vision')
+
+        explicit = config.get("vision")
         if explicit is not None:
             return _to_bool(explicit, False)
-        return bool(self.VISION_MODEL_RE.search(str(config.get('model', ''))))
+        return bool(self.VISION_MODEL_RE.search(str(config.get("model", ""))))
 
     @classmethod
     def encode_image_data_url(cls, path: str) -> str:
@@ -2228,10 +2679,12 @@ class AI:
             from PIL import Image
         except ImportError:
             Image = None  # type: ignore[assignment]
-        
+
         if Image is not None:
-            with Image.open(path) as image:
-                image = image.convert("RGB")
+            # 用 opened 承接原始句柄，转 RGB / 缩放结果另存为 image，
+            # 避免覆写 with 绑定的变量（PLW2901）
+            with Image.open(path) as opened:
+                image = opened.convert("RGB")
                 if max(image.size) > cls.IMAGE_MAX_SIDE:
                     ratio = cls.IMAGE_MAX_SIDE / float(max(image.size))
                     resampling = getattr(Image, "Resampling", Image)
@@ -2256,12 +2709,10 @@ class AI:
                 ".webp": "image/webp",
                 ".gif": "image/gif",
             }.get(suffix, "image/png")
-        
+
         return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
 
-    def _build_user_message(
-        self, text: str, images: Sequence[str]
-    ) -> Dict[str, Any]:
+    def _build_user_message(self, text: str, images: Sequence[str]) -> Dict[str, Any]:
         """
         构造 user 消息
 
@@ -2269,29 +2720,29 @@ class AI:
         有图片时用 OpenAI 视觉格式的 content 数组。
         """
         if not images:
-            return {'role': 'user', 'content': text}
-        
+            return {"role": "user", "content": text}
+
         parts: List[Dict[str, Any]] = []
         if text:
-            parts.append({'type': 'text', 'text': text})
-        
+            parts.append({"type": "text", "text": text})
+
         for path in images:
             try:
-                parts.append({
-                    'type': 'image_url',
-                    'image_url': {'url': self.encode_image_data_url(path)},
-                })
+                parts.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": self.encode_image_data_url(path)},
+                    }
+                )
             except Exception as e:
                 self.logger.warning(f"图片读取失败 {path}: {e}")
-        
+
         if not parts:
-            parts.append({'type': 'text', 'text': text or '（图片）'})
-        return {'role': 'user', 'content': parts}
+            parts.append({"type": "text", "text": text or "（图片）"})
+        return {"role": "user", "content": parts}
 
     #: 用户正文里的表情包标记，如 [表情:害羞]
-    USER_STICKER_RE = re.compile(
-        r"[\[【]\s*表情\s*[:：]\s*([^\]】\n]{1,24}?)\s*[\]】]"
-    )
+    USER_STICKER_RE = re.compile(r"[\[【]\s*表情\s*[:：]\s*([^\]】\n]{1,24}?)\s*[\]】]")
 
     def _extract_user_stickers(self, text: str) -> Tuple[str, List[str]]:
         """把用户正文里的 [表情:xx] 标记剥离，返回 (纯文本, 贴纸图片路径列表)。
@@ -2381,25 +2832,23 @@ class AI:
     ) -> None:
         """重置对话历史（只重建 system 头，不动会话事件日志）"""
         system_prompt = self._build_system_prompt(memory_context, mode=mode)
-        self._messages = [
-            {'role': 'system', 'content': system_prompt}
-        ]
-    
+        self._messages = [{"role": "system", "content": system_prompt}]
+
     def _format_memory_context(self, memories: List[str]) -> str:
         """
         格式化记忆上下文
-        
+
         Args:
             memories: 记忆列表（每条已自带 [日期 时间] 前缀）
-            
+
         Returns:
             格式化后的上下文字符串
         """
         if not memories:
             return ""
-        
+
         return "\n".join([f"- {memory}" for memory in memories])
-    
+
     @staticmethod
     def _format_now(moment: Optional[datetime] = None) -> str:
         """
@@ -2425,17 +2874,16 @@ class AI:
         tz_note = ""
         if tz_name:
             try:
-                from zoneinfo import ZoneInfo  # noqa: PLC0415 - 按需加载
+                from zoneinfo import ZoneInfo
+
                 now = now.astimezone(ZoneInfo(tz_name))
                 tz_note = f"，时区 {tz_name}"
             except Exception:
                 tz_note = f"，时区 {tz_name}（未能识别，按本地时间显示）"
         weekday = "星期" + "一二三四五六日"[now.weekday()]
         return f"{now.strftime('%Y-%m-%d %H:%M:%S')}（{weekday}{tz_note}）"
-    
-    def get_response_stream(
-        self, user_input: str, images: Optional[List[str]] = None
-    ):
+
+    def get_response_stream(self, user_input: str, images: Optional[List[str]] = None):
         """
         流式 agent 循环（ReAct：思考 → 调工具 → 观察 → 继续）
 
@@ -2470,14 +2918,14 @@ class AI:
                 images = list(images) + sticker_paths
 
         if not has_text and not images:
-            yield ('text', "请输入有效的问题。")
-            yield ('done', "请输入有效的问题。")
+            yield ("text", "请输入有效的问题。")
+            yield ("done", "请输入有效的问题。")
             return
-        
+
         try:
             # 0. 本轮表情包回合计数（用于概率/冷却判定）
             self.emoji_session.mark_turn()
-            
+
             # 1. 搜索相关记忆（只发图片时不检索）。
             #    用户档案配了城市时（castorice.profile.memory_query_suffix），
             #    查询串附带城市做地理定位——「明天天气怎么样」这类问题的
@@ -2486,31 +2934,29 @@ class AI:
             if query:
                 query = query + cprofile.memory_query_suffix()
             memories = self.memory_manager.search_memories(query) if query else []
-            
+
             # 2. 当前时间 + 记忆都放到 user 消息里，而不是系统提示词（节省 token）
             #    每轮都重新取时间，保证模型知道「现在」是什么时候
             time_prefix = f"【当前时间】{self._format_now()}\n\n"
-            
+
             memory_prefix = ""
             if memories:
                 memory_context = self._format_memory_context(memories)
                 memory_prefix = f"【相关记忆】\n{memory_context}\n\n"
-            
+
             user_message = time_prefix + memory_prefix + (user_input or "")
             # user 消息由 ai.py 组装（保留【当前时间】/【相关记忆】前缀的原有位置），
             # 内核负责记录事件、检查点、工具可见性裁决与逐轮状态。
             kernel_user_message = self._build_user_message(user_message, images)
-            system_prompt = self._build_system_prompt(
-                mode=self._mode_name, user_message=user_input)
+            system_prompt = self._build_system_prompt(mode=self._mode_name, user_message=user_input)
             self._harness.set_system_prompt(system_prompt)
             # 本轮 system 头必须真正生效：seed_history 带来的旧 system 会压住
             # 内核的 _prepare_history 插入逻辑，因此在种子前先替换/补插 system 头
             # （与 _reset_messages 的语义一致；触发词注入依赖每轮按消息刷新）。
-            if self._messages and self._messages[0].get('role') == 'system':
-                self._messages[0]['content'] = system_prompt
+            if self._messages and self._messages[0].get("role") == "system":
+                self._messages[0]["content"] = system_prompt
             else:
-                self._messages.insert(
-                    0, {'role': 'system', 'content': system_prompt})
+                self._messages.insert(0, {"role": "system", "content": system_prompt})
             if self.prompt_manager.dynamic_enabled and user_input:
                 stats = getattr(self.prompt_manager, "last_selection", None)
                 if stats:
@@ -2518,7 +2964,8 @@ class AI:
                         f"触发词注入: 常驻={len(stats['resident'])}个模块 "
                         f"命中条目={len(stats['matched'])} "
                         f"本轮提示词 {stats['selected_bytes']}B / "
-                        f"全量 {stats['full_bytes']}B")
+                        f"全量 {stats['full_bytes']}B"
+                    )
             self._harness.seed_history(self._messages)
             full_reply = ""
 
@@ -2534,12 +2981,12 @@ class AI:
                 # 用户原文，历史回放时不会把【当前时间】【相关记忆】这些
                 # 注入内容暴露给终端用户。
                 for kind, payload in self._harness.run_stream(
-                        kernel_user_message,
-                        display_text=(user_input or "")):
-                    if kind == 'text':
+                    kernel_user_message, display_text=(user_input or "")
+                ):
+                    if kind == "text":
                         full_reply += payload
                         yield (kind, payload)
-                    elif kind == 'done':
+                    elif kind == "done":
                         full_reply = payload
                     else:
                         yield (kind, payload)
@@ -2552,49 +2999,50 @@ class AI:
             #     缺 tool_call_id 的工具消息必须被记下来而不是静默带出去。
             self._messages = self._harness.history()
             orphan_tool_messages = [
-                message for message in self._messages
-                if message.get('role') == 'tool' and not message.get('tool_call_id')
+                message
+                for message in self._messages
+                if message.get("role") == "tool" and not message.get("tool_call_id")
             ]
             if orphan_tool_messages:
                 self.logger.warning(
                     f"历史里有 {len(orphan_tool_messages)} 条工具消息缺少 "
                     f"tool_call_id，下一轮请求可能被模型接口拒绝"
                 )
-            
+
             # 6. 表情包：每条回复固定附带一个（模型没自己发标记时由这里补上）
             sticker = self._pick_emoji_for_reply(full_reply)
             if sticker is not None:
                 self.emoji_session.mark_sent()
                 self.logger.info(f"附带表情包: {sticker.file_name}")
-                yield ('emoji', {'name': sticker.name, 'path': sticker.path})
-            
+                yield ("emoji", {"name": sticker.name, "path": sticker.path})
+
             # 7. 历史里的助手回复保持纯文本（去掉表情包标记）。
             #    内核已经把助手发言记进会话日志，这里只做「就地把最后一条
             #    助手消息改成纯文本」，避免同一条回复在历史里出现两次。
             plain_reply = self._strip_emoji_tags(full_reply)
-            if self._messages and self._messages[-1].get('role') == 'assistant':
-                self._messages[-1]['content'] = plain_reply
+            if self._messages and self._messages[-1].get("role") == "assistant":
+                self._messages[-1]["content"] = plain_reply
             else:
-                self._messages.append({'role': 'assistant', 'content': plain_reply})
-            
+                self._messages.append({"role": "assistant", "content": plain_reply})
+
             # 8. 保存对话到记忆（只发图片时用占位文本）
             user_desc = query or f"[图片×{len(images)}]"
             memory_content = f"用户: {user_desc}\n助理: {plain_reply}"
             self.memory_manager.add_memory(memory_content)
-            
+
             self.logger.info(
                 f"用户: {user_desc[:50]}... -> AI: {plain_reply[:50]}... "
                 f"(历史消息数: {len(self._messages)})"
             )
-            
-            yield ('done', full_reply)
-            
+
+            yield ("done", full_reply)
+
         except Exception as e:
-            error_msg = f"处理请求时出错: {str(e)}"
+            error_msg = f"处理请求时出错: {e!s}"
             self.logger.error(error_msg)
-            yield ('text', f"抱歉，处理您的请求时出现了错误：{str(e)}")
-            yield ('done', f"抱歉，处理您的请求时出现了错误：{str(e)}")
-    
+            yield ("text", f"抱歉，处理您的请求时出现了错误：{e!s}")
+            yield ("done", f"抱歉，处理您的请求时出现了错误：{e!s}")
+
     def get_response(self, user_input: str) -> str:
         """
         同步获取回复（内部走 agent 循环，收集全部文本）
@@ -2607,19 +3055,16 @@ class AI:
         """
         parts = []
         for kind, payload in self.get_response_stream(user_input):
-            if kind == 'text':
+            if kind == "text":
                 parts.append(payload)
-        return ''.join(parts)
-    
+        return "".join(parts)
+
     def change_provider(
-        self,
-        provider_name: str,
-        reload_config: bool = False,
-        keep_history: bool = False
+        self, provider_name: str, reload_config: bool = False, keep_history: bool = False
     ) -> None:
         """
         切换LLM提供商
-        
+
         Args:
             provider_name: 提供商名称
             reload_config: 是否先重新读取 config.yaml（设置界面改过 API 后需要）
@@ -2627,23 +3072,23 @@ class AI:
         """
         if reload_config:
             self.config_manager.reload()
-        
+
         self._provider_name = provider_name
         self._setup_provider()
         if not keep_history:
             self._reset_messages()
         self.emoji_session.reset()
         self.logger.info(f"已切换到提供商: {provider_name}")
-    
+
     def clear_history(self) -> None:
         """清空对话历史（只清当前模式；其他模式的会话保持不变）"""
         self._reset_messages()
-        if getattr(self, '_harness', None) is not None:
+        if getattr(self, "_harness", None) is not None:
             self._harness.reset_history()
             self._harness.seed_history(self._messages)
         self.emoji_session.reset()
         self.logger.info("对话历史已清空")
-    
+
     def reload_emojis(self, image_dir: Optional[str] = None) -> int:
         """
         重新扫描表情包目录（用户新增图片后无需重启即可识别）
@@ -2660,11 +3105,10 @@ class AI:
             self.emoji_catalog.reload()
         self._reset_messages()
         self.logger.info(
-            f"表情包已重新载入: {self.emoji_catalog.count} 个 "
-            f"@ {self.emoji_catalog.image_dir}"
+            f"表情包已重新载入: {self.emoji_catalog.count} 个 @ {self.emoji_catalog.image_dir}"
         )
         return self.emoji_catalog.count
-    
+
     def clear_memories(self) -> None:
         """清空所有记忆"""
         self.memory_manager.clear()
@@ -2703,7 +3147,7 @@ class AI:
 
     def __exit__(self, *exc_info: Any) -> None:
         self.close()
-    
+
     def get_history(self) -> List[Dict[str, Any]]:
         """
         获取对话历史
@@ -2714,30 +3158,30 @@ class AI:
         Returns:
             对话历史列表
         """
-        if getattr(self, '_harness', None) is not None:
+        if getattr(self, "_harness", None) is not None:
             history = self._harness.history()
             if history:
                 return [dict(message) for message in history]
         return self._messages.copy()
-    
+
     def get_memory_count(self) -> int:
         """
         获取记忆数量
-        
+
         Returns:
             记忆数量
         """
         return self.memory_manager.count
-    
+
     @property
     def messages(self) -> List[Dict[str, Any]]:
         """获取对话历史（只读）"""
-        if getattr(self, '_harness', None) is not None:
+        if getattr(self, "_harness", None) is not None:
             history = self._harness.history()
             if history:
                 return [dict(message) for message in history]
         return self._messages.copy()
-    
+
     @property
     def provider_name(self) -> str:
         """获取当前提供商名称"""
@@ -2817,25 +3261,25 @@ class AI:
         """所有模式的可展示元数据（t7 的模式切换条直接消费）"""
         return [
             {
-                'name': mode.name,
-                'display_name': mode.display_name,
-                'tool_allowlist': list(mode.tool_allowlist),
-                'visible_tools': self._mode_registry.visible_tool_names(mode),
-                'system_prompt_sections': list(mode.system_prompt_sections),
-                'workdir_policy': {
-                    'bindable': mode.workdir_policy.bindable,
+                "name": mode.name,
+                "display_name": mode.display_name,
+                "tool_allowlist": list(mode.tool_allowlist),
+                "visible_tools": self._mode_registry.visible_tool_names(mode),
+                "system_prompt_sections": list(mode.system_prompt_sections),
+                "workdir_policy": {
+                    "bindable": mode.workdir_policy.bindable,
                     # 两个字段都走单点权威解析：default_sandbox 表示「实际
                     # 生效值」（配置优先），builtin_sandbox 保留模式的出厂值，
                     # 面板需要区分「配置覆盖了」与「用的是内置默认」时读它。
-                    'default_sandbox': self.resolve_sandbox(mode),
-                    'builtin_sandbox': mode.workdir_policy.default_sandbox,
-                    'command_allowlist': list(mode.workdir_policy.command_allowlist),
+                    "default_sandbox": self.resolve_sandbox(mode),
+                    "builtin_sandbox": mode.workdir_policy.default_sandbox,
+                    "command_allowlist": list(mode.workdir_policy.command_allowlist),
                 },
-                'workdir': self._mode_registry.workdir(mode),
-                'sandbox': self.resolve_sandbox(mode),
-                'bindable': mode.workdir_policy.bindable,
-                'supports_vision_input': mode.supports_vision_input,
-                'active': mode.name == self._mode_name,
+                "workdir": self._mode_registry.workdir(mode),
+                "sandbox": self.resolve_sandbox(mode),
+                "bindable": mode.workdir_policy.bindable,
+                "supports_vision_input": mode.supports_vision_input,
+                "active": mode.name == self._mode_name,
             }
             for mode in self._mode_registry.all_modes()
         ]
@@ -2867,7 +3311,7 @@ class AI:
         changed = name != self._mode_name or name not in self._sessions
         if persist and name != self._mode_name:
             try:
-                self.config_manager.set_values({('mode',): name})
+                self.config_manager.set_values({("mode",): name})
             except Exception as e:
                 # 键不存在 / 配置只读都不应打断切换
                 self.logger.warning(f"模式未写入 config.yaml: {e}")
@@ -2944,9 +3388,11 @@ class AI:
     def _build_session(self, name: str) -> "SessionStore":
         """为某个模式打开会话（优先复用初始会话，其次恢复磁盘上最近的一会话）"""
         pending = getattr(self, "_pending_session", None)
-        if (pending is not None
-                and not getattr(pending, "closed", False)
-                and getattr(pending, "mode", None) == name):
+        if (
+            pending is not None
+            and not getattr(pending, "closed", False)
+            and getattr(pending, "mode", None) == name
+        ):
             # 复用 _init_harness 建好的初始会话：避免同一 session_id 被登记
             # 两次写者（旧实现在这里泄漏登记并让重建实例直接失败）。
             self._pending_session = None
@@ -2979,8 +3425,7 @@ class AI:
 
         path = self.sessions_dir / name / (target + ".jsonl")
         if not path.is_file():
-            raise ValueError(
-                "会话不存在: " + target + "（模式 " + name + "）")
+            raise ValueError("会话不存在: " + target + "（模式 " + name + "）")
 
         current = self._sessions.get(name)
         if current is not None and getattr(current, "session_id", "") == target:
@@ -2992,7 +3437,9 @@ class AI:
             self._sessions.pop(name, None)
 
         store = SessionStore(
-            self.sessions_dir, name, session_id=target,
+            self.sessions_dir,
+            name,
+            session_id=target,
             cwd=self._workdir_for_session(),
         )
         self._sessions[name] = store
@@ -3006,11 +3453,14 @@ class AI:
         restored = store.derive_messages()
         if restored:
             self._messages = restored
-            if not any(m.get('role') == 'system' for m in self._messages):
-                self._messages.insert(0, {
-                    'role': 'system',
-                    'content': self._build_system_prompt(),
-                })
+            if not any(m.get("role") == "system" for m in self._messages):
+                self._messages.insert(
+                    0,
+                    {
+                        "role": "system",
+                        "content": self._build_system_prompt(),
+                    },
+                )
         else:
             self._reset_messages()
         self._harness.seed_history(self._messages)
@@ -3031,8 +3481,7 @@ class AI:
 
         current = self._sessions.get(name)
         if current is not None and getattr(current, "session_id", "") == target:
-            raise ValueError(
-                "不能删除正在使用的会话，请先切换到其它会话")
+            raise ValueError("不能删除正在使用的会话，请先切换到其它会话")
 
         path = self.sessions_dir / name / (target + ".jsonl")
         if not path.is_file():
@@ -3062,8 +3511,7 @@ class AI:
             current.close()
             self._sessions.pop(name, None)
 
-        store = SessionStore(
-            self.sessions_dir, name, cwd=self._workdir_for_session())
+        store = SessionStore(self.sessions_dir, name, cwd=self._workdir_for_session())
         self._sessions[name] = store
         self._session = store
         self._session_projection = SessionProjection(store)
@@ -3100,11 +3548,14 @@ class AI:
         restored = store.derive_messages()
         if restored:
             self._messages = restored
-            if not any(m.get('role') == 'system' for m in self._messages):
-                self._messages.insert(0, {
-                    'role': 'system',
-                    'content': self._build_system_prompt(),
-                })
+            if not any(m.get("role") == "system" for m in self._messages):
+                self._messages.insert(
+                    0,
+                    {
+                        "role": "system",
+                        "content": self._build_system_prompt(),
+                    },
+                )
         else:
             self._reset_messages()
         self._harness.seed_history(self._messages)
@@ -3119,7 +3570,7 @@ class AI:
         mode = self._mode_registry.get(mode_name)
         workdir = self._mode_registry.workdir(mode) or self._tool_context.workspace
         sandbox = self.resolve_sandbox(mode_name)
-        gateway = getattr(self, '_permissions', None)
+        gateway = getattr(self, "_permissions", None)
         if gateway is not None:
             try:
                 gateway.configure(mode=mode_name, workdir=workdir, sandbox=sandbox)
@@ -3128,7 +3579,7 @@ class AI:
         # 工具执行出口的模式必须一起跟随：ToolRuntime.call 用 self.mode 构造
         # 二次复查请求，漏掉这一步会让 Work/Code/Learn 的工具全部被按 chat
         # 的可见性规则拒掉（"工具 read_file 在模式 chat 下不可见"）。
-        kernel_tools = getattr(self, '_kernel_tools', None)
+        kernel_tools = getattr(self, "_kernel_tools", None)
         if kernel_tools is not None:
             try:
                 kernel_tools.set_mode(mode_name)
@@ -3137,22 +3588,23 @@ class AI:
         # 前端投影也必须同步：它是 UI 判断「当前沙箱」的唯一来源，
         # 漏掉这一步会让配置改完之后面板仍显示旧值（网关按新配置跑、
         # 面板显示旧值的更糟不一致）。
-        projection = getattr(self, '_session_projection', None)
+        projection = getattr(self, "_session_projection", None)
         if projection is not None:
             try:
                 projection.update(sandbox_mode=sandbox, notify=False)
             except Exception as e:
                 self.logger.warning(f"会话投影更新失败，维持原沙箱展示: {e}")
-        context = getattr(self, '_tool_context', None)
+        context = getattr(self, "_tool_context", None)
         if context is not None:
             context.workspace = str(workdir or "")
             context.mode = mode_name
             context.sandbox = sandbox
-            context.roots = tuple(self._workdir_sources().get('roots') or ())
-            context.session_id = getattr(self._harness.session, 'session_id', '')
+            context.roots = tuple(self._workdir_sources().get("roots") or ())
+            context.session_id = getattr(self._harness.session, "session_id", "")
             context.gateway = gateway
             context.policy = (
-                gateway.path_policy if gateway is not None
+                gateway.path_policy
+                if gateway is not None
                 else cpermissions.PathPolicy(
                     roots=context.roots,
                     workspace=context.workspace or None,
@@ -3169,10 +3621,10 @@ class AI:
         正常情况下它与 AI.mode、harness.mode_name、permissions.mode 一致；
         四者不一致就意味着工具会在执行出口被按错误模式拒掉。
         """
-        kernel_tools = getattr(self, '_kernel_tools', None)
+        kernel_tools = getattr(self, "_kernel_tools", None)
         if kernel_tools is None:
             return self._mode_name
-        return str(getattr(kernel_tools, 'mode', self._mode_name))
+        return str(getattr(kernel_tools, "mode", self._mode_name))
 
     @property
     def permissions(self) -> "cpermissions.PermissionGateway":
@@ -3221,16 +3673,14 @@ class AI:
     @property
     def capabilities(self) -> Optional["cproviders.ModelCapabilities"]:
         """当前提供商的模型能力（未知厂商回落 custom 默认值）。"""
-        return getattr(self, '_capabilities', None)
+        return getattr(self, "_capabilities", None)
 
     @property
     def tool_protocol(self) -> str:
         """当前生效的工具协议级别：native | json | text。"""
-        return getattr(self, '_tool_protocol', cproviders.TOOL_PROTOCOL_NATIVE)
+        return getattr(self, "_tool_protocol", cproviders.TOOL_PROTOCOL_NATIVE)
 
-    def provider_capabilities(
-        self, provider_name: Optional[str] = None
-    ) -> Dict[str, Any]:
+    def provider_capabilities(self, provider_name: Optional[str] = None) -> Dict[str, Any]:
         """某个提供商的能力摘要（供设置界面展示与诊断）。"""
         name = provider_name or self._provider_name
         try:
@@ -3239,11 +3689,13 @@ class AI:
             config = {}
         caps = cproviders.resolve_capabilities(name, config)
         payload = caps.to_dict()
-        payload.update({
-            'provider': name,
-            'protocol': caps.protocol(tools_requested=True),
-            'vendor': cproviders.vendor_key(name),
-        })
+        payload.update(
+            {
+                "provider": name,
+                "protocol": caps.protocol(tools_requested=True),
+                "vendor": cproviders.vendor_key(name),
+            }
+        )
         return payload
 
     def _refresh_mode_session_context(self) -> None:
@@ -3266,6 +3718,7 @@ class AI:
 # 工厂函数
 # ============================================================================
 
+
 class _KernelTools:
     """把 ai.ToolRegistry 适配成内核需要的「schema + 执行入口」对象。
 
@@ -3274,9 +3727,13 @@ class _KernelTools:
     不需要认识 ai.Tool（红线 D：内核不得 import ai）。
     """
 
-    def __init__(self, registry: "ToolRegistry", specs: Sequence["ToolSpec"],
-                 gateway: Optional["cpermissions.PermissionGateway"] = None,
-                 mode: str = "chat") -> None:
+    def __init__(
+        self,
+        registry: "ToolRegistry",
+        specs: Sequence["ToolSpec"],
+        gateway: Optional["cpermissions.PermissionGateway"] = None,
+        mode: str = "chat",
+    ) -> None:
         self._registry = registry
         self._specs = list(specs)
         # 真正执行走 castorice.tools.ToolRuntime：它在调用 handler 之前再走
@@ -3288,8 +3745,12 @@ class _KernelTools:
         self._turn_lock = threading.Lock()
         self._turn_depth = 0
         self._runtime = ctools.ToolRuntime(
-            registry._registry, gateway, mode=mode, enforce=gateway is not None,
-            already_authorized=self._in_harness_turn)
+            registry._registry,
+            gateway,
+            mode=mode,
+            enforce=gateway is not None,
+            already_authorized=self._in_harness_turn,
+        )
 
     def all_tools(self) -> List["ToolSpec"]:
         return list(self._specs)
@@ -3331,29 +3792,29 @@ class _KernelTools:
 class AIFactory:
     """
     AI工厂类
-    
+
     提供创建和配置AI实例的便捷方法。
     """
-    
+
     @staticmethod
     def create_default_bot(provider_name: Optional[str] = None) -> AI:
         """
         创建默认配置的AI
-        
+
         Args:
             provider_name: 指定提供商（可选）
-            
+
         Returns:
             配置好的AI实例
         """
         return AI(provider_name=provider_name)
-    
+
     @staticmethod
     def create_with_custom_config(
         config_path: str = "config.yaml",
         prompts_dir: str = "prompts",
         chroma_dir: str = "database",
-        provider_name: Optional[str] = None
+        provider_name: Optional[str] = None,
     ) -> AI:
         return AI(config_path, prompts_dir, chroma_dir, provider_name=provider_name)
 
@@ -3369,10 +3830,10 @@ _bot_instance: Optional[AI] = None
 def get_ai(provider_name: Optional[str] = None) -> AI:
     """
     获取AI实例（单例）
-    
+
     Args:
         provider_name: 指定提供商（可选）
-        
+
     Returns:
         AI实例
     """
@@ -3388,11 +3849,11 @@ def get_ai(provider_name: Optional[str] = None) -> AI:
 def get_ai_response(user_input: str, provider_name: Optional[str] = None) -> str:
     """
     获取AI响应（函数式调用，兼容原有代码）
-    
+
     Args:
         user_input: 用户输入
         provider_name: 指定提供商（可选）
-        
+
     Returns:
         AI响应
     """
@@ -3404,10 +3865,11 @@ def get_ai_response(user_input: str, provider_name: Optional[str] = None) -> str
 # 命令行入口
 # ============================================================================
 
+
 def main() -> None:
     """
     命令行交互入口
-    
+
     用于测试AI功能。
     """
     print("=" * 50)
@@ -3420,43 +3882,43 @@ def main() -> None:
     print("  provider <name> - 切换提供商 (如: provider deepseek)")
     print("  list_providers - 列出所有可用提供商")
     print("=" * 50)
-    
+
     bot = AI()
-    
+
     # 获取可用提供商列表
-    available_providers = bot.config_manager.get('providers', {})
-    
+    available_providers = bot.config_manager.get("providers", {})
+
     while True:
         try:
             user_input = input("\n你: ").strip()
-            
+
             if not user_input:
                 continue
-            
+
             # 处理命令
-            if user_input.lower() in ['exit', 'quit', 'q']:
+            if user_input.lower() in ["exit", "quit", "q"]:
                 print("再见！")
                 break
-            elif user_input.lower() == 'clear':
+            elif user_input.lower() == "clear":
                 bot.clear_history()
                 print("对话历史已清空")
                 continue
-            elif user_input.lower() == 'clear_memories':
+            elif user_input.lower() == "clear_memories":
                 bot.clear_memories()
                 print("所有记忆已清空")
                 continue
-            elif user_input.lower() == 'status':
+            elif user_input.lower() == "status":
                 print(f"当前提供商: {bot.provider_name}")
                 print(f"记忆数量: {bot.get_memory_count()}")
                 print(f"对话消息数: {len(bot.get_history())}")
                 continue
-            elif user_input.lower() == 'list_providers':
+            elif user_input.lower() == "list_providers":
                 print("可用提供商:")
-                for name in available_providers.keys():
+                for name in available_providers:
                     print(f"  - {name}")
                 continue
-            elif user_input.lower().startswith('provider '):
-                provider_name = user_input.split(' ', 1)[1].strip()
+            elif user_input.lower().startswith("provider "):
+                provider_name = user_input.split(" ", 1)[1].strip()
                 if provider_name in available_providers:
                     bot.change_provider(provider_name)
                     print(f"已切换到提供商: {provider_name}")
@@ -3464,10 +3926,10 @@ def main() -> None:
                     print(f"未找到提供商: {provider_name}")
                     print(f"可用提供商: {', '.join(available_providers.keys())}")
                 continue
-            
+
             response = bot.get_response(user_input)
             print(f"\n助理: {response}")
-            
+
         except KeyboardInterrupt:
             print("\n\n再见！")
             break

@@ -52,18 +52,18 @@ from castorice.modes import (
     resolve_mode_name,
 )
 from castorice.session import (
+    TOOL_OUTCOME_UNKNOWN,
     CheckpointFailed,
     SessionFormatError,
     SessionInUseError,
     SessionProjection,
     SessionStore,
-    TOOL_OUTCOME_UNKNOWN,
 )
-
 
 # ----------------------------------------------------------------------------
 # 测试替身
 # ----------------------------------------------------------------------------
+
 
 class FakeProvider:
     """按脚本依次返回 (text, tool_calls)；记录每次收到的完整请求参数。"""
@@ -129,11 +129,13 @@ def make_tool_calls(*names, arguments=None):
         payload = {"index": index}
         if arguments and index in arguments:
             payload.update(arguments[index])
-        calls.append({
-            "id": "call_" + str(index),
-            "type": "function",
-            "function": {"name": name, "arguments": json.dumps(payload)},
-        })
+        calls.append(
+            {
+                "id": "call_" + str(index),
+                "type": "function",
+                "function": {"name": name, "arguments": json.dumps(payload)},
+            }
+        )
     return calls
 
 
@@ -142,8 +144,17 @@ def make_tool_calls(*names, arguments=None):
 FULL_TOOLSET = sorted(modes_module.ALL_TOOLS)
 
 
-def make_loop(tmp_path, script, tools=(), allow=None, deny_all=False,
-              max_iterations=8, max_parallel=4, mode="chat", toolbox=None):
+def make_loop(
+    tmp_path,
+    script,
+    tools=(),
+    allow=None,
+    deny_all=False,
+    max_iterations=8,
+    max_parallel=4,
+    mode="chat",
+    toolbox=None,
+):
     """装配一个不依赖 Qt / 网络的 harness 循环。"""
     specs = [ToolSpec(name=n) for n in tools]
     registry = build_harness_registry([spec.name for spec in specs])
@@ -157,8 +168,13 @@ def make_loop(tmp_path, script, tools=(), allow=None, deny_all=False,
     else:
         permissions = PermissionBridge(lambda req: PermissionDecision("allow", ""))
     loop = HarnessLoop(
-        store, provider, registry, toolbox, permissions,
-        max_iterations=max_iterations, max_parallel_tool_calls=max_parallel,
+        store,
+        provider,
+        registry,
+        toolbox,
+        permissions,
+        max_iterations=max_iterations,
+        max_parallel_tool_calls=max_parallel,
     )
     loop.set_mode(mode)
     return loop, provider, toolbox, store
@@ -171,6 +187,7 @@ def run_all(loop, message="提问"):
 # ============================================================================
 # 1. 模式定义（castorice/modes.py）
 # ============================================================================
+
 
 def test_four_builtin_modes_are_declared():
     names = [mode.name for mode in builtin_modes()]
@@ -262,15 +279,18 @@ def test_learn_allowlist_mask_is_never_an_empty_frozenset():
     assert fallback["learn"].tool_allowlist == ()
 
 
-@pytest.mark.parametrize("value, expected", [
-    ("chat", "chat"),
-    ("WORK", "work"),
-    ("  code ", "code"),
-    ("learn", "learn"),
-    ("unknown", "chat"),
-    (None, "chat"),
-    (123, "chat"),
-])
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("chat", "chat"),
+        ("WORK", "work"),
+        ("  code ", "code"),
+        ("learn", "learn"),
+        ("unknown", "chat"),
+        (None, "chat"),
+        (123, "chat"),
+    ],
+)
 def test_resolve_mode_name_falls_back_to_chat(value, expected):
     assert resolve_mode_name(value) == expected
 
@@ -287,6 +307,7 @@ def test_contains_path_normalizes_and_handles_case():
 # ============================================================================
 # 2. Chat 零工具（红线 E）
 # ============================================================================
+
 
 def test_chat_returns_empty_specs():
     registry = build_harness_registry(FULL_TOOLSET)
@@ -343,7 +364,9 @@ def test_chat_completion_kwargs_keeps_tools_for_work():
 
 def test_harness_request_body_has_no_tools_key_in_chat(tmp_path):
     loop, provider, _toolbox, _store = make_loop(
-        tmp_path, [("回答", [])], tools=["get_current_time", "web_search"],
+        tmp_path,
+        [("回答", [])],
+        tools=["get_current_time", "web_search"],
         mode="chat",
     )
     run_all(loop)
@@ -353,8 +376,10 @@ def test_harness_request_body_has_no_tools_key_in_chat(tmp_path):
 
 def test_harness_request_body_carries_tools_in_work(tmp_path):
     loop, provider, _toolbox, _store = make_loop(
-        tmp_path, [("回答", [])],
-        tools=["get_current_time", "web_search"], mode="work",
+        tmp_path,
+        [("回答", [])],
+        tools=["get_current_time", "web_search"],
+        mode="work",
     )
     run_all(loop)
     names = [spec["function"]["name"] for spec in provider.last_kwargs["tools"]]
@@ -365,7 +390,10 @@ def test_unknown_tool_call_from_model_is_dropped(tmp_path):
     """模型幻觉出的工具名不得绕过可见性裁决。"""
     script = [("调工具", make_tool_calls("read_file")), ("没有工具可用了", [])]
     loop, _provider, toolbox, _store = make_loop(
-        tmp_path, script, tools=["get_current_time"], mode="work",
+        tmp_path,
+        script,
+        tools=["get_current_time"],
+        mode="work",
     )
     events = run_all(loop)
     assert toolbox.calls == []
@@ -376,6 +404,7 @@ def test_unknown_tool_call_from_model_is_dropped(tmp_path):
 # ============================================================================
 # 3. 工作目录绑定（Work / Code / Learn）
 # ============================================================================
+
 
 def test_workdir_binding_accepts_path_inside_trusted_root(tmp_path):
     registry = build_harness_registry(["get_current_time"], root=tmp_path)
@@ -432,9 +461,13 @@ def test_resolve_workdir_from_config_ignores_outside_paths(tmp_path):
 # 4. harness 主循环：终止原因、派发、检查点、结果补全
 # ============================================================================
 
+
 def test_loop_stops_with_final_answer_when_model_stops_calling_tools(tmp_path):
     loop, _provider, _toolbox, _store = make_loop(
-        tmp_path, [("最终回答", [])], tools=["alpha"], mode="work",
+        tmp_path,
+        [("最终回答", [])],
+        tools=["alpha"],
+        mode="work",
     )
     events = run_all(loop)
     assert loop.stop_reason is StopReason.FINAL_ANSWER
@@ -444,7 +477,11 @@ def test_loop_stops_with_final_answer_when_model_stops_calling_tools(tmp_path):
 def test_loop_reports_max_iterations_instead_of_truncating_silently(tmp_path):
     script = [("步骤" + str(i), make_tool_calls("alpha")) for i in range(3)]
     loop, provider, _toolbox, _store = make_loop(
-        tmp_path, script, tools=["alpha"], mode="work", max_iterations=3,
+        tmp_path,
+        script,
+        tools=["alpha"],
+        mode="work",
+        max_iterations=3,
     )
     events = run_all(loop)
     assert loop.stop_reason is StopReason.MAX_ITERATIONS
@@ -456,7 +493,10 @@ def test_loop_reports_max_iterations_instead_of_truncating_silently(tmp_path):
 
 def test_loop_terminates_when_provider_raises(tmp_path):
     loop, _provider, _toolbox, _store = make_loop(
-        tmp_path, [], tools=["alpha"], mode="work",
+        tmp_path,
+        [],
+        tools=["alpha"],
+        mode="work",
     )
     events = run_all(loop)
     assert loop.stop_reason is StopReason.ERROR
@@ -467,7 +507,10 @@ def test_loop_terminates_when_provider_raises(tmp_path):
 def test_tool_events_use_start_then_done(tmp_path):
     script = [("", make_tool_calls("alpha")), ("好了", [])]
     loop, _provider, _toolbox, _store = make_loop(
-        tmp_path, script, tools=["alpha"], mode="work",
+        tmp_path,
+        script,
+        tools=["alpha"],
+        mode="work",
     )
     statuses = [payload["status"] for kind, payload in run_all(loop) if kind == "tool"]
     assert statuses == ["start", "done"]
@@ -492,7 +535,11 @@ def test_parallel_calls_really_overlap_and_results_keep_the_model_order(tmp_path
     script = [("", calls), ("完成", [])]
     toolbox = BarrierToolbox([ToolSpec(name="alpha"), ToolSpec(name="beta")])
     loop, _provider, _toolbox, _store = make_loop(
-        tmp_path, script, tools=["alpha", "beta"], mode="work", toolbox=toolbox,
+        tmp_path,
+        script,
+        tools=["alpha", "beta"],
+        mode="work",
+        toolbox=toolbox,
     )
     run_all(loop)
     results = [m for m in loop.history() if m.get("role") == "tool"]
@@ -516,19 +563,27 @@ def test_exclusive_tool_forms_an_ordering_barrier(tmp_path):
         ToolSpec(name="exclusive", parallel_safe=False),
         ToolSpec(name="beta"),
     ]
-    calls = make_tool_calls("alpha", "exclusive", "beta",
-                            arguments={0: {"delay": 0.05}, 2: {"delay": 0.05}})
+    calls = make_tool_calls(
+        "alpha", "exclusive", "beta", arguments={0: {"delay": 0.05}, 2: {"delay": 0.05}}
+    )
     script = [("", calls), ("完成", [])]
     toolbox = OrderToolbox(specs)
     loop, _provider, _toolbox, _store = make_loop(
-        tmp_path, script, tools=["alpha", "exclusive", "beta"], mode="work",
-        toolbox=toolbox, max_parallel=4,
+        tmp_path,
+        script,
+        tools=["alpha", "exclusive", "beta"],
+        mode="work",
+        toolbox=toolbox,
+        max_parallel=4,
     )
     run_all(loop)
     assert order == [
-        "start:alpha", "end:alpha",
-        "start:exclusive", "end:exclusive",
-        "start:beta", "end:beta",
+        "start:alpha",
+        "end:alpha",
+        "start:exclusive",
+        "end:exclusive",
+        "start:beta",
+        "end:beta",
     ]
     results = [m for m in loop.history() if m.get("role") == "tool"]
     assert [m["tool_call_id"] for m in results] == ["call_0", "call_1", "call_2"]
@@ -538,7 +593,10 @@ def test_checkpoint_failure_blocks_the_tool_entirely(tmp_path, monkeypatch):
     """红线 G：检查点写入失败时不执行下游副作用（fail-closed）。"""
     script = [("", make_tool_calls("alpha")), ("好了", [])]
     loop, _provider, toolbox, store = make_loop(
-        tmp_path, script, tools=["alpha"], mode="work",
+        tmp_path,
+        script,
+        tools=["alpha"],
+        mode="work",
     )
     session = SessionHandle(store)
 
@@ -556,7 +614,11 @@ def test_denied_tool_is_reported_as_error_result_without_executing(tmp_path):
     """P10：拒绝以 Error: 文本作为普通工具结果返回，循环继续。"""
     script = [("", make_tool_calls("alpha")), ("我知道了", [])]
     loop, provider, toolbox, _store = make_loop(
-        tmp_path, script, tools=["alpha"], mode="work", deny_all=True,
+        tmp_path,
+        script,
+        tools=["alpha"],
+        mode="work",
+        deny_all=True,
     )
     events = run_all(loop)
     assert toolbox.calls == []
@@ -564,8 +626,7 @@ def test_denied_tool_is_reported_as_error_result_without_executing(tmp_path):
     assert len(provider.calls) == 2
     tool_messages = [m for m in loop.history() if m.get("role") == "tool"]
     assert tool_messages and tool_messages[0]["content"].startswith("Error: ")
-    assert any(payload.get("status") == "error"
-               for kind, payload in events if kind == "tool")
+    assert any(payload.get("status") == "error" for kind, payload in events if kind == "tool")
 
 
 def test_permission_bridge_guard_is_monotonic():
@@ -596,17 +657,24 @@ def test_tool_result_is_truncated_to_the_spec_limit(tmp_path):
     toolbox.on_alpha = lambda **kwargs: long_text
     script = [("", make_tool_calls("alpha")), ("好了", [])]
     loop, _provider, _toolbox, _store = make_loop(
-        tmp_path, script, tools=["alpha"], mode="work", toolbox=toolbox,
+        tmp_path,
+        script,
+        tools=["alpha"],
+        mode="work",
+        toolbox=toolbox,
     )
     run_all(loop)
-    message = [m for m in loop.history() if m.get("role") == "tool"][0]
+    message = next(m for m in loop.history() if m.get("role") == "tool")
     assert "已省略" in message["content"]
     assert len(message["content"]) < len(long_text)
 
 
 def test_missing_tool_results_are_completed_with_outcome_unknown(tmp_path):
     loop, _provider, _toolbox, _store = make_loop(
-        tmp_path, [("回答", [])], tools=["alpha"], mode="work",
+        tmp_path,
+        [("回答", [])],
+        tools=["alpha"],
+        mode="work",
     )
     repaired = loop._complete_missing_results([ToolCall("call_ghost", "alpha")])
     assert repaired == 1
@@ -618,7 +686,10 @@ def test_missing_tool_results_are_completed_with_outcome_unknown(tmp_path):
 
 def test_loop_state_is_inspectable(tmp_path):
     loop, _provider, _toolbox, _store = make_loop(
-        tmp_path, [("回答", [])], tools=["alpha"], mode="work",
+        tmp_path,
+        [("回答", [])],
+        tools=["alpha"],
+        mode="work",
     )
     run_all(loop)
     state = loop.state()
@@ -639,18 +710,24 @@ def test_repeat_reminder_fires_at_thresholds_and_never_blocks():
 def test_repeat_reminder_text_is_appended_to_the_tool_result(tmp_path):
     script = [("", make_tool_calls("alpha")), ("完成", [])]
     loop, _provider, _toolbox, _store = make_loop(
-        tmp_path, script, tools=["alpha"], mode="work",
+        tmp_path,
+        script,
+        tools=["alpha"],
+        mode="work",
     )
     loop.reminder = RepeatReminder((1,))
     run_all(loop)
-    message = [m for m in loop.history() if m.get("role") == "tool"][0]
+    message = next(m for m in loop.history() if m.get("role") == "tool")
     assert "提示" in message["content"]
 
 
 def test_cancel_keeps_the_text_already_delivered(tmp_path):
     script = [("第一段", make_tool_calls("alpha")), ("第二段", [])]
     loop, _provider, _toolbox, _store = make_loop(
-        tmp_path, script, tools=["alpha"], mode="work",
+        tmp_path,
+        script,
+        tools=["alpha"],
+        mode="work",
     )
     events = []
     for index, event in enumerate(loop.run_stream("提问")):
@@ -666,6 +743,7 @@ def test_cancel_keeps_the_text_already_delivered(tmp_path):
 # ============================================================================
 # 5. 会话事件日志（castorice/session.py）
 # ============================================================================
+
 
 def test_events_are_append_only_with_monotonic_seq(tmp_path):
     store = SessionStore(tmp_path / "sessions", "chat")
@@ -740,7 +818,7 @@ def test_recovery_truncates_a_torn_tail(tmp_path):
     path = root / "chat" / "s2.jsonl"
     with open(path, "a", encoding="utf-8") as handle:
         handle.write(json.dumps({"v": 1, "seq": 9, "kind": "user", "payload": {}}) + "\n")
-        handle.write("{\"v\": 1, \"seq\": 10, \"kin")  # 撕裂的半行
+        handle.write('{"v": 1, "seq": 10, "kin')  # 撕裂的半行
 
     reopened = SessionStore(root, "chat", session_id="s2")
     try:
@@ -778,8 +856,10 @@ def test_unknown_format_version_is_refused(tmp_path):
     (root / "chat").mkdir(parents=True)
     path = root / "chat" / "future.jsonl"
     path.write_text(
-        json.dumps({"session_id": "future", "mode": "chat", "format_version": 99}) + "\n"
-        + json.dumps({"v": 99, "seq": 1, "kind": "user", "payload": {}}) + "\n",
+        json.dumps({"session_id": "future", "mode": "chat", "format_version": 99})
+        + "\n"
+        + json.dumps({"v": 99, "seq": 1, "kind": "user", "payload": {}})
+        + "\n",
         encoding="utf-8",
     )
     with pytest.raises(SessionFormatError) as excinfo:
@@ -791,8 +871,9 @@ def test_checkpoint_writes_an_audit_event(tmp_path):
     store = SessionStore(tmp_path / "sessions", "chat")
     try:
         store.checkpoint("pre-step")
-        reasons = [event.payload.get("reason") for event in store.events()
-                   if event.kind == "checkpoint"]
+        reasons = [
+            event.payload.get("reason") for event in store.events() if event.kind == "checkpoint"
+        ]
         assert reasons == ["pre-step"]
     finally:
         store.close()
@@ -874,16 +955,7 @@ def test_projection_snapshot_and_subscribers(tmp_path):
 # 6. ai.AI 的对外接缝
 # ============================================================================
 
-CONFIG_TEXT = "\n".join([
-    "mode: chat",
-    "active_provider: fake",
-    "workdir: {root}",      # 可信根目录；绑定时越界路径会被拒绝
-    "providers:",
-    "  fake:",
-    "    api_key: test-key",
-    "    model: fake-model",
-    "",
-])
+CONFIG_TEXT = "mode: chat\nactive_provider: fake\nworkdir: {root}\nproviders:\n  fake:\n    api_key: test-key\n    model: fake-model\n"
 
 
 @pytest.fixture
@@ -898,10 +970,10 @@ def bot_factory(tmp_path):
         (root / "prompts" / "base.md").write_text("BASE-PROMPT", encoding="utf-8")
         for section in ("work", "code", "learn"):
             (root / "prompts" / "modes" / (section + ".md")).write_text(
-                "SECTION-" + section, encoding="utf-8")
+                "SECTION-" + section, encoding="utf-8"
+            )
         config = root / "config.yaml"
-        config.write_text(
-            config_text.replace("{root}", json.dumps(str(root))), encoding="utf-8")
+        config.write_text(config_text.replace("{root}", json.dumps(str(root))), encoding="utf-8")
         bot = ai.AI(
             config_path=str(config),
             prompts_dir=str(root / "prompts"),
@@ -1027,12 +1099,14 @@ def test_ai_sessions_are_isolated_per_mode(bot_factory):
     work_history = len(bot.session_for_mode("work").derive_messages())
 
     assert chat_history > 0 and work_history > 0
-    assert (bot.session_for_mode("chat").session_id
-            != bot.session_for_mode("work").session_id)
+    assert bot.session_for_mode("chat").session_id != bot.session_for_mode("work").session_id
+
     def assistant_texts(mode):
-        return [message.get("content")
-                for message in bot.session_for_mode(mode).derive_messages()
-                if message.get("role") == "assistant"]
+        return [
+            message.get("content")
+            for message in bot.session_for_mode(mode).derive_messages()
+            if message.get("role") == "assistant"
+        ]
 
     # 每个模式的会话只装自己的回合（记忆检索是跨模式的全局能力，不在断言范围内）
     assert assistant_texts("chat") == ["闲聊回答"]
@@ -1171,12 +1245,13 @@ def test_ai_get_history_returns_copies(bot_factory):
 # 7. 分层约束（红线 D）
 # ============================================================================
 
+
 @pytest.mark.parametrize("module_name", ["modes", "session", "harness"])
 def test_kernel_modules_do_not_import_qt_or_the_facade(module_name):
     module = importlib.import_module("castorice." + module_name)
     for line in inspect.getsource(module).splitlines():
         stripped = line.strip()
-        if not (stripped.startswith("import ") or stripped.startswith("from ")):
+        if not (stripped.startswith(("import ", "from "))):
             continue
         assert "PySide6" not in stripped, stripped
         assert stripped != "import ai", stripped
@@ -1185,6 +1260,7 @@ def test_kernel_modules_do_not_import_qt_or_the_facade(module_name):
 
 def test_kernel_is_importable_without_ai_or_qt():
     import castorice
+
     assert hasattr(castorice, "HarnessLoop")
     assert hasattr(castorice, "ModeRegistry")
     assert hasattr(castorice, "SessionStore")
@@ -1192,6 +1268,10 @@ def test_kernel_is_importable_without_ai_or_qt():
 
 def test_stop_reason_values_are_frozen():
     assert {reason.value for reason in StopReason} == {
-        "final_answer", "max_iterations", "cancelled", "error",
-        "checkpoint_failed", "preempted",
+        "final_answer",
+        "max_iterations",
+        "cancelled",
+        "error",
+        "checkpoint_failed",
+        "preempted",
     }

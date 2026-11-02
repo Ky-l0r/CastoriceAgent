@@ -52,8 +52,8 @@ from .base import (
 )
 
 __all__ = [
-    "NapCatChannel",
     "NAPCAT_CAPABILITIES",
+    "NapCatChannel",
     "napcat_options_from_config",
 ]
 
@@ -64,9 +64,9 @@ NAPCAT_CAPABILITIES = ChannelCapabilities(
     name="qq",
     display_name="QQ (NapCat)",
     supports_markdown=False,
-    supports_image_input=False,   # 图片接收协议位后置（预留，见 attachments）
+    supports_image_input=False,  # 图片接收协议位后置（预留，见 attachments）
     supports_emoji=True,
-    supports_proactive=True,      # NapCat 可先手发私聊/群聊消息
+    supports_proactive=True,  # NapCat 可先手发私聊/群聊消息
 )
 
 _DEFAULT_MAX_CHUNK_LEN = 4500
@@ -126,7 +126,7 @@ def napcat_options_from_config(section: Any) -> Dict[str, Any]:
         try:
             value = default if value is None else float(value)
         except (TypeError, ValueError):
-            raise ChannelError(f"channels.napcat.{num_key} 必须是数字，得到 {value!r}")
+            raise ChannelError(f"channels.napcat.{num_key} 必须是数字，得到 {value!r}") from None
         if value < minimum:
             raise ChannelError(f"channels.napcat.{num_key} 不能小于 {minimum}")
         options[num_key] = value
@@ -137,11 +137,9 @@ def napcat_options_from_config(section: Any) -> Dict[str, Any]:
 
 def _require_websockets() -> Any:
     try:
-        import websockets  # noqa: PLC0415 - 延迟导入，基础协议不硬依赖
+        import websockets
     except ImportError as exc:  # pragma: no cover - 环境缺依赖
-        raise ChannelError(
-            "QQ 渠道需要 websockets 库（pip install websockets）"
-        ) from exc
+        raise ChannelError("QQ 渠道需要 websockets 库（pip install websockets）") from exc
     return websockets
 
 
@@ -224,9 +222,7 @@ class NapCatChannel:
 
         if not self._ready.wait(timeout=self._connect_timeout + 5.0):
             self.close()
-            raise ChannelError(
-                f"NapCat 连接超时（{self._connect_timeout}s）：{self._url}"
-            )
+            raise ChannelError(f"NapCat 连接超时（{self._connect_timeout}s）：{self._url}")
         if self._start_error:
             raise ChannelError(self._start_error)
 
@@ -311,9 +307,7 @@ class NapCatChannel:
                             # （get_login_info），对端限时回执才认在线——
                             # 不出现「看起来在线但其实收不到」的静默降级。
                             # 重连路径不做这一步，避免对端繁忙时反复打扰。
-                            await self._send_action(
-                                "get_login_info", {}, timeout=5.0
-                            )
+                            await self._send_action("get_login_info", {}, timeout=5.0)
                             with self._lock:
                                 self._running = True
                             self._ready.set()
@@ -336,9 +330,7 @@ class NapCatChannel:
                     return
                 if self._closed:
                     return
-                logger.warning(
-                    "NapCat 连接断开（%.1fs 后重连）: %s", backoff, exc
-                )
+                logger.warning("NapCat 连接断开（%.1fs 后重连）: %s", backoff, exc)
             self._ws = None
             if self._closed:
                 return
@@ -406,7 +398,11 @@ class NapCatChannel:
         if self._allowed_senders and sender_id not in self._allowed_senders:
             logger.info("NapCat 拒绝非白名单发送者 %s", sender_id)
             return None
-        if message_type == "group" and self._allowed_groups and chat_num not in self._allowed_groups:
+        if (
+            message_type == "group"
+            and self._allowed_groups
+            and chat_num not in self._allowed_groups
+        ):
             logger.info("NapCat 拒绝非白名单群 %s", chat_num)
             return None
 
@@ -486,8 +482,8 @@ class NapCatChannel:
                     full_parts.append(str(payload))
                     buffer += str(payload)
                     while len(buffer) >= self._max_chunk_len:
-                        chunk = buffer[:self._max_chunk_len]
-                        buffer = buffer[self._max_chunk_len:]
+                        chunk = buffer[: self._max_chunk_len]
+                        buffer = buffer[self._max_chunk_len :]
                         _try_push(lambda c=chunk: self._push_text(chat_id, c))
                     yield ("text", payload)
                 elif kind == "tool":
@@ -535,9 +531,7 @@ class NapCatChannel:
             loop = self._loop
             if loop is None:  # pragma: no cover - 关闭竞态
                 return
-            loop.call_soon_threadsafe(
-                lambda: loop.create_task(self._send_message(message))
-            )
+            loop.call_soon_threadsafe(lambda: loop.create_task(self._send_message(message)))
         else:
             self._send_blocking(message)
 
@@ -560,9 +554,7 @@ class NapCatChannel:
             loop = self._loop
             if loop is None:  # pragma: no cover
                 return
-            loop.call_soon_threadsafe(
-                lambda: loop.create_task(self._send_message(message))
-            )
+            loop.call_soon_threadsafe(lambda: loop.create_task(self._send_message(message)))
         else:
             self._send_blocking(message)
 
@@ -628,7 +620,7 @@ class NapCatChannel:
             response = await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
             self._echo_futures.pop(echo, None)
-            raise ChannelError(f"NapCat action 超时: {action}")
+            raise ChannelError(f"NapCat action 超时: {action}") from None
         if not isinstance(response, dict):
             raise ChannelError(f"NapCat action 回执格式异常: {action}")
         retcode = response.get("retcode")
@@ -674,9 +666,7 @@ class NapCatChannel:
             chat_type, raw_id = self._default_chat_type, text
         chat_type = chat_type.strip().lower()
         if chat_type not in ("private", "group"):
-            raise ChannelError(
-                f"chat_id 必须是 private:<id> / group:<id>，得到 {chat_id!r}"
-            )
+            raise ChannelError(f"chat_id 必须是 private:<id> / group:<id>，得到 {chat_id!r}")
         raw_id = raw_id.strip()
         if not raw_id.isdigit():
             raise ChannelError(f"chat_id 的目标号必须是纯数字，得到 {chat_id!r}")

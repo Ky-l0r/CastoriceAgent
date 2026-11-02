@@ -7,11 +7,10 @@
 from __future__ import annotations
 
 import asyncio
-import socket
 import json
+import socket
 import threading
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pytest
@@ -52,9 +51,7 @@ def _allow_loopback_connect(monkeypatch):
         host = address[0] if isinstance(address, tuple) else ""
         if isinstance(host, str) and host in ("127.0.0.1", "::1", "localhost"):
             return original(self, address)
-        raise RuntimeError(
-            "测试期间禁止非回环连接；本地模拟端点请使用 127.0.0.1"
-        )
+        raise RuntimeError("测试期间禁止非回环连接；本地模拟端点请使用 127.0.0.1")
 
     monkeypatch.setattr(socket.socket, "connect", _guarded)
 
@@ -68,12 +65,16 @@ class FakeBot:
         error: Optional[Exception] = None,
     ) -> None:
         self.calls: List[str] = []
-        self.events = events if events is not None else [
-            ("text", "你好"),
-            ("text", "，"),
-            ("text", "世界"),
-            ("done", "你好，世界"),
-        ]
+        self.events = (
+            events
+            if events is not None
+            else [
+                ("text", "你好"),
+                ("text", "，"),
+                ("text", "世界"),
+                ("done", "你好，世界"),
+            ]
+        )
         self.error = error
 
     def get_response_stream(self, user_input: str, images=None):
@@ -158,9 +159,7 @@ class FakeOneBotServer:
                 self._clients.discard(ws)
 
         async def main():
-            self._server = await self._websockets.serve(
-                handler, self.host, self.port
-            )
+            self._server = await self._websockets.serve(handler, self.host, self.port)
             self.port = self._server.sockets[0].getsockname()[1]
             self._started.set()
             await self._server.wait_closed()
@@ -181,12 +180,16 @@ class FakeOneBotServer:
             if isinstance(frame, dict) and "action" in frame:
                 self.actions.append(frame)
                 if frame.get("action") == "get_login_info":
-                    await ws.send(json.dumps({
-                        "status": "ok",
-                        "retcode": 0,
-                        "data": {"user_id": 10000, "nickname": "castorice"},
-                        "echo": frame.get("echo"),
-                    }))
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "status": "ok",
+                                "retcode": 0,
+                                "data": {"user_id": 10000, "nickname": "castorice"},
+                                "echo": frame.get("echo"),
+                            }
+                        )
+                    )
                     continue
                 reply = {
                     "status": "async" if frame.get("action") == "send_group_msg" else "ok",
@@ -291,16 +294,12 @@ def test_options_defaults_and_normalization():
 def test_options_empty_sender_rejected():
     # 「空串匹配一切」的静默放行必须被 normalize_target 拦下。
     with pytest.raises(ChannelError):
-        napcat_options_from_config(
-            {"url": "ws://127.0.0.1:3001", "allowed_senders": ["", "123"]}
-        )
+        napcat_options_from_config({"url": "ws://127.0.0.1:3001", "allowed_senders": ["", "123"]})
 
 
 def test_options_bad_chat_type_rejected():
     with pytest.raises(ChannelError):
-        napcat_options_from_config(
-            {"url": "ws://127.0.0.1:3001", "default_chat_type": "channel"}
-        )
+        napcat_options_from_config({"url": "ws://127.0.0.1:3001", "default_chat_type": "channel"})
 
 
 def test_normalize_target_empty_raises():
@@ -360,18 +359,18 @@ def test_start_rejects_bad_token(server_factory):
 def test_message_dispatch_end_to_end(server_factory):
     server = server_factory()
     bot = FakeBot()
-    channel = NapCatChannel(
-        make_ctx(bot, url=f"ws://{LOOPBACK}:{server.port}", max_chunk_len=1000)
-    )
+    channel = NapCatChannel(make_ctx(bot, url=f"ws://{LOOPBACK}:{server.port}", max_chunk_len=1000))
     channel.start()
     try:
-        server.push({
-            "post_type": "message",
-            "message_type": "private",
-            "user_id": 12345,
-            "message_id": 9001,
-            "raw_message": "ping",
-        })
+        server.push(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "user_id": 12345,
+                "message_id": 9001,
+                "raw_message": "ping",
+            }
+        )
         assert wait_until(lambda: bot.calls == ["ping"])
         assert wait_until(
             lambda: any(
@@ -393,19 +392,23 @@ def test_meta_event_ignored(server_factory):
     channel = NapCatChannel(make_ctx(bot, url=f"ws://{LOOPBACK}:{server.port}"))
     channel.start()
     try:
-        server.push({
-            "post_type": "meta_event",
-            "meta_event_type": "heartbeat",
-            "status": {},
-            "interval": 5000,
-        })
-        server.push({
-            "post_type": "message",
-            "message_type": "private",
-            "user_id": 1,
-            "message_id": 2,
-            "raw_message": "hi",
-        })
+        server.push(
+            {
+                "post_type": "meta_event",
+                "meta_event_type": "heartbeat",
+                "status": {},
+                "interval": 5000,
+            }
+        )
+        server.push(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "user_id": 1,
+                "message_id": 2,
+                "raw_message": "hi",
+            }
+        )
         assert wait_until(lambda: bot.calls == ["hi"])
         # 心跳没有触发任何发送：唯一动作是对真实消息的回复。
         send_actions = [a for a in server.actions if a["action"] == "send_private_msg"]
@@ -423,19 +426,19 @@ def test_sender_allowlist_blocks(server_factory):
     )
     channel.start()
     try:
-        server.push({
-            "post_type": "message",
-            "message_type": "private",
-            "user_id": 99999,
-            "message_id": 5,
-            "raw_message": "hello",
-        })
+        server.push(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "user_id": 99999,
+                "message_id": 5,
+                "raw_message": "hello",
+            }
+        )
         time.sleep(0.3)
         assert bot.calls == []
         # 唯一动作是首连验证的 get_login_info，被拒消息不触发任何发送。
-        assert server.actions == [
-            a for a in server.actions if a["action"] == "get_login_info"
-        ]
+        assert server.actions == [a for a in server.actions if a["action"] == "get_login_info"]
     finally:
         channel.close()
 
@@ -478,8 +481,11 @@ def test_dedup_on_on_message_directly():
     bot = FakeBot()
     channel = NapCatChannel(make_ctx(bot, url="ws://127.0.0.1:1"))
     message = ChannelMessage(
-        channel="qq", sender_id="1", chat_id="private:1",
-        text="hi", message_id="abc",
+        channel="qq",
+        sender_id="1",
+        chat_id="private:1",
+        text="hi",
+        message_id="abc",
     )
     first = list(channel.on_message(message))
     assert [k for k, _ in first][-1] == "done"
@@ -493,17 +499,27 @@ def test_dedup_on_on_message_directly():
 
 
 def test_on_message_event_stream_shape():
-    bot = FakeBot(events=[
-        ("text", "a"),
-        ("tool", {"name": "web_search", "status": "start"}),
-        ("tool", {"name": "web_search", "status": "done"}),
-        ("text", "b"),
-        ("done", "ab"),
-    ])
+    bot = FakeBot(
+        events=[
+            ("text", "a"),
+            ("tool", {"name": "web_search", "status": "start"}),
+            ("tool", {"name": "web_search", "status": "done"}),
+            ("text", "b"),
+            ("done", "ab"),
+        ]
+    )
     channel = NapCatChannel(make_ctx(bot, url="ws://127.0.0.1:1"))
-    events = list(channel.on_message(ChannelMessage(
-        channel="qq", sender_id="1", chat_id="private:1", text="q", message_id="m1",
-    )))
+    events = list(
+        channel.on_message(
+            ChannelMessage(
+                channel="qq",
+                sender_id="1",
+                chat_id="private:1",
+                text="q",
+                message_id="m1",
+            )
+        )
+    )
     kinds = [k for k, _ in events]
     assert all(isinstance(e, tuple) and len(e) == 2 for e in events)
     assert kinds == ["text", "tool", "tool", "text", "done"]
@@ -513,9 +529,17 @@ def test_on_message_event_stream_shape():
 def test_on_message_translates_exception_to_done():
     bot = FakeBot(error=RuntimeError("模型爆炸了"))
     channel = NapCatChannel(make_ctx(bot, url="ws://127.0.0.1:1"))
-    events = list(channel.on_message(ChannelMessage(
-        channel="qq", sender_id="1", chat_id="private:1", text="q", message_id="m2",
-    )))
+    events = list(
+        channel.on_message(
+            ChannelMessage(
+                channel="qq",
+                sender_id="1",
+                chat_id="private:1",
+                text="q",
+                message_id="m2",
+            )
+        )
+    )
     assert len(events) == 1
     kind, payload = events[0]
     assert kind == "done"
@@ -524,23 +548,25 @@ def test_on_message_translates_exception_to_done():
 
 def test_long_text_chunked(server_factory):
     server = server_factory()
-    bot = FakeBot(events=[
-        ("text", "x" * 120),
-        ("text", "y" * 120),
-        ("done", "x" * 120 + "y" * 120),
-    ])
-    channel = NapCatChannel(
-        make_ctx(bot, url=f"ws://{LOOPBACK}:{server.port}", max_chunk_len=100)
+    bot = FakeBot(
+        events=[
+            ("text", "x" * 120),
+            ("text", "y" * 120),
+            ("done", "x" * 120 + "y" * 120),
+        ]
     )
+    channel = NapCatChannel(make_ctx(bot, url=f"ws://{LOOPBACK}:{server.port}", max_chunk_len=100))
     channel.start()
     try:
-        server.push({
-            "post_type": "message",
-            "message_type": "private",
-            "user_id": 8,
-            "message_id": 77,
-            "raw_message": "long",
-        })
+        server.push(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "user_id": 8,
+                "message_id": 77,
+                "raw_message": "long",
+            }
+        )
         assert wait_until(lambda: bot.calls == ["long"])
         assert wait_until(lambda: len(server.actions) >= 3)
         sent = [a for a in server.actions if a["action"] == "send_private_msg"]
@@ -575,13 +601,15 @@ def test_reconnect_after_server_drop(server_factory):
         # 断线后渠道应自动重连上同一个端点。
         assert wait_until(lambda: server.connections > connections_before, timeout=8.0)
         # 重连后新消息照常处理。
-        server.push({
-            "post_type": "message",
-            "message_type": "private",
-            "user_id": 11,
-            "message_id": 88,
-            "raw_message": "after-drop",
-        })
+        server.push(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "user_id": 11,
+                "message_id": 88,
+                "raw_message": "after-drop",
+            }
+        )
         assert wait_until(lambda: bot.calls == ["after-drop"], timeout=8.0)
     finally:
         channel.close()
@@ -599,9 +627,7 @@ def test_send_returns_platform_message_id(server_factory):
     try:
         message_id = channel.send(OutboundMessage(chat_id="private:123", text="主动消息"))
         assert message_id == str(1000)  # FakeOneBotServer 从 1000 起发 id
-        assert wait_until(
-            lambda: any(a["action"] == "send_private_msg" for a in server.actions)
-        )
+        assert wait_until(lambda: any(a["action"] == "send_private_msg" for a in server.actions))
     finally:
         channel.close()
 
@@ -614,8 +640,7 @@ def test_send_group_message(server_factory):
         channel.send(OutboundMessage(chat_id="group:678", text="群消息"))
         assert wait_until(
             lambda: any(
-                a["action"] == "send_group_msg"
-                and a["params"]["group_id"] == 678
+                a["action"] == "send_group_msg" and a["params"]["group_id"] == 678
                 for a in server.actions
             )
         )
@@ -675,13 +700,15 @@ def test_start_idempotent_and_restart_after_close(server_factory):
     channel.start()
     try:
         assert wait_until(lambda: server.connections > connections)
-        server.push({
-            "post_type": "message",
-            "message_type": "private",
-            "user_id": 3,
-            "message_id": 9,
-            "raw_message": "again",
-        })
+        server.push(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "user_id": 3,
+                "message_id": 9,
+                "raw_message": "again",
+            }
+        )
         assert wait_until(lambda: bot.calls == ["again"])
     finally:
         channel.close()

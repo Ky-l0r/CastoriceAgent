@@ -26,9 +26,8 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, fields
 from typing import Any, Dict, FrozenSet, Mapping, Optional, Tuple
-
 
 # ----------------------------------------------------------------------------
 # 工具协议级别（分级降级的三档）
@@ -39,7 +38,9 @@ TOOL_PROTOCOL_JSON = "json"
 TOOL_PROTOCOL_TEXT = "text"
 
 TOOL_PROTOCOLS: Tuple[str, ...] = (
-    TOOL_PROTOCOL_NATIVE, TOOL_PROTOCOL_JSON, TOOL_PROTOCOL_TEXT,
+    TOOL_PROTOCOL_NATIVE,
+    TOOL_PROTOCOL_JSON,
+    TOOL_PROTOCOL_TEXT,
 )
 
 #: 降级链：从最理想的一档开始，逐级回退
@@ -58,6 +59,7 @@ def next_protocol(protocol: str) -> Optional[str]:
 # ----------------------------------------------------------------------------
 # 模型能力
 # ----------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class ModelCapabilities:
@@ -121,17 +123,30 @@ class ModelCapabilities:
 #: 只按模型名做**保守**修正：能加能力的地方加，不能确定的一律不加。
 _MODEL_OVERRIDES: Tuple[Tuple[str, Dict[str, Any]], ...] = (
     (r"(^|[-_/])(vl|vision|multimodal)([-_/]|$)", {"supports_vision": True}),
-    (r"gpt-4o|gpt-4-turbo|gpt-4\.1|o[134](-|$)", {
-        "supports_vision": True, "supports_structured_output": True,
-        "supports_parallel_tool_calls": True, "context_window": 128_000,
-    }),
-    (r"claude-3|claude-4|claude-sonnet|claude-opus|claude-haiku", {
-        "supports_vision": True, "context_window": 200_000,
-    }),
+    (
+        r"gpt-4o|gpt-4-turbo|gpt-4\.1|o[134](-|$)",
+        {
+            "supports_vision": True,
+            "supports_structured_output": True,
+            "supports_parallel_tool_calls": True,
+            "context_window": 128_000,
+        },
+    ),
+    (
+        r"claude-3|claude-4|claude-sonnet|claude-opus|claude-haiku",
+        {
+            "supports_vision": True,
+            "context_window": 200_000,
+        },
+    ),
     (r"gemini", {"supports_vision": True, "context_window": 1_000_000}),
-    (r"deepseek-reasoner|deepseek-r1|\br1\b", {
-        "supports_reasoning_effort": True, "supports_tools": True,
-    }),
+    (
+        r"deepseek-reasoner|deepseek-r1|\br1\b",
+        {
+            "supports_reasoning_effort": True,
+            "supports_tools": True,
+        },
+    ),
     (r"qwen(3)?(-|/)?(max|plus|turbo|vl)", {"supports_vision": True}),
     (r"llama|mistral|mixtral|qwen", {"supports_tools": True}),
 )
@@ -257,11 +272,17 @@ _CONFIG_KEYS: Dict[str, str] = {
     "protocol": "tier",
 }
 
-_BOOL_FIELDS: FrozenSet[str] = frozenset({
-    "supports_tools", "supports_structured_output", "supports_stream_tool_calls",
-    "supports_vision", "supports_reasoning_effort", "supports_parallel_tool_calls",
-    "supports_system_prompt",
-})
+_BOOL_FIELDS: FrozenSet[str] = frozenset(
+    {
+        "supports_tools",
+        "supports_structured_output",
+        "supports_stream_tool_calls",
+        "supports_vision",
+        "supports_reasoning_effort",
+        "supports_parallel_tool_calls",
+        "supports_system_prompt",
+    }
+)
 _INT_FIELDS: FrozenSet[str] = frozenset({"context_window", "max_output_tokens"})
 
 
@@ -348,22 +369,30 @@ def resolve_capabilities(
     merged.update(capabilities_from_config(config))
     if not merged.get("tier") or merged.get("tier") == base.tier:
         merged["tier"] = base.tier
-    return ModelCapabilities(**{
-        field.name: merged[field.name] for field in fields(ModelCapabilities)
-    })
+    return ModelCapabilities(
+        **{field.name: merged[field.name] for field in fields(ModelCapabilities)}
+    )
 
 
 # ----------------------------------------------------------------------------
 # 上下文预算
 # ----------------------------------------------------------------------------
 
+
 class ContextWindowExceeded(ValueError):
     """上下文超限——**明确拒绝**，绝不静默截断（目标 7 的验收条款）。"""
 
     code = "CONTEXT_WINDOW_EXCEEDED"
 
-    def __init__(self, message: str, *, estimated: int = 0, budget: int = 0,
-                 provider: str = "", model: str = "") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        estimated: int = 0,
+        budget: int = 0,
+        provider: str = "",
+        model: str = "",
+    ) -> None:
         super().__init__(message)
         self.estimated = int(estimated)
         self.budget = int(budget)
@@ -391,8 +420,7 @@ def estimate_tokens(text: Any) -> int:
     if not content:
         return 0
     wide = sum(
-        1 for char in content
-        if "\u2e80" <= char <= "\u9fff" or "\uff00" <= char <= "\uffef"
+        1 for char in content if "\u2e80" <= char <= "\u9fff" or "\uff00" <= char <= "\uffef"
     )
     narrow = len(content) - wide
     return wide + max(1, math.ceil(narrow / 4)) if narrow else wide

@@ -10,23 +10,37 @@
 """
 
 import inspect
+import re
 
 import pytest
 
 import ai
 
-
 # ----------------------------------------------------------------------------
 # 公开符号仍在
 # ----------------------------------------------------------------------------
 
-@pytest.mark.parametrize("name", [
-    "AI", "AIFactory", "get_ai",
-    "ConfigManager", "PromptManager", "MemoryManager",
-    "LLMProvider", "LLMProviderFactory", "OpenAICompatibleProvider",
-    "Tool", "ToolRegistry", "create_builtin_tools",
-    "EmojiCatalog", "EmojiSession", "EmojiSticker",
-])
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "AI",
+        "AIFactory",
+        "get_ai",
+        "ConfigManager",
+        "PromptManager",
+        "MemoryManager",
+        "LLMProvider",
+        "LLMProviderFactory",
+        "OpenAICompatibleProvider",
+        "Tool",
+        "ToolRegistry",
+        "create_builtin_tools",
+        "EmojiCatalog",
+        "EmojiSession",
+        "EmojiSticker",
+    ],
+)
 def test_public_names_exist(name):
     assert hasattr(ai, name), f"ai.{name} 不应被移除（UI 依赖它）"
 
@@ -38,8 +52,12 @@ def test_get_response_stream_is_provided_by_ai_class():
 
 def test_ai_class_keeps_public_methods():
     for name in [
-        "get_response", "clear_history", "get_history",
-        "clear_memories", "get_memory_count", "change_provider",
+        "get_response",
+        "clear_history",
+        "get_history",
+        "clear_memories",
+        "get_memory_count",
+        "change_provider",
     ]:
         assert callable(getattr(ai.AI, name, None)), f"AI.{name} 缺失"
 
@@ -48,8 +66,13 @@ def test_ai_init_signature_is_backward_compatible():
     params = inspect.signature(ai.AI.__init__).parameters
     names = list(params)
     assert names[:7] == [
-        "self", "config_path", "prompts_dir", "chroma_dir",
-        "collection_name", "provider_name", "image_dir",
+        "self",
+        "config_path",
+        "prompts_dir",
+        "chroma_dir",
+        "collection_name",
+        "provider_name",
+        "image_dir",
     ]
     assert params["provider_name"].default is None
 
@@ -80,27 +103,36 @@ def test_module_import_has_no_side_effects_at_import_time():
 # 事件协议键名（源码级快照）
 # ----------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="module")
 def stream_source():
     return inspect.getsource(ai.AI.get_response_stream)
 
 
+def _has_literal(source: str, value: str) -> bool:
+    """源码里是否出现某个字符串字面量。
+
+    单引号与双引号都接受：ruff format 会把历史代码统一成双引号，
+    断言不应绑定到某一种引号风格（否则一次格式化就让用例失效）。
+    """
+    return f"'{value}'" in source or f'"{value}"' in source
+
+
 def test_stream_event_kinds_are_unchanged(stream_source):
     """ui.py 只认这四种事件类型，任何改造都必须保持"""
-    for kind in ["'text'", "'tool'", "'emoji'", "'done'"]:
-        assert kind in stream_source, f"流式事件类型 {kind} 不应消失"
+    for kind in ["text", "tool", "emoji", "done"]:
+        assert _has_literal(stream_source, kind), f"流式事件类型 {kind!r} 不应消失"
 
 
 def test_stream_emits_two_element_tuples(stream_source):
     # ui.py 用 isinstance(chunk, tuple) and len(chunk) == 2 判断事件
-    assert "yield ('" in stream_source
+    assert re.search(r"yield\s*\(", stream_source)
 
 
 def test_stream_tool_payload_keys_are_unchanged(stream_source):
     # ui.py 读取 payload.get('name') 与 payload.get('status')
-    assert "'name'" in stream_source
-    assert "'status'" in stream_source
-    assert "'path'" in stream_source
+    for key in ["name", "status", "path"]:
+        assert _has_literal(stream_source, key), f"工具事件字段 {key!r} 不应消失"
 
 
 def test_memory_message_shape_is_unchanged(stream_source):
@@ -117,6 +149,7 @@ def test_memory_and_provider_error_messages_unchanged():
 # ----------------------------------------------------------------------------
 # 离线可导入
 # ----------------------------------------------------------------------------
+
 
 def test_ai_module_has_no_import_time_network_usage():
     """ai.py 顶层不得出现网络调用（有则说明引入了导入即联网的依赖）"""

@@ -33,12 +33,12 @@ from .base import (
     SOURCE_BUILTIN,
     SOURCE_MCP,
     SOURCE_USER,
-    TOOL_KINDS,
     TOOL_KIND_ACTION,
     TOOL_KIND_COMMAND,
     TOOL_KIND_GENERIC,
     TOOL_KIND_NETWORK,
     TOOL_KIND_WRITE,
+    TOOL_KINDS,
     ToolContext,
     ToolDefinitionError,
     ToolModeError,
@@ -88,10 +88,6 @@ from .mcp import (
 from .notes import build_note_tools, extract_tags, extract_title, split_frontmatter
 from .web import (
     UNTRUSTED_NOTICE,
-    WebFetchTool,
-    build_web_tools,
-)
-from .web import (
     BingAPISearch,
     BingHTMLSearch,
     BochaSearch,
@@ -100,14 +96,16 @@ from .web import (
     SearchManager,
     SerperSearch,
     TavilySearch,
+    WebFetchTool,
     WebSearchTool,
+    build_web_tools,
     format_search_results,
 )
-
 
 # ----------------------------------------------------------------------------
 # 当前时间（既有内置工具，保留原名与输出格式）
 # ----------------------------------------------------------------------------
+
 
 def tool_get_current_time() -> str:
     """查询当前日期和时间（输出格式与 ai.tool_get_current_time 完全一致）。"""
@@ -135,6 +133,7 @@ def build_time_tools(context: Optional[ToolContext] = None) -> List[ToolSpec]:
 # 默认注册表
 # ----------------------------------------------------------------------------
 
+
 def build_default_registry(
     config: Optional[Mapping[str, Any]] = None,
     *,
@@ -151,8 +150,8 @@ def build_default_registry(
     """
     settings = dict(config or {})
     tool_settings = settings.get("tools") if isinstance(settings.get("tools"), Mapping) else {}
-    enabled = set(str(item) for item in (tool_settings.get("enabled") or ()))
-    disabled = set(str(item) for item in (tool_settings.get("disabled") or ()))
+    enabled = {str(item) for item in (tool_settings.get("enabled") or ())}
+    disabled = {str(item) for item in (tool_settings.get("disabled") or ())}
 
     ctx = context if context is not None else ToolContext()
     registry = ToolRegistry()
@@ -184,36 +183,88 @@ def build_default_registry(
 
 __all__ = [
     # base
-    "ALLOWED_SCHEMA_KEYS", "ALLOWED_SCHEMA_TYPES", "DEFAULT_RESULT_LIMIT",
-    "DEFAULT_TOOL_MODES", "ERROR_PREFIX", "KNOWN_MODES", "KNOWN_SOURCES",
-    "SOURCE_BUILTIN", "SOURCE_MCP", "SOURCE_USER",
-    "TOOL_KINDS", "TOOL_KIND_ACTION", "TOOL_KIND_COMMAND", "TOOL_KIND_GENERIC",
-    "TOOL_KIND_NETWORK", "TOOL_KIND_WRITE",
-    "ToolContext", "ToolDefinitionError", "ToolModeError", "ToolRegistry",
-    "ToolRuntime", "ToolSchemaError", "ToolSpec",
-    "error_text", "truncate_text", "validate_modes", "validate_parameters",
+    "ALLOWED_SCHEMA_KEYS",
+    "ALLOWED_SCHEMA_TYPES",
     # command
-    "DEFAULT_OUTPUT_LIMIT", "DEFAULT_TIMEOUT_S", "ENV_KEYS", "ENV_PREFIX",
-    "build_command_tools", "build_env", "render_result", "run_argv",
-    # document
-    "build_document_tools", "document_header",
+    "DEFAULT_OUTPUT_LIMIT",
     # fs
-    "DEFAULT_READ_LIMIT", "DEFAULT_SEARCH_LIMIT", "build_fs_tools",
-    "make_edit_file", "make_glob_files", "make_grep_files", "make_list_dir",
-    "make_read_file", "make_write_file",
+    "DEFAULT_READ_LIMIT",
+    "DEFAULT_RESULT_LIMIT",
+    "DEFAULT_SEARCH_LIMIT",
+    "DEFAULT_TIMEOUT_S",
+    "DEFAULT_TOOL_MODES",
+    "ENV_KEYS",
+    "ENV_PREFIX",
+    "ERROR_PREFIX",
+    "KNOWN_MODES",
+    "KNOWN_SOURCES",
+    # mcp
+    "MCP_PREFIX",
+    "MCP_SEPARATOR",
+    "SOURCE_BUILTIN",
+    "SOURCE_MCP",
+    "SOURCE_USER",
+    "TOOL_KINDS",
+    "TOOL_KIND_ACTION",
+    "TOOL_KIND_COMMAND",
+    "TOOL_KIND_GENERIC",
+    "TOOL_KIND_NETWORK",
+    "TOOL_KIND_WRITE",
+    # web
+    "UNTRUSTED_NOTICE",
+    "BingAPISearch",
+    "BingHTMLSearch",
+    "BochaSearch",
+    "DDGHTMLSearch",
+    "McpRegistry",
+    "McpServer",
+    "McpToolDescriptor",
+    "SearchBackend",
+    "SearchManager",
+    "SerperSearch",
+    "TavilySearch",
+    "ToolContext",
+    "ToolDefinitionError",
+    "ToolModeError",
+    "ToolRegistry",
+    "ToolRuntime",
+    "ToolSchemaError",
+    "ToolSpec",
+    "WebFetchTool",
+    "WebSearchTool",
+    "build_command_tools",
+    "build_default_registry",
+    # document
+    "build_document_tools",
+    "build_env",
+    "build_fs_tools",
     # life
     "build_life_tools",
-    # mcp
-    "MCP_PREFIX", "MCP_SEPARATOR", "McpRegistry", "McpServer",
-    "McpToolDescriptor", "mcp_prompt_text", "mcp_tool_name",
-    "parse_mcp_tool_name", "register_mcp_server",
     # notes
-    "build_note_tools", "extract_tags", "extract_title", "split_frontmatter",
-    # web
-    "UNTRUSTED_NOTICE", "WebFetchTool", "build_web_tools",
-    "BingAPISearch", "BingHTMLSearch", "BochaSearch", "DDGHTMLSearch",
-    "SearchBackend", "SearchManager", "SerperSearch", "TavilySearch",
-    "WebSearchTool", "format_search_results",
+    "build_note_tools",
+    "build_time_tools",
+    "build_web_tools",
+    "document_header",
+    "error_text",
+    "extract_tags",
+    "extract_title",
+    "format_search_results",
+    "make_edit_file",
+    "make_glob_files",
+    "make_grep_files",
+    "make_list_dir",
+    "make_read_file",
+    "make_write_file",
+    "mcp_prompt_text",
+    "mcp_tool_name",
+    "parse_mcp_tool_name",
+    "register_mcp_server",
+    "render_result",
+    "run_argv",
+    "split_frontmatter",
     # time + 工厂
-    "tool_get_current_time", "build_time_tools", "build_default_registry",
+    "tool_get_current_time",
+    "truncate_text",
+    "validate_modes",
+    "validate_parameters",
 ]

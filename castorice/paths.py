@@ -27,13 +27,13 @@ from pathlib import Path
 from typing import Optional
 
 __all__ = [
-    "DATA_ROOT_ENV",
     "CODE_ROOT_ENV",
-    "data_root",
+    "DATA_ROOT_ENV",
     "code_root",
     "data_path",
-    "template_path",
+    "data_root",
     "ensure_data_root",
+    "template_path",
 ]
 
 #: 数据目录覆盖（壳层传入 %APPDATA%\CastoriceAgent）

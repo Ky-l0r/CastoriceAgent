@@ -23,19 +23,21 @@ import castorice.tools as ctools
 from castorice.modes import SANDBOX_READ_ONLY, SANDBOX_WORKSPACE_WRITE
 from castorice.permissions import AutoResponder, PermissionGateway
 
-
 # ============================================================================
 # A. ai.py 兼容面（t2 基线，不得回归）
 # ============================================================================
 
+
 def make_registry():
     registry = ai.ToolRegistry()
-    registry.register(ai.Tool(
-        name="echo",
-        description="回声",
-        parameters={"type": "object", "properties": {"text": {"type": "string"}}},
-        function=lambda text: f"echo:{text}",
-    ))
+    registry.register(
+        ai.Tool(
+            name="echo",
+            description="回声",
+            parameters={"type": "object", "properties": {"text": {"type": "string"}}},
+            function=lambda text: f"echo:{text}",
+        )
+    )
     return registry
 
 
@@ -53,12 +55,14 @@ def test_call_unknown_tool_returns_error_text():
 
 def test_call_swallows_function_exception():
     registry = ai.ToolRegistry()
-    registry.register(ai.Tool(
-        name="boom",
-        description="总是失败",
-        parameters={"type": "object", "properties": {}},
-        function=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("炸了")),
-    ))
+    registry.register(
+        ai.Tool(
+            name="boom",
+            description="总是失败",
+            parameters={"type": "object", "properties": {}},
+            function=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("炸了")),
+        )
+    )
     result = registry.call("boom", {})
     assert result.startswith("错误: 调用工具 boom 失败")
     assert "炸了" in result
@@ -72,12 +76,14 @@ def test_call_with_wrong_arguments_returns_error_text():
 
 def test_call_coerces_result_to_str():
     registry = ai.ToolRegistry()
-    registry.register(ai.Tool(
-        name="num",
-        description="返回数字",
-        parameters={"type": "object", "properties": {}},
-        function=lambda: 42,
-    ))
+    registry.register(
+        ai.Tool(
+            name="num",
+            description="返回数字",
+            parameters={"type": "object", "properties": {}},
+            function=lambda: 42,
+        )
+    )
     assert registry.call("num", {}) == "42"
 
 
@@ -94,10 +100,14 @@ def test_to_openai_specs_shape():
 
 def test_registering_same_name_overwrites():
     registry = make_registry()
-    registry.register(ai.Tool(
-        name="echo", description="新版", parameters={"type": "object", "properties": {}},
-        function=lambda **kwargs: "v2",
-    ))
+    registry.register(
+        ai.Tool(
+            name="echo",
+            description="新版",
+            parameters={"type": "object", "properties": {}},
+            function=lambda **kwargs: "v2",
+        )
+    )
     assert registry.call("echo", {}) == "v2"
     assert len(registry.to_openai_specs()) == 1
 
@@ -122,11 +132,24 @@ def test_tool_registry_exposes_kernel_metadata():
 
 #: t4 落地后的完整内置工具集（顺序即注册顺序）
 BUILTIN_TOOL_NAMES = [
-    "get_current_time", "web_search", "web_fetch",
-    "read_file", "write_file", "edit_file", "list_dir",
-    "glob_files", "grep_files", "run_command", "make_document",
-    "search_notes", "read_note", "write_note",
-    "play_music", "set_reminder", "list_reminders", "clear_reminders",
+    "get_current_time",
+    "web_search",
+    "web_fetch",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "list_dir",
+    "glob_files",
+    "grep_files",
+    "run_command",
+    "make_document",
+    "search_notes",
+    "read_note",
+    "write_note",
+    "play_music",
+    "set_reminder",
+    "list_reminders",
+    "clear_reminders",
     "system_info",
 ]
 
@@ -152,8 +175,7 @@ def test_create_builtin_tools_accepts_search_config_without_network():
 
 def test_web_search_spec_requires_query():
     registry = ai.create_builtin_tools({})
-    spec = [s for s in registry.to_openai_specs()
-            if s["function"]["name"] == "web_search"][0]
+    spec = next(s for s in registry.to_openai_specs() if s["function"]["name"] == "web_search")
     assert spec["function"]["parameters"]["required"] == ["query"]
 
 
@@ -172,27 +194,34 @@ def test_get_current_time_is_callable_through_registry():
 # 搜索结果格式化
 # ----------------------------------------------------------------------------
 
+
 def test_format_search_results_basic():
-    text = ai.format_search_results([
-        {"title": "标题", "url": "https://example.com", "snippet": "简介"},
-    ])
+    text = ai.format_search_results(
+        [
+            {"title": "标题", "url": "https://example.com", "snippet": "简介"},
+        ]
+    )
     assert "1. 标题" in text
     assert "https://example.com" in text
     assert "简介: 简介" in text
 
 
 def test_format_search_results_includes_content_summary():
-    text = ai.format_search_results([
-        {"title": "t", "url": "u", "snippet": "", "content": "正文"},
-    ])
+    text = ai.format_search_results(
+        [
+            {"title": "t", "url": "u", "snippet": "", "content": "正文"},
+        ]
+    )
     assert "正文摘要: 正文" in text
     assert "简介" not in text
 
 
 def test_format_search_results_truncates_long_fields():
-    text = ai.format_search_results([
-        {"title": "t", "url": "u", "snippet": "s" * 400, "content": "c" * 700},
-    ])
+    text = ai.format_search_results(
+        [
+            {"title": "t", "url": "u", "snippet": "s" * 400, "content": "c" * 700},
+        ]
+    )
     assert "s" * 300 in text and "s" * 301 not in text
     assert "c" * 600 in text and "c" * 601 not in text
 
@@ -209,18 +238,22 @@ def test_format_search_results_tolerates_missing_fields():
 # 宽松类型转换辅助函数
 # ----------------------------------------------------------------------------
 
-@pytest.mark.parametrize("value, expected", [
-    (None, True),
-    (True, True),
-    (False, False),
-    ("true", True),
-    ("False", False),
-    ("off", False),
-    ("no", False),
-    ("0", False),
-    ("", False),
-    (1, True),
-])
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        (None, True),
+        (True, True),
+        (False, False),
+        ("true", True),
+        ("False", False),
+        ("off", False),
+        ("no", False),
+        ("0", False),
+        ("", False),
+        (1, True),
+    ],
+)
 def test_to_bool(value, expected):
     assert ai._to_bool(value) is expected
 
@@ -253,8 +286,8 @@ def test_to_int_parses_and_truncates():
 # B. castorice/tools/ 内核工具生态（t4）
 # ============================================================================
 
-def build_context(root, *, sandbox=SANDBOX_WORKSPACE_WRITE, mode="code",
-                  gateway=None, cwd=None):
+
+def build_context(root, *, sandbox=SANDBOX_WORKSPACE_WRITE, mode="code", gateway=None, cwd=None):
     context = ctools.ToolContext(
         workspace=str(root),
         cwd=str(cwd or root),
@@ -268,8 +301,9 @@ def build_context(root, *, sandbox=SANDBOX_WORKSPACE_WRITE, mode="code",
     return context
 
 
-def build_gateway(root, *, mode="code", sandbox=SANDBOX_WORKSPACE_WRITE,
-                  responder=None, command_allowlist=None):
+def build_gateway(
+    root, *, mode="code", sandbox=SANDBOX_WORKSPACE_WRITE, responder=None, command_allowlist=None
+):
     context = build_context(root, sandbox=sandbox, mode=mode)
     specs = ctools.build_fs_tools(context) + ctools.build_command_tools(context)
     gateway = PermissionGateway(
@@ -295,8 +329,7 @@ def root(tmp_path):
     return directory
 
 
-def tools_by_name(root, *, sandbox=SANDBOX_WORKSPACE_WRITE, mode="code",
-                  gateway=None):
+def tools_by_name(root, *, sandbox=SANDBOX_WORKSPACE_WRITE, mode="code", gateway=None):
     context = build_context(root, sandbox=sandbox, mode=mode, gateway=gateway)
     specs = list(ctools.build_fs_tools(context))
     return {spec.name: spec for spec in specs}, context
@@ -306,10 +339,11 @@ def tools_by_name(root, *, sandbox=SANDBOX_WORKSPACE_WRITE, mode="code",
 # B1. ToolSpec 与注册表的构造期校验
 # ----------------------------------------------------------------------------
 
+
 def test_minimal_spec_defaults_are_conservative():
     spec = ctools.ToolSpec(name="x")
     assert spec.read_only is False
-    assert spec.requires_approval is True      # 未声明只读 -> 一律需要审批
+    assert spec.requires_approval is True  # 未声明只读 -> 一律需要审批
     assert spec.source == ctools.SOURCE_BUILTIN
     assert spec.modes == ctools.DEFAULT_TOOL_MODES
     assert spec.kind == ctools.TOOL_KIND_GENERIC
@@ -339,28 +373,39 @@ def test_bad_schema_type_is_rejected():
 
 def test_required_must_reference_declared_properties():
     with pytest.raises(ctools.ToolSchemaError) as excinfo:
-        ctools.ToolSpec(name="x", parameters={
-            "type": "object", "properties": {"a": {"type": "string"}},
-            "required": ["b"]})
+        ctools.ToolSpec(
+            name="x",
+            parameters={
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+                "required": ["b"],
+            },
+        )
     assert "b" in str(excinfo.value)
 
 
 def test_nested_schema_is_validated():
     with pytest.raises(ctools.ToolSchemaError):
-        ctools.ToolSpec(name="x", parameters={
+        ctools.ToolSpec(
+            name="x",
+            parameters={
+                "type": "object",
+                "properties": {"a": {"type": "object", "properties": {"b": {"type": "nope"}}}},
+            },
+        )
+    ctools.ToolSpec(
+        name="x",
+        parameters={
             "type": "object",
-            "properties": {"a": {"type": "object",
-                                 "properties": {"b": {"type": "nope"}}}}})
-    ctools.ToolSpec(name="x", parameters={
-        "type": "object",
-        "properties": {"a": {"type": "object", "properties": {"b": {"type": "string"}}}}})
+            "properties": {"a": {"type": "object", "properties": {"b": {"type": "string"}}}},
+        },
+    )
 
 
 def test_items_only_allowed_for_arrays():
     ctools.ToolSpec(name="x", parameters={"type": "array", "items": {"type": "string"}})
     with pytest.raises(ctools.ToolSchemaError):
-        ctools.ToolSpec(name="x", parameters={"type": "object",
-                                              "items": {"type": "string"}})
+        ctools.ToolSpec(name="x", parameters={"type": "object", "items": {"type": "string"}})
 
 
 def test_unknown_mode_is_rejected():
@@ -391,16 +436,18 @@ def test_duplicate_registration_raises_by_default():
     with pytest.raises(ctools.ToolDefinitionError) as excinfo:
         registry.register(ctools.ToolSpec(name="dup"))
     assert "重复" in str(excinfo.value)
-    registry.register(ctools.ToolSpec(name="dup", description="新版"),
-                      replace_existing=True)
+    registry.register(ctools.ToolSpec(name="dup", description="新版"), replace_existing=True)
     assert registry.get("dup").description == "新版"
 
 
 def test_registry_exports_openai_specs():
-    registry = ctools.ToolRegistry([
-        ctools.ToolSpec(name="a", description="d",
-                        parameters={"type": "object", "properties": {}}),
-    ])
+    registry = ctools.ToolRegistry(
+        [
+            ctools.ToolSpec(
+                name="a", description="d", parameters={"type": "object", "properties": {}}
+            ),
+        ]
+    )
     specs = registry.to_openai_specs()
     assert specs[0]["type"] == "function"
     assert specs[0]["function"]["name"] == "a"
@@ -429,6 +476,7 @@ def test_spec_without_handler_reports_readably():
 # B2. 结果有界化（P20）
 # ----------------------------------------------------------------------------
 
+
 def test_truncate_text_keeps_head_and_tail():
     text = "H" * 100 + "M" * 500 + "T" * 100
     result = ctools.truncate_text(text, 100)
@@ -444,15 +492,16 @@ def test_truncate_text_is_noop_under_limit():
 
 
 def test_registry_call_applies_result_limit():
-    registry = ctools.ToolRegistry([
-        ctools.ToolSpec(name="big", handler=lambda **kwargs: "x" * 500,
-                        result_limit=100)])
+    registry = ctools.ToolRegistry(
+        [ctools.ToolSpec(name="big", handler=lambda **kwargs: "x" * 500, result_limit=100)]
+    )
     assert "已省略" in registry.call("big", {})
 
 
 # ----------------------------------------------------------------------------
 # B3. 文件系统工具（R5 / R6）
 # ----------------------------------------------------------------------------
+
 
 def test_read_file_includes_line_numbers(root):
     tools, _context = tools_by_name(root)
@@ -487,7 +536,7 @@ def test_write_file_outside_workspace_is_denied(root, tmp_path):
     result = tools["write_file"].handler(path=str(outside), content="x")
     assert result.startswith("错误:")
     assert "拒绝写入" in result
-    assert not outside.exists()          # 关键：越界写入真的没有发生
+    assert not outside.exists()  # 关键：越界写入真的没有发生
 
 
 def test_read_only_sandbox_blocks_writes(root):
@@ -500,8 +549,7 @@ def test_read_only_sandbox_blocks_writes(root):
 def test_edit_file_requires_prior_read(root):
     """FS_NOT_OBSERVED：编辑前必须读取。"""
     tools, _context = tools_by_name(root)
-    result = tools["edit_file"].handler(path="note.md", old_text="正文",
-                                        new_text="内容")
+    result = tools["edit_file"].handler(path="note.md", old_text="正文", new_text="内容")
     assert "FS_NOT_OBSERVED" in result
     assert "正文内容" in (root / "note.md").read_text(encoding="utf-8")
 
@@ -509,8 +557,7 @@ def test_edit_file_requires_prior_read(root):
 def test_edit_file_succeeds_after_read(root):
     tools, _context = tools_by_name(root)
     tools["read_file"].handler(path="note.md")
-    result = tools["edit_file"].handler(path="note.md", old_text="正文内容",
-                                        new_text="新内容")
+    result = tools["edit_file"].handler(path="note.md", old_text="正文内容", new_text="新内容")
     assert "已替换" in result
     assert "新内容" in (root / "note.md").read_text(encoding="utf-8")
 
@@ -520,8 +567,7 @@ def test_edit_file_rejects_stale_observation(root):
     tools, _context = tools_by_name(root)
     tools["read_file"].handler(path="note.md")
     (root / "note.md").write_text("# 标题\n\n被别人改了\n", encoding="utf-8")
-    result = tools["edit_file"].handler(path="note.md", old_text="被别人改了",
-                                        new_text="改回来")
+    result = tools["edit_file"].handler(path="note.md", old_text="被别人改了", new_text="改回来")
     assert "FS_STALE_OBSERVATION" in result
     assert "被别人改了" in (root / "note.md").read_text(encoding="utf-8")
 
@@ -538,15 +584,17 @@ def test_edit_file_reports_no_match(root):
     tools, _context = tools_by_name(root)
     tools["read_file"].handler(path="note.md")
     assert "FS_NO_MATCH" in tools["edit_file"].handler(
-        path="note.md", old_text="不存在", new_text="x")
+        path="note.md", old_text="不存在", new_text="x"
+    )
 
 
 def test_edit_file_replace_all(root):
     tools, _context = tools_by_name(root)
     (root / "dup.txt").write_text("aaa\naaa\n", encoding="utf-8")
     tools["read_file"].handler(path="dup.txt")
-    result = tools["edit_file"].handler(path="dup.txt", old_text="aaa",
-                                        new_text="b", replace_all=True)
+    result = tools["edit_file"].handler(
+        path="dup.txt", old_text="aaa", new_text="b", replace_all=True
+    )
     assert "2 处" in result
     assert (root / "dup.txt").read_text(encoding="utf-8") == "b\nb\n"
 
@@ -586,11 +634,13 @@ def test_fs_tools_declare_expected_metadata(root):
 # B4. 受限命令执行（P22 / P23）
 # ----------------------------------------------------------------------------
 
+
 def test_run_command_defaults_to_deny_without_gateway(root):
     """网关不可用时白名单为空 -> 一律拒绝（默认 deny）。"""
     tools, _context = tools_by_name(root)
-    specs = {spec.name: spec for spec in ctools.build_command_tools(
-        build_context(root, mode="code"))}
+    specs = {
+        spec.name: spec for spec in ctools.build_command_tools(build_context(root, mode="code"))
+    }
     result = specs["run_command"].handler(command="dir")
     assert result.startswith("错误:")
     assert "COMMAND_MODE_DENIED" in result
@@ -615,7 +665,8 @@ def test_run_command_reports_nonzero_exit_as_structured_result(root):
     """非零退出码必须作为结构化结果返回，而不是抛异常。"""
     result = ctools.run_argv(
         [sys.executable, "-c", "import sys; sys.stderr.write('boom'); sys.exit(3)"],
-        cwd=str(root), timeout=30,
+        cwd=str(root),
+        timeout=30,
     )
     assert result["exit_code"] == 3
     assert result["timed_out"] is False
@@ -632,7 +683,8 @@ def test_run_command_never_raises_on_missing_executable(root):
 def test_run_command_timeout_is_structured(root):
     result = ctools.run_argv(
         [sys.executable, "-c", "import time; time.sleep(5)"],
-        cwd=str(root), timeout=0.5,
+        cwd=str(root),
+        timeout=0.5,
     )
     assert result["timed_out"] is True
     assert result["exit_code"] is None
@@ -642,7 +694,8 @@ def test_run_command_timeout_is_structured(root):
 def test_run_command_output_is_bounded(root):
     result = ctools.run_argv(
         [sys.executable, "-c", "print('x' * 50000)"],
-        cwd=str(root), output_limit=500,
+        cwd=str(root),
+        output_limit=500,
     )
     assert result["exit_code"] == 0
     assert "已省略" in result["stdout"]
@@ -650,7 +703,7 @@ def test_run_command_output_is_bounded(root):
 
 def test_run_argv_forbids_shell(root):
     with pytest.raises(ValueError):
-        ctools.run_argv(["echo", "hi"], shell=True)
+        ctools.run_argv(["echo", "hi"], shell=True)  # noqa: S604 - 故意传 shell=True 验证被拒绝
     source = Path(ctools.__file__).parent.joinpath("command.py").read_text(encoding="utf-8")
     assert "shell=False" in source
     # 唯一允许出现 "shell=True" 的地方是拒绝分支的报错文案
@@ -676,7 +729,8 @@ def test_env_is_visible_to_the_child_process(root):
     context.session_id = "sess-99"
     result = ctools.run_argv(
         [sys.executable, "-c", "import os; print(os.environ['ASTER_SESSION_ID'])"],
-        cwd=str(root), env=ctools.build_env(context),
+        cwd=str(root),
+        env=ctools.build_env(context),
     )
     assert "sess-99" in result["stdout"]
 
@@ -690,8 +744,7 @@ def test_run_command_allows_allowlisted_command(root):
     assert "COMMAND_DENIED" in result
 
     # 白名单显式追加后放行
-    gateway.configure(mode_command_allowlist={
-        "code": ("dir", "ls", "python"), "learn": ()})
+    gateway.configure(mode_command_allowlist={"code": ("dir", "ls", "python"), "learn": ()})
     result2 = specs["run_command"].handler(argv=[sys.executable, "--version"])
     assert "退出码" in result2
 
@@ -702,15 +755,32 @@ def test_run_command_respects_workspace_as_cwd(root):
     context = build_context(root, gateway=gateway)
     specs = {spec.name: spec for spec in ctools.build_command_tools(context)}
     result = specs["run_command"].handler(
-        argv=[sys.executable, "-c", "import os; print(os.getcwd())"])
+        argv=[sys.executable, "-c", "import os; print(os.getcwd())"]
+    )
     assert str(root) in result
 
 
 def test_render_result_distinguishes_timeout_and_failure():
-    failed = ctools.render_result({"argv": ["x"], "exit_code": 2, "timed_out": False,
-                                   "duration_s": 0.1, "stdout": "", "stderr": "e"})
-    timed = ctools.render_result({"argv": ["x"], "exit_code": None, "timed_out": True,
-                                  "duration_s": 0.1, "stdout": "", "stderr": ""})
+    failed = ctools.render_result(
+        {
+            "argv": ["x"],
+            "exit_code": 2,
+            "timed_out": False,
+            "duration_s": 0.1,
+            "stdout": "",
+            "stderr": "e",
+        }
+    )
+    timed = ctools.render_result(
+        {
+            "argv": ["x"],
+            "exit_code": None,
+            "timed_out": True,
+            "duration_s": 0.1,
+            "stdout": "",
+            "stderr": "",
+        }
+    )
     assert "非零退出码 2" in failed
     assert "命令超时" in timed
 
@@ -718,6 +788,7 @@ def test_render_result_distinguishes_timeout_and_failure():
 # ----------------------------------------------------------------------------
 # B5. web 工具（迁移不回归 + R18）
 # ----------------------------------------------------------------------------
+
 
 def test_six_backends_are_registered_after_migration():
     manager = ctools.SearchManager({"provider": "auto"})
@@ -731,14 +802,17 @@ def test_key_backends_are_preferred_when_key_present():
     assert names == ["tavily", "serper", "bing_api", "bocha", "bing_html", "ddg_html"]
 
 
-@pytest.mark.parametrize("provider, expected", [
-    ("tavily", ["tavily"]),
-    ("serper", ["serper"]),
-    ("bing_api", ["bing_api"]),
-    ("bocha", ["bocha"]),
-    ("bing_html", ["bing_html"]),
-    ("ddg_html", ["ddg_html"]),
-])
+@pytest.mark.parametrize(
+    "provider, expected",
+    [
+        ("tavily", ["tavily"]),
+        ("serper", ["serper"]),
+        ("bing_api", ["bing_api"]),
+        ("bocha", ["bocha"]),
+        ("bing_html", ["bing_html"]),
+        ("ddg_html", ["ddg_html"]),
+    ],
+)
 def test_explicit_provider_selects_single_backend(provider, expected):
     manager = ctools.SearchManager({"provider": provider, "api_key": "k"})
     assert [backend.name for backend in manager._backends] == expected
@@ -760,6 +834,7 @@ def test_ai_reexports_are_the_same_objects():
 
 def test_search_falls_back_to_the_next_backend():
     """第一个后端抛错时自动降级到下一个（既有行为）。"""
+
     class Boom(ctools.SearchBackend):
         name = "boom"
 
@@ -829,8 +904,11 @@ def test_web_search_tool_reports_failure_as_readable_text():
 
 
 def test_web_search_tool_marks_external_content_untrusted():
-    tool = make_web_search_tool(ScriptedSearchManager(results=[
-        {"title": "标题", "url": "https://e.com", "snippet": "摘要"}]))
+    tool = make_web_search_tool(
+        ScriptedSearchManager(
+            results=[{"title": "标题", "url": "https://e.com", "snippet": "摘要"}]
+        )
+    )
     result = tool("q")
     assert ctools.UNTRUSTED_NOTICE in result
     assert "标题" in result and "https://e.com" in result and "摘要" in result
@@ -870,11 +948,11 @@ def test_web_fetch_reports_fetch_failure_readably():
 # B6. 文档生成
 # ----------------------------------------------------------------------------
 
+
 def test_make_document_writes_markdown(root):
     context = build_context(root)
     specs = {spec.name: spec for spec in ctools.build_document_tools(context)}
-    result = specs["make_document"].handler(path="报告.md", title="周报",
-                                            content="正文")
+    result = specs["make_document"].handler(path="报告.md", title="周报", content="正文")
     assert "已生成文档" in result
     text = (root / "报告.md").read_text(encoding="utf-8")
     assert text.startswith("# 周报")
@@ -885,9 +963,10 @@ def test_make_document_supports_sections(root):
     context = build_context(root)
     specs = {spec.name: spec for spec in ctools.build_document_tools(context)}
     specs["make_document"].handler(
-        path="s.md", title="T",
-        sections=[{"heading": "一", "content": "内容1"},
-                  {"heading": "二", "content": "内容2"}])
+        path="s.md",
+        title="T",
+        sections=[{"heading": "一", "content": "内容1"}, {"heading": "二", "content": "内容2"}],
+    )
     text = (root / "s.md").read_text(encoding="utf-8")
     assert "## 一" in text and "## 二" in text
 
@@ -919,6 +998,7 @@ def test_make_document_respects_the_workspace_boundary(root, tmp_path):
 # B7. MCP 接入点（R17）
 # ----------------------------------------------------------------------------
 
+
 def test_no_mcp_server_means_no_tools_and_no_prompt_text():
     """没有 server 时工具列表与提示词文本都与现状一致（空）。"""
     registry = ctools.McpRegistry()
@@ -944,10 +1024,15 @@ def test_mcp_invalid_names_are_rejected():
 
 def test_mcp_tools_are_registered_with_the_expected_names():
     registry = ctools.McpRegistry()
-    ctools.register_mcp_server(registry, "fs", [
-        ctools.McpToolDescriptor(name="read", description="读文件",
-                                 parameters={"type": "object", "properties": {}}),
-    ])
+    ctools.register_mcp_server(
+        registry,
+        "fs",
+        [
+            ctools.McpToolDescriptor(
+                name="read", description="读文件", parameters={"type": "object", "properties": {}}
+            ),
+        ],
+    )
     specs = registry.tools()
     assert [spec.name for spec in specs] == ["mcp__fs__read"]
     assert specs[0].source == ctools.SOURCE_MCP
@@ -957,10 +1042,14 @@ def test_mcp_tools_are_registered_with_the_expected_names():
 def test_mcp_duplicate_tool_names_are_rejected():
     registry = ctools.McpRegistry()
     with pytest.raises(ctools.ToolDefinitionError):
-        ctools.register_mcp_server(registry, "fs", [
-            ctools.McpToolDescriptor(name="read"),
-            ctools.McpToolDescriptor(name="read"),
-        ])
+        ctools.register_mcp_server(
+            registry,
+            "fs",
+            [
+                ctools.McpToolDescriptor(name="read"),
+                ctools.McpToolDescriptor(name="read"),
+            ],
+        )
 
 
 def test_mcp_duplicate_server_is_rejected():
@@ -981,7 +1070,9 @@ def test_unconnected_mcp_tool_returns_readable_error():
 def test_connected_mcp_tool_dispatches_to_call_tool():
     registry = ctools.McpRegistry()
     ctools.register_mcp_server(
-        registry, "fs", [ctools.McpToolDescriptor(name="read", read_only=True)],
+        registry,
+        "fs",
+        [ctools.McpToolDescriptor(name="read", read_only=True)],
         call_tool=lambda tool, args: "内容:" + tool,
     )
     spec = registry.tools()[0]
@@ -1000,6 +1091,7 @@ def test_mcp_registers_into_the_main_registry():
 # ----------------------------------------------------------------------------
 # B8. 生活服务与音乐播放
 # ----------------------------------------------------------------------------
+
 
 def test_play_music_queues_a_local_file(root):
     audio = root / "song.mp3"
@@ -1052,18 +1144,24 @@ def test_system_info_reports_the_context(root):
 # B9. 默认注册表与分组开关
 # ----------------------------------------------------------------------------
 
+
 def test_default_registry_contains_all_groups():
     registry = ctools.build_default_registry({})
     names = registry.names()
-    for expected in ("get_current_time", "web_search", "read_file",
-                     "run_command", "make_document", "search_notes",
-                     "play_music"):
+    for expected in (
+        "get_current_time",
+        "web_search",
+        "read_file",
+        "run_command",
+        "make_document",
+        "search_notes",
+        "play_music",
+    ):
         assert expected in names
 
 
 def test_default_registry_respects_disabled_groups():
-    registry = ctools.build_default_registry(
-        {"tools": {"disabled": ["notes", "life"]}})
+    registry = ctools.build_default_registry({"tools": {"disabled": ["notes", "life"]}})
     assert "search_notes" not in registry.names()
     assert "play_music" not in registry.names()
     assert "read_file" in registry.names()
@@ -1071,8 +1169,14 @@ def test_default_registry_respects_disabled_groups():
 
 def test_default_registry_respects_enabled_opt_in():
     registry = ctools.build_default_registry({"tools": {"enabled": ["fs"]}})
-    assert registry.names() == ["read_file", "write_file", "edit_file",
-                                "list_dir", "glob_files", "grep_files"]
+    assert registry.names() == [
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list_dir",
+        "glob_files",
+        "grep_files",
+    ]
 
 
 def test_default_registry_can_opt_out_a_single_tool():
@@ -1098,6 +1202,7 @@ def test_kernel_specs_are_castorice_modes_specs(root):
 # ----------------------------------------------------------------------------
 # B10. ToolRuntime：绕过 harness 也必须过网关
 # ----------------------------------------------------------------------------
+
 
 def test_runtime_rechecks_permission_before_executing(root, tmp_path):
     """所有有副作用的调用都必须先过网关——即使绕开 harness 直接 call。"""

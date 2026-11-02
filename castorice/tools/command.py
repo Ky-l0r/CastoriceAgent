@@ -21,17 +21,17 @@ import subprocess
 import time
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
+from ..permissions import (
+    CommandDenied,
+    CommandPolicy,
+    command_argv,
+)
 from .base import (
     TOOL_KIND_COMMAND,
     ToolContext,
     ToolSpec,
     error_text,
     truncate_text,
-)
-from ..permissions import (
-    CommandDenied,
-    CommandPolicy,
-    command_argv,
 )
 
 #: 默认超时（秒）与输出上限（字符）
@@ -128,10 +128,8 @@ def run_argv(
         "exit_code": exit_code,
         "timed_out": timed_out,
         "duration_s": round(duration, 3),
-        "stdout": truncate_text(stdout, output_limit,
-                                note="…（标准输出过长，已省略中间部分）…"),
-        "stderr": truncate_text(stderr, output_limit,
-                                note="…（标准错误过长，已省略中间部分）…"),
+        "stdout": truncate_text(stdout, output_limit, note="…（标准输出过长，已省略中间部分）…"),
+        "stderr": truncate_text(stderr, output_limit, note="…（标准错误过长，已省略中间部分）…"),
     }
     payload["rendered"] = render_result(payload, timeout=timeout)
     return payload
@@ -145,8 +143,7 @@ def _decode(value: Any) -> str:
     return str(value)
 
 
-def render_result(payload: Mapping[str, Any],
-                  *, timeout: float = DEFAULT_TIMEOUT_S) -> str:
+def render_result(payload: Mapping[str, Any], *, timeout: float = DEFAULT_TIMEOUT_S) -> str:
     """把结构化结果渲染成给模型看的文本（明确区分超时与失败）。"""
     argv = " ".join(str(item) for item in (payload.get("argv") or []))
     if payload.get("timed_out"):
@@ -172,11 +169,17 @@ def render_result(payload: Mapping[str, Any],
 
 
 def make_run_command(context: ToolContext):
-    def run_command(command: Any = "", argv: Optional[Sequence[str]] = None,
-                    timeout: float = DEFAULT_TIMEOUT_S,
-                    cwd: Optional[str] = None) -> str:
-        tokens = [str(item) for item in argv] \
-            if isinstance(argv, (list, tuple)) and argv else command_argv({"command": command})
+    def run_command(
+        command: Any = "",
+        argv: Optional[Sequence[str]] = None,
+        timeout: float = DEFAULT_TIMEOUT_S,
+        cwd: Optional[str] = None,
+    ) -> str:
+        tokens = (
+            [str(item) for item in argv]
+            if isinstance(argv, (list, tuple)) and argv
+            else command_argv({"command": command})
+        )
         if not tokens:
             return error_text("必须提供 command（字符串）或 argv（列表）", "BAD_ARGUMENTS")
 
@@ -227,19 +230,21 @@ def build_command_tools(context: ToolContext) -> List[ToolSpec]:
                 "默认拒绝一切命令；命令不在白名单时返回可读错误。"
                 "非零退出码作为结构化结果返回，不算失败异常。"
             ),
-            parameters=_schema({
-                "command": {
-                    "type": "string",
-                    "description": "完整命令行（按空白切分，不走 shell 解析）",
-                },
-                "argv": {
-                    "type": "array",
-                    "description": "参数列表形式（优先于 command；更安全）",
-                    "items": {"type": "string"},
-                },
-                "timeout": {"type": "number", "description": "超时秒数，默认 30"},
-                "cwd": {"type": "string", "description": "工作目录，默认当前工作区"},
-            }),
+            parameters=_schema(
+                {
+                    "command": {
+                        "type": "string",
+                        "description": "完整命令行（按空白切分，不走 shell 解析）",
+                    },
+                    "argv": {
+                        "type": "array",
+                        "description": "参数列表形式（优先于 command；更安全）",
+                        "items": {"type": "string"},
+                    },
+                    "timeout": {"type": "number", "description": "超时秒数，默认 30"},
+                    "cwd": {"type": "string", "description": "工作目录，默认当前工作区"},
+                }
+            ),
             handler=make_run_command(context),
             read_only=False,
             requires_approval=True,

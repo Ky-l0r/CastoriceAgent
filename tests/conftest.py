@@ -23,9 +23,7 @@ def block_network(request, monkeypatch):
         return
 
     def _blocked(*args, **kwargs):
-        raise RuntimeError(
-            "测试期间禁止联网；确需联网请标注 @pytest.mark.allow_network"
-        )
+        raise RuntimeError("测试期间禁止联网；确需联网请标注 @pytest.mark.allow_network")
 
     monkeypatch.setattr(socket.socket, "connect", _blocked)
     monkeypatch.setattr(socket.socket, "connect_ex", _blocked)

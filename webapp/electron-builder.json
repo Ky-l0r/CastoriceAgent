@@ -11,6 +11,9 @@
     "dist/preload/**/*",
     "dist/renderer/**/*"
   ],
+  "asar": true,
+  "asarUnpack": [],
+  "compression": "store",
   "extraResources": [
     {
       "from": "electron/sidecar",

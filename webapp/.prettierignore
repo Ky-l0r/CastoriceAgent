@@ -1,0 +1,12 @@
+# 构建产物与依赖
+node_modules/
+dist/
+release/
+out/
+
+# 生成的资源与锁文件
+public/castorice-assets/
+pnpm-lock.yaml
+
+# 本地日志
+*.log

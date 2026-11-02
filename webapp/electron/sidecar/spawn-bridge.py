@@ -212,22 +212,29 @@ def _install_parent_watchdog() -> None:
         logger.info("stdin 不是管道，跳过 EOF 监控（依赖 PPID 轮询）")
 
 
-def _install_stall_dumper(threshold_s: float = 90.0) -> None:
-    """启动停滞时 dump 全部线程栈到 stderr。
+def _install_stall_dumper(threshold_s: float = 90.0) -> "threading.Event":
+    """启动停滞时 dump 全部线程栈到 stderr；返回「已就绪」事件。
 
     用途：用户报「启动很久没反应」时，stderr 里能直接看到卡在哪个调用
     （chromadb 初始化 / 网络 / 文件锁）。用 faulthandler 而不是外部
     profiler：进程内自省，不依赖用户安装额外工具。
+
+    就绪后必须 set() 这个事件：否则一次正常的长驻进程也会在 90 秒后
+    往日志里灌一整份线程栈，用户排查真问题时要先跳过这堆噪音。
     """
     import faulthandler
 
+    ready = threading.Event()
+
     def _arm() -> None:
-        time.sleep(threshold_s)
+        if ready.wait(threshold_s):
+            return                      # 已经正常就绪：不再 dump
         faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
         sys.stderr.write("[sidecar] 启动超过 %.0fs，已 dump 线程栈\n" % threshold_s)
         sys.stderr.flush()
 
     threading.Thread(target=_arm, name="stall-dumper", daemon=True).start()
+    return ready
 
 
 def _emit(payload: dict) -> None:
@@ -277,6 +284,27 @@ def _register_web_rpc_extensions(server, bot) -> None:
         # 兜底：找不到可扩展点时记日志（审批卡退化为仅 pending id 列表）。
         logging.getLogger("sidecar").warning(
             "approval.detail RPC 未注册（桥接层无可扩展路由）")
+
+
+def _resolve_image_dir(root: Path) -> Path:
+    """定位表情包 / 头像素材目录（打包布局与源码布局的差异点）。
+
+    两种布局：
+      * 源码运行：root 就是仓库根，素材在 <root>/Image；
+      * electron-builder 打包：root 是 resources/backend（代码），而
+        extraResources 把 Image 放在 resources/Image（backend 的同级），
+        即 <root>/../Image。
+
+    历史实现只认 <root>/Image，打包版因此一个表情包都扫不到——日志里是
+    「未在 ...resources/backend/Image 找到可用表情包」，界面上表现就是
+    「AI 不再发表情包」。这里按顺序探测，第一个存在即用；都不存在时返回
+    默认位置（让日志里的路径仍然有诊断价值）。
+    """
+    candidates = (root / "Image", root.parent / "Image")
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return candidates[0]
 
 
 def _start_napcat_channel(bot, root: Path):
@@ -366,7 +394,25 @@ def _preview_value(value, limit: int = 200) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
+def _force_utf8_stdio() -> None:
+    """把 stdout / stderr 固定成 UTF-8。
+
+    为什么必须做：Windows 下 Python 默认按控制台代码页（cp936）输出，
+    而 Electron 主进程按 UTF-8 解码 —— 用户看到的报错就是一片乱码
+    （「锟斤拷」），等于没有报错。这里显式切成 UTF-8，并让异常字符
+    降级成占位符而不是抛 UnicodeEncodeError。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:  # noqa: BLE001 - 改不动就保持原样
+                pass
+
+
 def main() -> int:
+    _force_utf8_stdio()
     logging.basicConfig(
         stream=sys.stderr,
         level=logging.INFO,
@@ -382,7 +428,7 @@ def main() -> int:
         _stall = float(os.environ.get("CASTORICE_STALL_DUMP") or 90.0)
     except ValueError:
         _stall = 90.0
-    _install_stall_dumper(_stall)
+    boot_done = _install_stall_dumper(_stall)
 
     _install_parent_watchdog()
 
@@ -417,17 +463,25 @@ def main() -> int:
             config_path=str(data / "config.yaml"),
             prompts_dir=str(root / "prompts"),
             chroma_dir=str(data / "database"),
-            image_dir=str(root / "Image"),
+            image_dir=str(_resolve_image_dir(root)),
             sessions_dir=str(data / "sessions"),
         )
-        # 构造耗时打日志：AI() 里含 chromadb 初始化与 embedding 模型
-        # 加载，是启动阶段最大的一段。没有这条日志时，用户报「启动慢」
-        # 只能靠猜是哪一步；有了它可以直接定位。
+        # 构造耗时打日志：没有这条日志时，用户报「启动慢」只能靠猜是哪一步。
+        # 第五期起 chromadb 改成惰性加载，这一步只剩配置解析与工具注册，
+        # 正常在 1 秒内完成；若这里又变慢，说明有人把重依赖挪回了模块顶部。
         _boot_logger.info("AI() 构造完成，耗时 %.2fs", time.time() - _t)
     except Exception as exc:  # noqa: BLE001 - fail-fast 通知壳层
         logging.getLogger("sidecar").error("bot 构造失败: %s", exc, exc_info=True)
+        boot_done.set()                 # 已失败：也不必再 dump 线程栈
         _emit({"event": "error", "message": f"初始化失败：{exc}"})
         return 1
+
+    # 配置文件自动修复提示（见 ai.ConfigManager._load_config）：
+    # 历史版本把渠道节写坏过，启动时已截断修复并另存备份——这件事必须
+    # 出现在日志里，否则用户不知道自己的文件被改过。
+    healed = str(getattr(getattr(bot, "config_manager", None), "self_healed", "") or "")
+    if healed:
+        logging.getLogger("sidecar").warning("%s", healed)
 
     approval_ok = _install_web_approval_responder(bot)
     logging.getLogger("sidecar").info(
@@ -450,6 +504,7 @@ def main() -> int:
         return 1
 
     _emit({"event": "ready", "port": port, "token": server.token})
+    boot_done.set()                     # 启动完成：关掉停滞诊断
     logging.getLogger("sidecar").info("bridge ready on 127.0.0.1:%d", port)
 
     stop = {"flag": False}

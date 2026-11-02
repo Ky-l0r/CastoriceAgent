@@ -16,6 +16,7 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
+from ..permissions import SandboxDenied
 from .base import (
     TOOL_KIND_WRITE,
     ToolContext,
@@ -23,7 +24,6 @@ from .base import (
     error_text,
 )
 from .fs import _atomic_write, _sha1_text
-from ..permissions import SandboxDenied
 
 #: 第一期支持的扩展名
 SUPPORTED_SUFFIXES = (".md", ".txt", ".markdown")
@@ -37,9 +37,14 @@ MAX_DOCUMENT_CHARS = 200_000
 def document_header(title: str, *, generated_at: Optional[datetime] = None) -> str:
     """Markdown 文档的统一抬头（便于用户事后辨认来源）。"""
     moment = generated_at or datetime.now()
-    return ("# " + str(title) + "\n\n"
-            + "> 由 CastoriceAgent 生成于 "
-            + moment.strftime("%Y-%m-%d %H:%M:%S") + "\n")
+    return (
+        "# "
+        + str(title)
+        + "\n\n"
+        + "> 由 CastoriceAgent 生成于 "
+        + moment.strftime("%Y-%m-%d %H:%M:%S")
+        + "\n"
+    )
 
 
 def make_document(context: ToolContext):
@@ -60,8 +65,11 @@ def make_document(context: ToolContext):
             suffix = DEFAULT_SUFFIX
         if suffix not in SUPPORTED_SUFFIXES:
             return error_text(
-                "不支持的文档格式 " + repr(suffix) + "：第一期只支持 "
-                + repr(list(SUPPORTED_SUFFIXES)) + "（.docx 留到第二期）",
+                "不支持的文档格式 "
+                + repr(suffix)
+                + "：第一期只支持 "
+                + repr(list(SUPPORTED_SUFFIXES))
+                + "（.docx 留到第二期）",
                 "UNSUPPORTED_FORMAT",
             )
 
@@ -72,8 +80,7 @@ def make_document(context: ToolContext):
 
         pieces: List[str] = []
         if append_header:
-            pieces.append(document_header(title or os.path.splitext(
-                os.path.basename(target))[0]))
+            pieces.append(document_header(title or os.path.splitext(os.path.basename(target))[0]))
         body = str(content or "")
         if body:
             pieces.append(body.rstrip() + "\n")
@@ -92,8 +99,11 @@ def make_document(context: ToolContext):
             return error_text("文档内容为空", "BAD_ARGUMENTS")
         if len(rendered) > MAX_DOCUMENT_CHARS:
             return error_text(
-                "文档过长（" + str(len(rendered)) + " 字符，上限 "
-                + str(MAX_DOCUMENT_CHARS) + "）：请拆分后再写",
+                "文档过长（"
+                + str(len(rendered))
+                + " 字符，上限 "
+                + str(MAX_DOCUMENT_CHARS)
+                + "）：请拆分后再写",
                 "DOCUMENT_TOO_LARGE",
             )
 
@@ -103,7 +113,7 @@ def make_document(context: ToolContext):
         except OSError as exc:
             return error_text("写入文档失败: " + str(exc), "FS_WRITE_FAILED")
         context.remember(target, stat, _sha1_text(rendered))
-        return ("已生成文档 " + target + "（" + str(len(rendered)) + " 字符）")
+        return "已生成文档 " + target + "（" + str(len(rendered)) + " 字符）"
 
     return make_document
 
@@ -127,27 +137,30 @@ def build_document_tools(context: ToolContext) -> List[ToolSpec]:
                 "生成一篇 Markdown 或纯文本文档并落盘（.md / .txt）。"
                 "适合把整理好的内容写成用户可以直接打开的交付物。"
             ),
-            parameters=_schema({
-                "path": {"type": "string", "description": "落盘路径，如 报告.md"},
-                "title": {"type": "string", "description": "文档标题（写入抬头）"},
-                "content": {"type": "string", "description": "正文（Markdown 文本）"},
-                "sections": {
-                    "type": "array",
-                    "description": "分节内容：[{heading, content}]",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "heading": {"type": "string"},
-                            "content": {"type": "string"},
+            parameters=_schema(
+                {
+                    "path": {"type": "string", "description": "落盘路径，如 报告.md"},
+                    "title": {"type": "string", "description": "文档标题（写入抬头）"},
+                    "content": {"type": "string", "description": "正文（Markdown 文本）"},
+                    "sections": {
+                        "type": "array",
+                        "description": "分节内容：[{heading, content}]",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "heading": {"type": "string"},
+                                "content": {"type": "string"},
+                            },
+                            "additionalProperties": False,
                         },
-                        "additionalProperties": False,
+                    },
+                    "append_header": {
+                        "type": "boolean",
+                        "description": "是否写入生成时间抬头，默认 true",
                     },
                 },
-                "append_header": {
-                    "type": "boolean",
-                    "description": "是否写入生成时间抬头，默认 true",
-                },
-            }, ["path"]),
+                ["path"],
+            ),
             handler=make_document(context),
             read_only=False,
             requires_approval=True,

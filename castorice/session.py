@@ -45,10 +45,20 @@ KIND_PROACTIVE = "proactive"
 KIND_CHECKPOINT = "checkpoint"
 KIND_STOP = "stop"
 
-ALL_KINDS = frozenset({
-    KIND_USER, KIND_ASSISTANT, KIND_TOOL_CALL, KIND_TOOL_RESULT, KIND_CONTEXT,
-    KIND_SANDBOX, KIND_MODE, KIND_PROACTIVE, KIND_CHECKPOINT, KIND_STOP,
-})
+ALL_KINDS = frozenset(
+    {
+        KIND_USER,
+        KIND_ASSISTANT,
+        KIND_TOOL_CALL,
+        KIND_TOOL_RESULT,
+        KIND_CONTEXT,
+        KIND_SANDBOX,
+        KIND_MODE,
+        KIND_PROACTIVE,
+        KIND_CHECKPOINT,
+        KIND_STOP,
+    }
+)
 
 #: 崩溃/取消后补全的占位结果（对齐 DSH 的 TOOL_OUTCOME_UNKNOWN）
 TOOL_OUTCOME_UNKNOWN = "TOOL_OUTCOME_UNKNOWN"
@@ -61,6 +71,7 @@ TOOL_OUTCOME_UNKNOWN_TEXT = "错误: 工具结果未知（TOOL_OUTCOME_UNKNOWN�
 # ----------------------------------------------------------------------------
 # 异常
 # ----------------------------------------------------------------------------
+
 
 class SessionError(RuntimeError):
     """会话层错误基类。"""
@@ -88,6 +99,7 @@ class CheckpointFailed(SessionError):
 # ----------------------------------------------------------------------------
 # 头与事件
 # ----------------------------------------------------------------------------
+
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
@@ -118,7 +130,7 @@ class SessionHeader:
         }
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "SessionHeader":
+    def from_dict(cls, data: Mapping[str, Any]) -> SessionHeader:
         return cls(
             session_id=str(data.get("session_id") or new_session_id()),
             mode=str(data.get("mode") or "chat"),
@@ -148,14 +160,17 @@ class SessionEvent:
         }
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "SessionEvent":
+    def from_dict(cls, data: Mapping[str, Any]) -> SessionEvent:
         version = data.get("v", 1)
         if not isinstance(version, int):
             raise SessionFormatError("会话事件版本号非法: " + repr(version))
         if version > FORMAT_VERSION:
             raise SessionFormatError(
-                "不支持的会话格式版本 v=" + str(version)
-                + "（本程序只支持 v<=" + str(FORMAT_VERSION) + "）；"
+                "不支持的会话格式版本 v="
+                + str(version)
+                + "（本程序只支持 v<="
+                + str(FORMAT_VERSION)
+                + "）；"
                 "为避免静默降级，拒绝加载该会话"
             )
         kind = data.get("kind")
@@ -185,6 +200,7 @@ def _writer_key(path: Path) -> str:
 # ----------------------------------------------------------------------------
 # 事件日志
 # ----------------------------------------------------------------------------
+
 
 class SessionStore:
     """append-only 会话事件日志 + 持久性屏障 + 冷读恢复。"""
@@ -223,7 +239,8 @@ class SessionStore:
         with _WRITER_LOCK:
             if self._writer_key in _ACTIVE_WRITERS:
                 raise SessionInUseError(
-                    "同一会话已有写入方: " + str(self.path)
+                    "同一会话已有写入方: "
+                    + str(self.path)
                     + "（对齐 dsh-session-persistence 的单写者约定）"
                 )
             _ACTIVE_WRITERS.add(self._writer_key)
@@ -249,15 +266,14 @@ class SessionStore:
 
     # ---- 写入 ----
 
-    def append(self, kind: str, payload: Optional[Mapping[str, Any]] = None,
-               **fields: Any) -> SessionEvent:
+    def append(
+        self, kind: str, payload: Optional[Mapping[str, Any]] = None, **fields: Any
+    ) -> SessionEvent:
         """追加一条事件并返回它；此时**尚未落盘**，落盘由 flush 保证。"""
         if self._closed:
             raise SessionError("会话已关闭: " + self.session_id)
         if kind not in ALL_KINDS:
-            raise ValueError(
-                "未知事件 kind " + repr(kind) + "，可选: " + repr(sorted(ALL_KINDS))
-            )
+            raise ValueError("未知事件 kind " + repr(kind) + "，可选: " + repr(sorted(ALL_KINDS)))
         merged: Dict[str, Any] = dict(payload or {})
         merged.update(fields)
         with self._lock:
@@ -283,7 +299,8 @@ class SessionStore:
         try:
             self.mode_dir.mkdir(parents=True, exist_ok=True)
             fd, tmp_name = tempfile.mkstemp(
-                prefix="." + self.session_id + ".", suffix=".tmp", dir=str(self.mode_dir))
+                prefix="." + self.session_id + ".", suffix=".tmp", dir=str(self.mode_dir)
+            )
             try:
                 with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
                     handle.write(json.dumps(self.header.to_dict(), ensure_ascii=False) + "\n")
@@ -314,7 +331,7 @@ class SessionStore:
         with _WRITER_LOCK:
             _ACTIVE_WRITERS.discard(self._writer_key)
 
-    def __enter__(self) -> "SessionStore":
+    def __enter__(self) -> SessionStore:
         return self
 
     def __exit__(self, *exc_info: Any) -> None:
@@ -352,7 +369,6 @@ class SessionStore:
             lines.pop()
 
         parsed: List[SessionEvent] = []
-        header_loaded = False
         truncate_to = 0
         consumed_lines = 0
         for index, line in enumerate(lines):
@@ -365,7 +381,6 @@ class SessionStore:
             except (UnicodeDecodeError, json.JSONDecodeError):
                 break  # 撕裂尾部：停止解析并截断
             if index == 0 and isinstance(data, dict) and "session_id" in data:
-                header_loaded = True
                 self.header = SessionHeader.from_dict(data)
                 self.mode = self.header.mode
                 consumed_lines = 1
@@ -400,7 +415,8 @@ class SessionStore:
         """为「有 tool_call 无 tool_result」的调用补 TOOL_OUTCOME_UNKNOWN 结果。"""
         results = {
             str(e.payload.get("call_id") or e.payload.get("id"))
-            for e in events if e.kind == KIND_TOOL_RESULT
+            for e in events
+            if e.kind == KIND_TOOL_RESULT
         }
         repaired = list(events)
         seq = max((e.seq for e in events), default=0)
@@ -411,25 +427,28 @@ class SessionStore:
             if call_id in results:
                 continue
             seq += 1
-            repaired.append(SessionEvent(
-                seq=seq,
-                kind=KIND_TOOL_RESULT,
-                payload={
-                    "call_id": call_id,
-                    "name": event.payload.get("name", ""),
-                    "outcome": TOOL_OUTCOME_UNKNOWN,
-                    "content": TOOL_OUTCOME_UNKNOWN_TEXT,
-                    "repaired": True,
-                },
-                at=_now(),
-            ))
+            repaired.append(
+                SessionEvent(
+                    seq=seq,
+                    kind=KIND_TOOL_RESULT,
+                    payload={
+                        "call_id": call_id,
+                        "name": event.payload.get("name", ""),
+                        "outcome": TOOL_OUTCOME_UNKNOWN,
+                        "content": TOOL_OUTCOME_UNKNOWN_TEXT,
+                        "repaired": True,
+                    },
+                    at=_now(),
+                )
+            )
             results.add(call_id)
         return repaired
 
     # ---- 派生模型历史（对齐 dsh-session 的「从日志派生」） ----
 
-    def derive_messages(self, system_prompt: Optional[str] = None,
-                        mode: Any = None) -> List[Dict[str, Any]]:
+    def derive_messages(
+        self, system_prompt: Optional[str] = None, mode: Any = None
+    ) -> List[Dict[str, Any]]:
         """把事件日志投影成 OpenAI messages。
 
         带来源的系统消息（context / mode / sandbox）以 user 消息追加的形式
@@ -448,10 +467,7 @@ class SessionStore:
                 # 有工具调用时 content 允许为 None（OpenAI 的助手消息约定）；
                 # 没有工具调用时必须给字符串，否则下游接口会直接报错。
                 content = payload.get("content")
-                if calls:
-                    content = content or None
-                else:
-                    content = content or ""
+                content = content or None if calls else content or ""
                 message: Dict[str, Any] = {"role": "assistant", "content": content}
                 if calls:
                     message["tool_calls"] = [dict(c) for c in calls]
@@ -463,11 +479,13 @@ class SessionStore:
                 call_id = payload.get("call_id") or payload.get("id")
                 if not call_id:
                     continue
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": call_id,
-                    "content": str(payload.get("content", "")),
-                })
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": str(payload.get("content", "")),
+                    }
+                )
             elif event.kind in (KIND_CONTEXT, KIND_MODE, KIND_SANDBOX, KIND_PROACTIVE):
                 text = payload.get("text") or payload.get("content") or ""
                 if text:
@@ -509,6 +527,7 @@ class SessionStore:
 # ----------------------------------------------------------------------------
 # 前端投影（UI 只读快照，不重放事件日志）
 # ----------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class ProjectionSnapshot:
@@ -575,11 +594,15 @@ class SessionProjection:
 
     # ---- 变更 ----
 
-    def update(self, *, sandbox_mode: Optional[str] = None,
-               stop_reason: Optional[str] = None,
-               tool_started: Optional[str] = None,
-               tool_finished: Optional[str] = None,
-               notify: bool = True) -> ProjectionSnapshot:
+    def update(
+        self,
+        *,
+        sandbox_mode: Optional[str] = None,
+        stop_reason: Optional[str] = None,
+        tool_started: Optional[str] = None,
+        tool_finished: Optional[str] = None,
+        notify: bool = True,
+    ) -> ProjectionSnapshot:
         if sandbox_mode is not None:
             self._sandbox_mode = sandbox_mode
         if stop_reason is not None:
@@ -607,7 +630,7 @@ class SessionProjection:
         for callback in list(self._callbacks):
             try:
                 callback(snapshot)
-            except Exception:  # pragma: no cover - 订阅者异常不得影响内核
+            except Exception:  # noqa: S112 - 订阅者异常不得影响内核（见上方约定）
                 continue
 
     # ---- 快照 ----

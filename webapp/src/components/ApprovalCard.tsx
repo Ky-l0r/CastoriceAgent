@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { AnimatePresence, motion } from "motion/react";
 import { ShieldAlert } from "lucide-react";
 import { useBridgeStore } from "../store/bridge-store";
 import { bridgeActions } from "../lib/bridge-binding";
@@ -37,21 +36,14 @@ export function ApprovalCard() {
   const progress = approval ? left / COUNTDOWN_S : 0;
 
   return (
-    <AnimatePresence>
+    <>
       {approval && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          className="fixed inset-0 z-50 flex items-center justify-center"
+        <div
+          className="ui-fade-in fixed inset-0 z-50 flex items-center justify-center"
           style={{ background: "var(--c-overlay-bg)" }}
         >
-          <motion.div
-            initial={{ scale: 0.94, y: 10 }}
-            animate={{ scale: 1, y: 0 }}
-            exit={{ scale: 0.96, opacity: 0 }}
-            transition={{ type: "spring", stiffness: 240, damping: 22 }}
-            className="w-[440px] max-w-[90vw] rounded-2xl border-2 shadow-2xl"
+          <div
+            className="ui-pop-in w-[440px] max-w-[90vw] rounded-2xl border-2 shadow-2xl"
             style={{
               background: "var(--c-approval-bg)",
               borderColor: "var(--c-approval-border)",
@@ -138,9 +130,9 @@ export function ApprovalCard() {
                 拒绝
               </button>
             </div>
-          </motion.div>
-        </motion.div>
+          </div>
+        </div>
       )}
-    </AnimatePresence>
+    </>
   );
 }

@@ -16,7 +16,6 @@ now 参数），不 sleep、不依赖墙钟推进。
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -25,28 +24,32 @@ from typing import Any, Dict, List, Optional, Tuple
 import pytest
 
 from castorice.channels.base import ChannelError, OutboundMessage
-from castorice.notify import DeliveryResult, DesktopNotifier, NotifierRegistry
+from castorice.notify import DeliveryResult
 from castorice.scheduler import (
     MAX_TITLE_LEN,
     ScheduleError,
-    ScheduleSpec,
-    ScheduleStore,
     Scheduler,
     SchedulerConfig,
     SchedulerTarget,
+    ScheduleSpec,
+    ScheduleStore,
     previous_occurrence,
 )
-
 
 # ----------------------------------------------------------------------------
 # 替身
 # ----------------------------------------------------------------------------
 
+
 class RecordingHarness:
     """HarnessLoop 替身：记录 run_stream 调用，产出固定事件流。"""
 
-    def __init__(self, reply: str = "到点啦，记得休息~",
-                 fail_flush: bool = False, error: Optional[Exception] = None):
+    def __init__(
+        self,
+        reply: str = "到点啦，记得休息~",
+        fail_flush: bool = False,
+        error: Optional[Exception] = None,
+    ):
         self.session = RecordingSession(fail_flush=fail_flush)
         self.calls: List[Dict[str, Any]] = []
         self.reply = reply
@@ -126,14 +129,14 @@ class RecordingQQChannel:
 
 
 def make_spec(**overrides: Any) -> ScheduleSpec:
-    base = dict(
-        id="s1",
-        title="喝水提醒",
-        triggers={"daily": "08:00"},
-        proactive_message="该喝水了",
-        targets=[SchedulerTarget(id="desktop:main")],
-        first_at="2026-01-01T08:00:00",
-    )
+    base = {
+        "id": "s1",
+        "title": "喝水提醒",
+        "triggers": {"daily": "08:00"},
+        "proactive_message": "该喝水了",
+        "targets": [SchedulerTarget(id="desktop:main")],
+        "first_at": "2026-01-01T08:00:00",
+    }
     base.update(overrides)
     return ScheduleSpec(**base)
 
@@ -147,6 +150,7 @@ def write_store(tmp_path: Path, *specs: ScheduleSpec) -> ScheduleStore:
 # ----------------------------------------------------------------------------
 # ① 只补发最近一次错过的时点
 # ----------------------------------------------------------------------------
+
 
 class TestOnlyLatestMissed:
     def test_three_missed_daily_points_deliver_once(self, tmp_path):
@@ -180,8 +184,7 @@ class TestOnlyLatestMissed:
         )
         store = write_store(tmp_path, spec)
         harness = RecordingHarness()
-        scheduler = Scheduler(bot=RecordingBot(harness), store=store,
-                              desktop=RecordingDesktop())
+        scheduler = Scheduler(bot=RecordingBot(harness), store=store, desktop=RecordingDesktop())
         now = first + timedelta(seconds=1900)  # 错过 600/1200/1800 三个时点
         results = scheduler.run_due(now=now)
         assert len(results) == 1
@@ -192,21 +195,18 @@ class TestOnlyLatestMissed:
         spec = make_spec(first_at="2026-06-01T08:00:00")
         store = write_store(tmp_path, spec)
         harness = RecordingHarness()
-        scheduler = Scheduler(bot=RecordingBot(harness), store=store,
-                              desktop=RecordingDesktop())
+        scheduler = Scheduler(bot=RecordingBot(harness), store=store, desktop=RecordingDesktop())
         now = datetime(2026, 6, 3, 9, 0, 0)
         assert len(scheduler.run_due(now=now)) == 1
-        assert scheduler.run_due(now=now) == []          # 同一时点不重复
+        assert scheduler.run_due(now=now) == []  # 同一时点不重复
         assert len(harness.calls) == 1
 
     def test_future_point_never_fires(self, tmp_path):
         """未来时点不触发（无错过即无补发）。"""
-        spec = make_spec(first_at="2099-01-01T08:00:00",
-                         triggers={"at": "2099-01-01T08:00:00"})
+        spec = make_spec(first_at="2099-01-01T08:00:00", triggers={"at": "2099-01-01T08:00:00"})
         store = write_store(tmp_path, spec)
         harness = RecordingHarness()
-        scheduler = Scheduler(bot=RecordingBot(harness), store=store,
-                              desktop=RecordingDesktop())
+        scheduler = Scheduler(bot=RecordingBot(harness), store=store, desktop=RecordingDesktop())
         assert scheduler.run_due(now=datetime(2026, 6, 3, 9, 0, 0)) == []
         assert harness.calls == []
 
@@ -216,8 +216,7 @@ class TestOnlyLatestMissed:
         store = write_store(tmp_path, spec)
         desktop = RecordingDesktop(ok=False, detail="托盘不可用")
         harness = RecordingHarness()
-        scheduler = Scheduler(bot=RecordingBot(harness), store=store,
-                              desktop=desktop)
+        scheduler = Scheduler(bot=RecordingBot(harness), store=store, desktop=desktop)
         now = datetime(2026, 6, 3, 9, 0, 0)
         results = scheduler.run_due(now=now)
         assert len(results) == 1 and not results[0].ok
@@ -228,15 +227,13 @@ class TestOnlyLatestMissed:
         spec = make_spec(first_at="2026-06-01T08:00:00")
         store = write_store(tmp_path, spec)
         harness = RecordingHarness()
-        scheduler = Scheduler(bot=RecordingBot(harness), store=store,
-                              desktop=RecordingDesktop())
+        scheduler = Scheduler(bot=RecordingBot(harness), store=store, desktop=RecordingDesktop())
         now = datetime(2026, 6, 3, 9, 0, 0)
         scheduler.run_due(now=now)
         # 模拟重启：重新加载同一文件
         store2 = ScheduleStore(tmp_path / "schedules.json")
         harness2 = RecordingHarness()
-        scheduler2 = Scheduler(bot=RecordingBot(harness2), store=store2,
-                               desktop=RecordingDesktop())
+        scheduler2 = Scheduler(bot=RecordingBot(harness2), store=store2, desktop=RecordingDesktop())
         assert scheduler2.run_due(now=now) == []
         assert harness2.calls == []
 
@@ -245,24 +242,28 @@ class TestOnlyLatestMissed:
 # ② 投递在 flush 之后才提交
 # ----------------------------------------------------------------------------
 
+
 class TestFlushBeforeDelivery:
     def test_flush_failure_means_no_delivery(self, tmp_path):
         """flush 失败 -> 不投递任何目标（约定②，fail-closed）。"""
-        spec = make_spec(targets=[
-            SchedulerTarget(id="desktop:main"),
-            SchedulerTarget(id="qq:12345"),
-        ])
+        spec = make_spec(
+            targets=[
+                SchedulerTarget(id="desktop:main"),
+                SchedulerTarget(id="qq:12345"),
+            ]
+        )
         store = write_store(tmp_path, spec)
         desktop = RecordingDesktop()
         qq = RecordingQQChannel()
         harness = RecordingHarness(fail_flush=True)
-        scheduler = Scheduler(bot=RecordingBot(harness), store=store,
-                              desktop=desktop, channels={"qq": qq})
+        scheduler = Scheduler(
+            bot=RecordingBot(harness), store=store, desktop=desktop, channels={"qq": qq}
+        )
         results = scheduler.run_due(now=datetime(2026, 6, 3, 9, 0, 0))
         assert len(results) == 1 and not results[0].ok
         assert "flush" in results[0].error
-        assert desktop.calls == []   # 桌面未投递
-        assert qq.sent == []         # QQ 未投递
+        assert desktop.calls == []  # 桌面未投递
+        assert qq.sent == []  # QQ 未投递
 
     def test_delivery_happens_after_flush(self, tmp_path):
         """正常路径：flush 调用发生在投递之前（事件顺序可查）。"""
@@ -287,14 +288,20 @@ class TestFlushBeforeDelivery:
                 order.append("deliver:qq")
                 return super().send(message)
 
-        spec = make_spec(targets=[
-            SchedulerTarget(id="desktop:main"),
-            SchedulerTarget(id="qq:12345"),
-        ])
+        spec = make_spec(
+            targets=[
+                SchedulerTarget(id="desktop:main"),
+                SchedulerTarget(id="qq:12345"),
+            ]
+        )
         store = write_store(tmp_path, spec)
         harness = OrderedHarness()
-        scheduler = Scheduler(bot=RecordingBot(harness), store=store,
-                              desktop=OrderedDesktop(), channels={"qq": OrderedQQ()})
+        scheduler = Scheduler(
+            bot=RecordingBot(harness),
+            store=store,
+            desktop=OrderedDesktop(),
+            channels={"qq": OrderedQQ()},
+        )
         scheduler.run_due(now=datetime(2026, 6, 3, 9, 0, 0))
         assert order[0].startswith("flush:")
         assert "deliver:desktop" in order and "deliver:qq" in order
@@ -308,14 +315,15 @@ class TestFlushBeforeDelivery:
 # ③ proactive 消息落盘可区分
 # ----------------------------------------------------------------------------
 
+
 class TestProactiveEventKind:
     def test_run_stream_source_schedule_records_proactive(self, tmp_path):
         """真实 harness 链路：合成触发语（source='proactive'）落盘后，
         恢复会话仍可与真实用户输入区分（payload.source 标记）。"""
         pytest.importorskip("yaml")
-        from castorice.session import KIND_PROACTIVE, KIND_USER, SessionStore
         from castorice.harness import HarnessLoop
         from castorice.modes import ModeRegistry
+        from castorice.session import KIND_USER, SessionStore
 
         root = tmp_path / "sessions"
         store = SessionStore(root, mode="chat", cwd=str(tmp_path))
@@ -323,21 +331,18 @@ class TestProactiveEventKind:
         events = list(harness.run_stream("该喝水了", source="proactive"))
         assert events[-1][0] == "done"
         store.flush(reason="test")
-        store.close()   # 单写者纪律：冷读恢复前先释放登记
+        store.close()  # 单写者纪律：冷读恢复前先释放登记
 
         # 冷读恢复：合成触发语可区分（内核语义：kind='user' +
         # payload.source='proactive'，与真实用户输入的裸 user 事件不同；
         # 事件流里 KIND_PROACTIVE 保留给显式主动通知事件）
-        reloaded = SessionStore(root, mode="chat",
-                                session_id=store.session_id)
+        reloaded = SessionStore(root, mode="chat", session_id=store.session_id)
         records = [(e.kind, dict(e.payload)) for e in reloaded.events()]
-        proactive_users = [p for k, p in records
-                           if p.get("source") == "proactive"]
+        proactive_users = [p for k, p in records if p.get("source") == "proactive"]
         assert proactive_users, "恢复的会话里必须能找回 proactive 标记"
         assert "该喝水了" in proactive_users[-1].get("content", "")
         # 真实用户消息（_prepare_history 追加的那条）不带 proactive 标记
-        plain_users = [p for k, p in records
-                       if k == KIND_USER and p.get("source") != "proactive"]
+        plain_users = [p for k, p in records if k == KIND_USER and p.get("source") != "proactive"]
         assert all("source" not in p for p in plain_users)
         reloaded.close()
         store.close()
@@ -345,9 +350,9 @@ class TestProactiveEventKind:
     def test_proactive_distinguishable_in_derive(self, tmp_path):
         """恢复会话投影：proactive 事件的内容能与普通 user 消息区分开。"""
         pytest.importorskip("yaml")
-        from castorice.session import KIND_PROACTIVE, KIND_USER, SessionStore
         from castorice.harness import HarnessLoop
         from castorice.modes import ModeRegistry
+        from castorice.session import KIND_USER, SessionStore
 
         root = tmp_path / "sessions"
         store = SessionStore(root, mode="chat", cwd=str(tmp_path))
@@ -364,23 +369,25 @@ class TestProactiveEventKind:
 # ④ 桌面 / QQ 双目标投递证据
 # ----------------------------------------------------------------------------
 
+
 class TestDualDelivery:
     def _scheduler(self, tmp_path, desktop, qq):
-        spec = make_spec(targets=[
-            SchedulerTarget(id="desktop:main"),
-            SchedulerTarget(id="qq:12345678"),
-        ], first_at="2026-06-01T08:00:00")
+        spec = make_spec(
+            targets=[
+                SchedulerTarget(id="desktop:main"),
+                SchedulerTarget(id="qq:12345678"),
+            ],
+            first_at="2026-06-01T08:00:00",
+        )
         store = write_store(tmp_path, spec)
         harness = RecordingHarness(reply="记得喝水")
         bot = RecordingBot(harness)
-        scheduler = Scheduler(bot=bot, store=store, desktop=desktop,
-                              channels={"qq": qq})
+        scheduler = Scheduler(bot=bot, store=store, desktop=desktop, channels={"qq": qq})
         return scheduler, harness
 
     def test_desktop_target_delivered_via_notifier(self, tmp_path):
         desktop = RecordingDesktop()
-        scheduler, harness = self._scheduler(
-            tmp_path, desktop, RecordingQQChannel(online=False))
+        scheduler, harness = self._scheduler(tmp_path, desktop, RecordingQQChannel(online=False))
         results = scheduler.run_due(now=datetime(2026, 6, 3, 9, 0, 0))
         assert results[0].ok
         assert len(desktop.calls) == 1
@@ -392,13 +399,12 @@ class TestDualDelivery:
 
     def test_qq_target_delivered_with_normalized_outbound(self, tmp_path):
         qq = RecordingQQChannel()
-        scheduler, _ = self._scheduler(
-            tmp_path, RecordingDesktop(), qq)
+        scheduler, _ = self._scheduler(tmp_path, RecordingDesktop(), qq)
         scheduler.run_due(now=datetime(2026, 6, 3, 9, 0, 0))
         assert len(qq.sent) == 1
         message = qq.sent[0]
         assert isinstance(message, OutboundMessage)
-        assert message.chat_id == "12345678"   # normalize_target 后的 id
+        assert message.chat_id == "12345678"  # normalize_target 后的 id
         assert message.text == "记得喝水"
 
     def test_both_targets_delivered_count(self, tmp_path):
@@ -423,12 +429,14 @@ class TestDualDelivery:
 # ⑤ 渠道离线降级：回退桌面 / 跳过+记日志
 # ----------------------------------------------------------------------------
 
+
 class TestOfflineFallback:
     def _spec(self) -> ScheduleSpec:
         return make_spec(
             id="s-offline",
             targets=[SchedulerTarget(id="qq:12345678", fallback="skip")],
-            first_at="2026-06-01T08:00:00")
+            first_at="2026-06-01T08:00:00",
+        )
 
     def test_skip_strategy_logs_and_skips(self, tmp_path, caplog):
         spec = self._spec()
@@ -436,16 +444,16 @@ class TestOfflineFallback:
         store = write_store(tmp_path, spec)
         qq = RecordingQQChannel(online=False)
         desktop = RecordingDesktop()
-        scheduler = Scheduler(bot=RecordingBot(RecordingHarness()), store=store,
-                              desktop=desktop, channels={"qq": qq})
+        scheduler = Scheduler(
+            bot=RecordingBot(RecordingHarness()), store=store, desktop=desktop, channels={"qq": qq}
+        )
         with caplog.at_level(logging.WARNING, logger="castorice.scheduler"):
             results = scheduler.run_due(now=datetime(2026, 6, 3, 9, 0, 0))
         assert results[0].ok
         assert results[0].deliveries == 0
         assert qq.sent == []
-        assert desktop.calls == []                     # 不回退
-        assert any("skip" in r.message.lower() or "跳过" in r.message
-                   for r in caplog.records)
+        assert desktop.calls == []  # 不回退
+        assert any("skip" in r.message.lower() or "跳过" in r.message for r in caplog.records)
 
     def test_desktop_strategy_falls_back(self, tmp_path):
         spec = self._spec()
@@ -453,12 +461,13 @@ class TestOfflineFallback:
         store = write_store(tmp_path, spec)
         qq = RecordingQQChannel(online=False)
         desktop = RecordingDesktop()
-        scheduler = Scheduler(bot=RecordingBot(RecordingHarness()), store=store,
-                              desktop=desktop, channels={"qq": qq})
+        scheduler = Scheduler(
+            bot=RecordingBot(RecordingHarness()), store=store, desktop=desktop, channels={"qq": qq}
+        )
         results = scheduler.run_due(now=datetime(2026, 6, 3, 9, 0, 0))
         assert results[0].ok
         assert results[0].deliveries == 1
-        assert len(desktop.calls) == 1                 # 回退到桌面
+        assert len(desktop.calls) == 1  # 回退到桌面
         assert desktop.calls[0][2] == "qq:12345678"
 
     def test_qq_send_failure_triggers_fallback_too(self, tmp_path):
@@ -468,8 +477,9 @@ class TestOfflineFallback:
         store = write_store(tmp_path, spec)
         qq = RecordingQQChannel(online=True, fail=True)
         desktop = RecordingDesktop()
-        scheduler = Scheduler(bot=RecordingBot(RecordingHarness()), store=store,
-                              desktop=desktop, channels={"qq": qq})
+        scheduler = Scheduler(
+            bot=RecordingBot(RecordingHarness()), store=store, desktop=desktop, channels={"qq": qq}
+        )
         results = scheduler.run_due(now=datetime(2026, 6, 3, 9, 0, 0))
         assert results[0].deliveries == 1
         assert len(desktop.calls) == 1
@@ -478,8 +488,9 @@ class TestOfflineFallback:
         """渠道未装配（channels={}）同样走降级策略。"""
         spec = self._spec()
         store = write_store(tmp_path, spec)
-        scheduler = Scheduler(bot=RecordingBot(RecordingHarness()), store=store,
-                              desktop=None, channels={})
+        scheduler = Scheduler(
+            bot=RecordingBot(RecordingHarness()), store=store, desktop=None, channels={}
+        )
         with caplog.at_level(logging.WARNING, logger="castorice.scheduler"):
             results = scheduler.run_due(now=datetime(2026, 6, 3, 9, 0, 0))
         assert results[0].ok and results[0].deliveries == 0
@@ -488,6 +499,7 @@ class TestOfflineFallback:
 # ----------------------------------------------------------------------------
 # ⑥ schedules.json 不进发布包
 # ----------------------------------------------------------------------------
+
 
 class TestNotInReleasePackage:
     def test_pack_script_whitelist_excludes_schedules(self):
@@ -499,13 +511,13 @@ class TestNotInReleasePackage:
         白名单语义不变——schedules.json（用户运行期数据）在总控脚本
         与后端打包脚本中都不出现，extraResources 白名单钉住合法来源。
         """
-        from pathlib import Path as _P
         import json as _json
+        from pathlib import Path as _P  # noqa: N814 - 函数内短别名，避免与局部变量冲突
+
         for name in ("打包.ps1", "打包后端.ps1"):
             text = (_P("scripts") / name).read_text(encoding="utf-8")
             assert "schedules" not in text
-        builder = _json.loads(
-            (_P("webapp") / "electron-builder.json").read_text(encoding="utf-8"))
+        builder = _json.loads((_P("webapp") / "electron-builder.json").read_text(encoding="utf-8"))
         sources = [
             str(entry.get("from", ""))
             for entry in builder.get("extraResources", [])
@@ -539,6 +551,7 @@ class TestNotInReleasePackage:
 # 校验与杂项
 # ----------------------------------------------------------------------------
 
+
 class TestValidation:
     def test_title_required_and_bounded(self):
         with pytest.raises(ScheduleError):
@@ -571,23 +584,25 @@ class TestValidation:
         spec = make_spec(enabled=False, first_at="2026-06-01T08:00:00")
         store = write_store(tmp_path, spec)
         harness = RecordingHarness()
-        scheduler = Scheduler(bot=RecordingBot(harness), store=store,
-                              desktop=RecordingDesktop())
+        scheduler = Scheduler(bot=RecordingBot(harness), store=store, desktop=RecordingDesktop())
         assert scheduler.run_due(now=datetime(2026, 6, 3, 9, 0, 0)) == []
         assert harness.calls == []
 
     def test_previous_occurrence_weekday_boundary(self):
         # 2026-06-03 是周三。weekly Monday（weekday=0）09:00 -> 上周一 6/1
         due = previous_occurrence(
-            "weekly", {"weekly": "09:00", "weekday": 0},
-            datetime(2026, 6, 3, 12, 0, 0))
+            "weekly", {"weekly": "09:00", "weekday": 0}, datetime(2026, 6, 3, 12, 0, 0)
+        )
         assert due == datetime(2026, 6, 1, 9, 0, 0)
 
     def test_scheduler_start_close_idempotent(self, tmp_path):
         store = write_store(tmp_path, make_spec())
-        scheduler = Scheduler(bot=RecordingBot(RecordingHarness()), store=store,
-                              desktop=RecordingDesktop(),
-                              config=SchedulerConfig(check_interval=0.05))
+        scheduler = Scheduler(
+            bot=RecordingBot(RecordingHarness()),
+            store=store,
+            desktop=RecordingDesktop(),
+            config=SchedulerConfig(check_interval=0.05),
+        )
         scheduler.start()
         scheduler.start()  # 幂等
         scheduler.close()

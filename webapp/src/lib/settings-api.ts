@@ -39,6 +39,27 @@ export const PROFILE_FIELD_HINTS: Record<ProfileField, string> = {
 
 export type ProfileData = Partial<Record<ProfileField, string | null>>;
 
+/**
+ * 聊天连发合并参数（ui_settings.json 的 chatBatch 视图）。
+ *
+ * 需求来源：「我发几条消息后，AI 在接下来的一段时间整理我都发了什么，
+ * 再一一回复」——合并成一次请求，模型能整体理解上下文再逐条回应；
+ * 同时避免连发时被 busy 拒绝后反复重发、模型反复回答。
+ */
+export interface ChatBatchSettings {
+  enabled: boolean;       // 是否启用连发合并（仅聊天模式）
+  threshold: number;      // 攒够几条进入整理窗口
+  windowSeconds: number;  // 整理窗口上限（默认 180 秒）
+  quietSeconds: number;   // 停止输入多久提前发送
+}
+
+export const CHAT_BATCH_DEFAULTS: ChatBatchSettings = {
+  enabled: true,
+  threshold: 3,
+  windowSeconds: 180,
+  quietSeconds: 8,
+};
+
 /** 外观偏好（ui_settings.json 的 Web 视图；theme 兼容旧值 system）。 */
 export interface AppearanceSettings {
   theme: ThemeMode;
@@ -126,6 +147,43 @@ export async function saveAppearance(patch: Partial<AppearanceSettings>): Promis
   }
 }
 
+/** 读取聊天连发合并参数（ui_settings.get 的 chatBatch 节 + 缺省合并）。 */
+export async function fetchChatBatch(): Promise<ChatBatchSettings> {
+  const { invoke } = bridgeActions();
+  try {
+    const result = (await invoke("ui_settings.get")) as {
+      settings?: Record<string, unknown>;
+    };
+    const raw = (result.settings ?? {}).chatBatch;
+    const node = (raw && typeof raw === "object")
+      ? (raw as Record<string, unknown>)
+      : {};
+    return {
+      enabled: node.enabled === undefined
+        ? CHAT_BATCH_DEFAULTS.enabled
+        : Boolean(node.enabled),
+      threshold: Math.round(clamp(node.threshold, 2, 10, CHAT_BATCH_DEFAULTS.threshold)),
+      windowSeconds: Math.round(
+        clamp(node.windowSeconds, 5, 600, CHAT_BATCH_DEFAULTS.windowSeconds)),
+      quietSeconds: Math.round(
+        clamp(node.quietSeconds, 2, 60, CHAT_BATCH_DEFAULTS.quietSeconds)),
+    };
+  } catch {
+    return { ...CHAT_BATCH_DEFAULTS };
+  }
+}
+
+/** 保存聊天连发合并参数（整节写回 chatBatch）。 */
+export async function saveChatBatch(settings: ChatBatchSettings): Promise<boolean> {
+  const { invoke } = bridgeActions();
+  try {
+    await invoke("ui_settings.set", { updates: { chatBatch: settings } });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** NapCat 渠道配置（config.yaml channels.napcat 节）。 */
 export interface NapcatConfig {
   configured: boolean;
@@ -176,26 +234,36 @@ export async function fetchNapcat(): Promise<NapcatConfig> {
   }
 }
 
-/** 保存 NapCat 配置（dotted 路径写回；白名单先转空则整节留空）。 */
-export async function saveNapcat(config: NapcatConfig): Promise<boolean> {
+/**
+ * 保存 NapCat 配置（整节写入 config.yaml 的 channels.napcat）。
+ *
+ * 为什么用 config.set_section 而不是 config.set：没配置过渠道时，
+ * config.yaml 里那一整节都是注释，逐键写会因为「键不存在」整批失败
+ * ——这正是用户看到的「保存失败：config.yaml 写回被拒绝」。
+ * 返回失败原因而不是布尔值，界面才能显示后端的真实报错。
+ */
+export async function saveNapcat(
+  config: NapcatConfig,
+): Promise<{ ok: boolean; error?: string }> {
   const { invoke } = bridgeActions();
   const toList = (text: string): string[] =>
     text.split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean);
   try {
-    await invoke("config.set", {
-      updates: {
-        "channels.napcat.url": config.url,
-        "channels.napcat.access_token": config.access_token,
-        "channels.napcat.allowed_senders": toList(config.allowed_senders),
-        "channels.napcat.allowed_groups": toList(config.allowed_groups),
-        "channels.napcat.default_chat_type": config.default_chat_type,
-        "channels.napcat.max_chunk_len": config.max_chunk_len,
-        "channels.napcat.report_tools": config.report_tools,
+    await invoke("config.set_section", {
+      section: "channels.napcat",
+      values: {
+        url: config.url,
+        access_token: config.access_token,
+        allowed_senders: toList(config.allowed_senders),
+        allowed_groups: toList(config.allowed_groups),
+        default_chat_type: config.default_chat_type,
+        max_chunk_len: config.max_chunk_len,
+        report_tools: config.report_tools,
       },
     });
-    return true;
-  } catch {
-    return false;
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String((e as Error).message || "保存失败") };
   }
 }
 

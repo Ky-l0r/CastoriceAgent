@@ -5,8 +5,6 @@
 因此在改造前先钉住语义。测试全程离线、不需要 API Key。
 """
 
-from pathlib import Path
-
 import pytest
 
 import ai
@@ -17,6 +15,7 @@ FALLBACK_MOODS = {"欣赏", "害羞", "疑问", "耍帅", "喜欢", "惊讶"}
 # ----------------------------------------------------------------------------
 # 夹具与工具
 # ----------------------------------------------------------------------------
+
 
 def make_catalog(tmp_path, names, subdir=True, **kwargs):
     """在临时目录里造一批表情包图片并建立目录对象"""
@@ -31,6 +30,7 @@ def make_catalog(tmp_path, names, subdir=True, **kwargs):
 # ============================================================================
 # EmojiCatalog.match_by_mood
 # ============================================================================
+
 
 def test_empty_text_returns_none(tmp_path):
     catalog = make_catalog(tmp_path, ["喜欢"])
@@ -174,6 +174,7 @@ def test_duplicate_names_share_one_label(tmp_path):
 # EmojiSession.should_append —— 概率
 # ============================================================================
 
+
 def test_disabled_never_appends():
     session = ai.EmojiSession(enabled=False, probability=1.0)
     session.mark_turn()
@@ -247,17 +248,18 @@ def test_probability_from_string_is_rejected_safely():
 # EmojiSession.should_append —— 冷却
 # ============================================================================
 
+
 def test_cooldown_blocks_turns_inside_window(monkeypatch):
     monkeypatch.setattr(ai.random, "random", lambda: 0.0)
     session = ai.EmojiSession(probability=0.5, cooldown_turns=2)
 
-    session.mark_turn()                      # turn 1
-    assert session.should_append() is True   # 第一轮必发
+    session.mark_turn()  # turn 1
+    assert session.should_append() is True  # 第一轮必发
     session.mark_sent()
 
-    session.mark_turn()                      # turn 2
+    session.mark_turn()  # turn 2
     assert session.should_append() is False
-    session.mark_turn()                      # turn 3
+    session.mark_turn()  # turn 3
     assert session.should_append() is False
 
 
@@ -269,7 +271,7 @@ def test_cooldown_expires_after_window(monkeypatch):
     for _ in range(2):
         session.mark_turn()
         session.should_append()
-    session.mark_turn()                      # turn 4：距上次发送隔了 3 轮
+    session.mark_turn()  # turn 4：距上次发送隔了 3 轮
     assert session.should_append() is True
 
 
@@ -300,6 +302,7 @@ def test_cooldown_only_counts_from_actual_send(monkeypatch):
 # ============================================================================
 # EmojiSession —— 会话上限与状态
 # ============================================================================
+
 
 def test_max_per_session_blocks_further_sends():
     session = ai.EmojiSession(probability=1.0, max_per_session=1)

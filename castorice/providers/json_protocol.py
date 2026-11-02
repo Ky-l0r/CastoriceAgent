@@ -24,7 +24,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-
 JSON_PROTOCOL_VERSION = 1
 
 #: 提示词里的约定说明（{tools} 处填入可见工具的 schema 摘要）
@@ -75,7 +74,9 @@ def render_tool_catalog(tool_specs: Sequence[Any]) -> str:
         if not name:
             continue
         lines.append("- " + name + "：" + description)
-        properties = (parameters or {}).get("properties") if isinstance(parameters, Mapping) else None
+        properties = (
+            (parameters or {}).get("properties") if isinstance(parameters, Mapping) else None
+        )
         if isinstance(properties, Mapping) and properties:
             detail = ", ".join(
                 str(key) + "(" + str((value or {}).get("type", "any")) + ")"
@@ -130,12 +131,11 @@ def _scan_balanced_objects(text: str) -> List[str]:
             if depth == 0:
                 start = index
             depth += 1
-        elif char == "}":
-            if depth > 0:
-                depth -= 1
-                if depth == 0 and start >= 0:
-                    results.append(text[start: index + 1])
-                    start = -1
+        elif char == "}" and depth > 0:
+            depth -= 1
+            if depth == 0 and start >= 0:
+                results.append(text[start : index + 1])
+                start = -1
     return results
 
 
@@ -160,13 +160,14 @@ def _coerce_calls(payload: Any) -> Optional[List[JsonToolCall]]:
         if not isinstance(item, Mapping):
             return None
         function = item.get("function") if isinstance(item.get("function"), Mapping) else None
-        name = str(
-            (function or {}).get("name") if function else item.get("name") or ""
-        ).strip()
+        name = str((function or {}).get("name") if function else item.get("name") or "").strip()
         if not name:
             return None
-        raw_arguments = (function or {}).get("arguments") if function \
+        raw_arguments = (
+            (function or {}).get("arguments")
+            if function
             else item.get("arguments", item.get("parameters"))
+        )
         if raw_arguments is None:
             arguments: Dict[str, Any] = {}
             raw_text = "{}"
@@ -179,10 +180,7 @@ def _coerce_calls(payload: Any) -> Optional[List[JsonToolCall]]:
                 loaded = json.loads(raw_text)
             except (ValueError, TypeError):
                 return None
-            if isinstance(loaded, Mapping):
-                arguments = dict(loaded)
-            else:
-                arguments = {"value": loaded}
+            arguments = dict(loaded) if isinstance(loaded, Mapping) else {"value": loaded}
         calls.append(JsonToolCall(name=name, arguments=arguments, raw_arguments=raw_text))
     return calls or None
 
@@ -228,7 +226,7 @@ def _remove_once(text: str, chunk: str) -> str:
     position = text.find(chunk)
     if position < 0:
         return text
-    return text[:position] + text[position + len(chunk):]
+    return text[:position] + text[position + len(chunk) :]
 
 
 def looks_like_json_protocol(text: Any) -> bool:

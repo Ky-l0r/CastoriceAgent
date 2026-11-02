@@ -30,7 +30,6 @@ from typing import (
     Tuple,
 )
 
-
 # ----------------------------------------------------------------------------
 # 沙箱模式词汇（封闭集合，对齐 dsh-sandbox-policy；故障安全默认 read-only）
 # ----------------------------------------------------------------------------
@@ -38,14 +37,19 @@ from typing import (
 SANDBOX_READ_ONLY = "read-only"
 SANDBOX_WORKSPACE_WRITE = "workspace-write"
 SANDBOX_DANGER_FULL_ACCESS = "danger-full-access"
-SANDBOX_MODES: FrozenSet[str] = frozenset({
-    SANDBOX_READ_ONLY, SANDBOX_WORKSPACE_WRITE, SANDBOX_DANGER_FULL_ACCESS,
-})
+SANDBOX_MODES: FrozenSet[str] = frozenset(
+    {
+        SANDBOX_READ_ONLY,
+        SANDBOX_WORKSPACE_WRITE,
+        SANDBOX_DANGER_FULL_ACCESS,
+    }
+)
 
 
 # ----------------------------------------------------------------------------
 # 工具描述符
 # ----------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class ToolSpec:
@@ -59,7 +63,8 @@ class ToolSpec:
     name: str
     description: str = ""
     parameters: Mapping[str, Any] = field(
-        default_factory=lambda: {"type": "object", "properties": {}})
+        default_factory=lambda: {"type": "object", "properties": {}}
+    )
     parallel_safe: bool = True
     result_limit: int = 8000
 
@@ -91,8 +96,7 @@ def coerce_tool(obj: Any) -> ToolSpec:
     return ToolSpec(
         name=str(name),
         description=str(getattr(obj, "description", "") or ""),
-        parameters=dict(
-            getattr(obj, "parameters", None) or {"type": "object", "properties": {}}),
+        parameters=dict(getattr(obj, "parameters", None) or {"type": "object", "properties": {}}),
         parallel_safe=bool(getattr(obj, "parallel_safe", True)),
         result_limit=int(getattr(obj, "result_limit", 8000)),
     )
@@ -101,6 +105,7 @@ def coerce_tool(obj: Any) -> ToolSpec:
 # ----------------------------------------------------------------------------
 # 工具可见性策略（对齐 ctx.tools.restrict）
 # ----------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class ToolPolicy:
@@ -135,13 +140,15 @@ class ToolPolicy:
 # 工作目录绑定
 # ----------------------------------------------------------------------------
 
+
 class WorkdirError(ValueError):
     """工作目录绑定失败。to_dict() 给出结构化错误（UI 可直接展示）。"""
 
     code = "WORKDIR_INVALID"
 
-    def __init__(self, message: str, *, path: Any = None, root: Any = None,
-                 code: Optional[str] = None) -> None:
+    def __init__(
+        self, message: str, *, path: Any = None, root: Any = None, code: Optional[str] = None
+    ) -> None:
         super().__init__(message)
         self.path = "" if path is None else str(path)
         self.root = "" if root is None else str(root)
@@ -207,14 +214,17 @@ class WorkdirPolicy:
     def __post_init__(self) -> None:
         if self.default_sandbox not in SANDBOX_MODES:
             raise ValueError(
-                "未知沙箱模式 " + repr(self.default_sandbox)
-                + "，可选: " + repr(sorted(SANDBOX_MODES))
+                "未知沙箱模式 "
+                + repr(self.default_sandbox)
+                + "，可选: "
+                + repr(sorted(SANDBOX_MODES))
             )
 
 
 # ----------------------------------------------------------------------------
 # 模式
 # ----------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class Mode:
@@ -258,8 +268,9 @@ DEFAULT_MODE_ORDER: Tuple[str, ...] = ("chat", "work", "code", "learn")
 FALLBACK_MODE = "chat"
 
 
-def resolve_mode_name(name: Any, known: Iterable[str] = DEFAULT_MODE_ORDER,
-                      *, default: str = FALLBACK_MODE) -> str:
+def resolve_mode_name(
+    name: Any, known: Iterable[str] = DEFAULT_MODE_ORDER, *, default: str = FALLBACK_MODE
+) -> str:
     """把 config.yaml 里的 mode 字段解析成合法模式名。
 
     未知值**回退到 chat**（失败安全：宁可少给工具，不可多给工具），
@@ -271,8 +282,9 @@ def resolve_mode_name(name: Any, known: Iterable[str] = DEFAULT_MODE_ORDER,
         if candidate in known_set:
             return candidate
     if default not in known_set:
-        raise ValueError("默认模式 " + repr(default) + " 不在已知模式中: "
-                         + repr(sorted(known_set)))
+        raise ValueError(
+            "默认模式 " + repr(default) + " 不在已知模式中: " + repr(sorted(known_set))
+        )
     return default
 
 
@@ -293,7 +305,7 @@ class ModeRegistry:
         sources: Optional[Mapping[str, Any]] = None,
     ) -> None:
         self._tools: Dict[str, ToolSpec] = {}
-        for raw in (tools or ()):
+        for raw in tools or ():
             spec = coerce_tool(raw)
             self._tools[spec.name] = spec
 
@@ -320,15 +332,18 @@ class ModeRegistry:
         if unknown:
             known = ", ".join(sorted(self._tools)) or "（当前没有任何已注册工具）"
             raise ValueError(
-                "模式 " + repr(mode.name) + " 声明了未注册的工具 "
-                + repr(unknown) + "；已知工具: " + known
+                "模式 "
+                + repr(mode.name)
+                + " 声明了未注册的工具 "
+                + repr(unknown)
+                + "；已知工具: "
+                + known
             )
         if not isinstance(mode.tool_allowlist, tuple):
             raise ValueError("模式 " + repr(mode.name) + " 的 tool_allowlist 必须是 tuple")
         if mode.name == "chat" and mode.tool_allowlist:
             raise ValueError(
-                "chat 模式的 tool_allowlist 必须为空元组："
-                "Chat 绝不向模型暴露任何工具（红线 E）"
+                "chat 模式的 tool_allowlist 必须为空元组：Chat 绝不向模型暴露任何工具（红线 E）"
             )
         return mode
 
@@ -447,7 +462,8 @@ class ModeRegistry:
         if not policy.bindable:
             raise WorkdirError(
                 "模式 " + repr(resolved.name) + " 不支持绑定工作目录",
-                path=path, code="WORKDIR_NOT_BINDABLE",
+                path=path,
+                code="WORKDIR_NOT_BINDABLE",
             )
         if path in (None, ""):
             self._roots.pop(resolved.name, None)
@@ -468,9 +484,12 @@ class ModeRegistry:
         if not inside:
             if not grant:
                 raise WorkdirError(
-                    "拒绝绑定越界路径 " + repr(normalized) + "：可信根为 "
+                    "拒绝绑定越界路径 "
+                    + repr(normalized)
+                    + "：可信根为 "
                     + repr(list(roots) or "（未配置可信根）"),
-                    path=normalized, code="WORKDIR_OUT_OF_ROOT",
+                    path=normalized,
+                    code="WORKDIR_OUT_OF_ROOT",
                 )
             # 用户显式授权：该目录成为新的可信根。追加而不是替换，
             # 已绑定的其它目录不受影响。
@@ -512,9 +531,7 @@ class ModeRegistry:
             roots.append(os.path.normpath(os.getcwd()))
         return tuple(roots)
 
-    def resolve_workdir_from_config(
-        self, mode: Any, config: Mapping[str, Any]
-    ) -> Optional[str]:
+    def resolve_workdir_from_config(self, mode: Any, config: Mapping[str, Any]) -> Optional[str]:
         """按 WorkdirPolicy.root_keys 从配置里取根目录（第一个非空值）。
 
         不抛异常：配置缺项或越界时返回 None，由调用方决定是否提示用户
@@ -545,24 +562,30 @@ class ModeRegistry:
 #: 通用工具（Work / Code 的基础集合）。t4 才会真正注册这些工具，这里先把它们
 #: 声明为「计划中的工具名」，使模式表在 t3 即可被静态验证，并在 t4 注册表就绪
 #: 时自动生效（注册表里的工具名是这里的子集）。
-PLANNED_TOOL_NAMES: FrozenSet[str] = frozenset({
-    "get_current_time",
-    "web_search",
-    "web_fetch",
-    "read_file",
-    "write_file",
-    "edit_file",
-    "list_dir",
-    "glob_files",
-    "grep_files",
-    "run_command",
-    "make_document",
-})
+PLANNED_TOOL_NAMES: FrozenSet[str] = frozenset(
+    {
+        "get_current_time",
+        "web_search",
+        "web_fetch",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list_dir",
+        "glob_files",
+        "grep_files",
+        "run_command",
+        "make_document",
+    }
+)
 
 #: Learn 专属的笔记工具
-NOTE_TOOL_NAMES: FrozenSet[str] = frozenset({
-    "search_notes", "read_note", "write_note",
-})
+NOTE_TOOL_NAMES: FrozenSet[str] = frozenset(
+    {
+        "search_notes",
+        "read_note",
+        "write_note",
+    }
+)
 
 #: 全部已知工具名（第一期）
 ALL_TOOLS: FrozenSet[str] = PLANNED_TOOL_NAMES | NOTE_TOOL_NAMES
@@ -574,18 +597,35 @@ ALL_TOOLS_DENIED: FrozenSet[str] = ALL_TOOLS
 CODE_DENIED: FrozenSet[str] = NOTE_TOOL_NAMES
 
 #: Learn 允许的工具（对齐 02-architecture.md 的 Learn 行）
-LEARN_ALLOWED: FrozenSet[str] = frozenset({
-    "get_current_time", "read_file", "list_dir", "glob_files", "grep_files",
-}) | NOTE_TOOL_NAMES
+LEARN_ALLOWED: FrozenSet[str] = (
+    frozenset(
+        {
+            "get_current_time",
+            "read_file",
+            "list_dir",
+            "glob_files",
+            "grep_files",
+        }
+    )
+    | NOTE_TOOL_NAMES
+)
 
 #: 只读命令白名单（t4 的 run_command 消费）
 READONLY_COMMANDS: Tuple[str, ...] = (
-    "dir", "ls", "type", "cat", "head", "tail", "findstr", "grep",
+    "dir",
+    "ls",
+    "type",
+    "cat",
+    "head",
+    "tail",
+    "findstr",
+    "grep",
 )
 
 
-def builtin_modes(known_tools: Optional[Iterable[str]] = None,
-                  *, tools: Optional[Iterable[str]] = None) -> List[Mode]:
+def builtin_modes(
+    known_tools: Optional[Iterable[str]] = None, *, tools: Optional[Iterable[str]] = None
+) -> List[Mode]:
     """构造第一期四个内置模式。
 
     known_tools（或别名 tools）给出**当前已注册**的工具名；这里按它裁剪模式

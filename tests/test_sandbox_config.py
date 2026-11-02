@@ -12,16 +12,13 @@ sandbox 与 default_sandbox、projection.snapshot().sandbox_mode 四者必须相
 """
 
 import json
-import os
 from pathlib import Path
 
 import pytest
 
 import ai
-import castorice.session as session_module
 from castorice.modes import SANDBOX_DANGER_FULL_ACCESS, SANDBOX_WORKSPACE_WRITE
 from castorice.permissions import AutoResponder
-
 
 # ----------------------------------------------------------------------------
 
@@ -29,8 +26,10 @@ from castorice.permissions import AutoResponder
 # 夹具：造一个完全离线、目录全在 tmp_path 的 AI 实例
 # ----------------------------------------------------------------------------
 
-def write_config(root: Path, *, mode: str = "chat", sandbox: str = "",
-                 mode_sandbox: str = "", extra: str = "") -> Path:
+
+def write_config(
+    root: Path, *, mode: str = "chat", sandbox: str = "", mode_sandbox: str = "", extra: str = ""
+) -> Path:
     lines = [
         "mode: " + mode,
         "active_provider: fake",
@@ -66,7 +65,8 @@ def scaffold(root: Path) -> None:
     (root / "prompts" / "base.md").write_text("BASE-PROMPT", encoding="utf-8")
     for section in ("work", "code", "learn"):
         (root / "prompts" / "modes" / (section + ".md")).write_text(
-            "SECTION-" + section, encoding="utf-8")
+            "SECTION-" + section, encoding="utf-8"
+        )
 
 
 @pytest.fixture
@@ -74,13 +74,18 @@ def make_bot(tmp_path):
     """返回 (构造器, 已释放实例列表)。用例结束自动 close，避免写者登记外泄。"""
     created = []
 
-    def _make(case: str = "case", *, mode: str = "chat", sandbox: str = "",
-              mode_sandbox: str = "", sessions_dir=None) -> ai.AI:
+    def _make(
+        case: str = "case",
+        *,
+        mode: str = "chat",
+        sandbox: str = "",
+        mode_sandbox: str = "",
+        sessions_dir=None,
+    ) -> ai.AI:
         root = tmp_path / case
         root.mkdir(parents=True, exist_ok=True)
         scaffold(root)
-        config = write_config(root, mode=mode, sandbox=sandbox,
-                              mode_sandbox=mode_sandbox)
+        config = write_config(root, mode=mode, sandbox=sandbox, mode_sandbox=mode_sandbox)
         bot = ai.AI(
             config_path=str(config),
             prompts_dir=str(root / "prompts"),
@@ -98,30 +103,38 @@ def make_bot(tmp_path):
             bot.close()
         except Exception:
             pass
+
+
 # ============================================================================
 # D. 沙箱单点权威：modes.<name>.sandbox 必须真实生效且三处一致
 # ============================================================================
 
-@pytest.mark.parametrize("global_sb, mode_sb, expected", [
-    # 全局缺省 + 模式级留空 -> 内置默认
-    ("", "", SANDBOX_WORKSPACE_WRITE),
-    # 只有全局 -> 全局
-    (SANDBOX_DANGER_FULL_ACCESS, "", SANDBOX_DANGER_FULL_ACCESS),
-    # 只有模式级 -> 模式级
-    ("", SANDBOX_DANGER_FULL_ACCESS, SANDBOX_DANGER_FULL_ACCESS),
-    # 两者都有 -> 更具体的模式级优先
-    (SANDBOX_WORKSPACE_WRITE, SANDBOX_DANGER_FULL_ACCESS,
-     SANDBOX_DANGER_FULL_ACCESS),
-    # 非法值一律回落到内置默认，不抛异常
-    ("yolo", "", SANDBOX_WORKSPACE_WRITE),
-    ("", "bogus", SANDBOX_WORKSPACE_WRITE),
-    ("yolo", "bogus", SANDBOX_WORKSPACE_WRITE),
-])
-def test_sandbox_resolution_priority(make_bot, global_sb, mode_sb, expected):
-    bot = make_bot(f"sb-{global_sb or 'empty'}-{mode_sb or 'empty'}",
-                   mode="code", sandbox=global_sb, mode_sandbox=mode_sb)
-    assert bot.resolve_sandbox("code") == expected
 
+@pytest.mark.parametrize(
+    "global_sb, mode_sb, expected",
+    [
+        # 全局缺省 + 模式级留空 -> 内置默认
+        ("", "", SANDBOX_WORKSPACE_WRITE),
+        # 只有全局 -> 全局
+        (SANDBOX_DANGER_FULL_ACCESS, "", SANDBOX_DANGER_FULL_ACCESS),
+        # 只有模式级 -> 模式级
+        ("", SANDBOX_DANGER_FULL_ACCESS, SANDBOX_DANGER_FULL_ACCESS),
+        # 两者都有 -> 更具体的模式级优先
+        (SANDBOX_WORKSPACE_WRITE, SANDBOX_DANGER_FULL_ACCESS, SANDBOX_DANGER_FULL_ACCESS),
+        # 非法值一律回落到内置默认，不抛异常
+        ("yolo", "", SANDBOX_WORKSPACE_WRITE),
+        ("", "bogus", SANDBOX_WORKSPACE_WRITE),
+        ("yolo", "bogus", SANDBOX_WORKSPACE_WRITE),
+    ],
+)
+def test_sandbox_resolution_priority(make_bot, global_sb, mode_sb, expected):
+    bot = make_bot(
+        f"sb-{global_sb or 'empty'}-{mode_sb or 'empty'}",
+        mode="code",
+        sandbox=global_sb,
+        mode_sandbox=mode_sb,
+    )
+    assert bot.resolve_sandbox("code") == expected
 
 
 def test_sandbox_is_consistent_across_all_read_points(make_bot):
@@ -130,9 +143,8 @@ def test_sandbox_is_consistent_across_all_read_points(make_bot):
     这正是「不得只改一处」的验收：只要有一个读取点还取内置默认值，
     就会出现「网关按配置跑、面板显示内置值」的更糟不一致。
     """
-    bot = make_bot("consistent", mode="code",
-                   sandbox=SANDBOX_DANGER_FULL_ACCESS, mode_sandbox="")
-    meta = [m for m in bot.available_modes() if m["name"] == "code"][0]
+    bot = make_bot("consistent", mode="code", sandbox=SANDBOX_DANGER_FULL_ACCESS, mode_sandbox="")
+    meta = next(m for m in bot.available_modes() if m["name"] == "code")
 
     values = {
         "gateway.path_policy.sandbox": bot.permissions.path_policy.sandbox,
@@ -149,11 +161,10 @@ def test_sandbox_config_change_is_visible_everywhere(make_bot):
     bot = make_bot("change", mode="code", sandbox="", mode_sandbox="")
     assert bot.permissions.path_policy.sandbox == SANDBOX_WORKSPACE_WRITE
 
-    bot.config_manager.set_values({("permissions", "sandbox_default"):
-                                   SANDBOX_DANGER_FULL_ACCESS})
+    bot.config_manager.set_values({("permissions", "sandbox_default"): SANDBOX_DANGER_FULL_ACCESS})
     bot._sync_permission_context()
 
-    meta = [m for m in bot.available_modes() if m["name"] == "code"][0]
+    meta = next(m for m in bot.available_modes() if m["name"] == "code")
     assert bot.permissions.path_policy.sandbox == SANDBOX_DANGER_FULL_ACCESS
     assert meta["sandbox"] == SANDBOX_DANGER_FULL_ACCESS
     assert meta["workdir_policy"]["default_sandbox"] == SANDBOX_DANGER_FULL_ACCESS
@@ -163,9 +174,12 @@ def test_sandbox_config_change_is_visible_everywhere(make_bot):
 
 def test_mode_level_sandbox_overrides_the_global_default(make_bot):
     """模式级配置比全局缺省更具体，必须由它胜出。"""
-    bot = make_bot("override", mode="code",
-                   sandbox=SANDBOX_WORKSPACE_WRITE,
-                   mode_sandbox=SANDBOX_DANGER_FULL_ACCESS)
+    bot = make_bot(
+        "override",
+        mode="code",
+        sandbox=SANDBOX_WORKSPACE_WRITE,
+        mode_sandbox=SANDBOX_DANGER_FULL_ACCESS,
+    )
     assert bot.resolve_sandbox("code") == SANDBOX_DANGER_FULL_ACCESS
     assert bot.permissions.path_policy.sandbox == SANDBOX_DANGER_FULL_ACCESS
 
@@ -184,18 +198,18 @@ def test_illegal_sandbox_values_fall_back_and_are_logged(make_bot, caplog):
 
     assert resolved == SANDBOX_WORKSPACE_WRITE
     assert bot.permissions.path_policy.sandbox == SANDBOX_WORKSPACE_WRITE
-    meta = [m for m in bot.available_modes() if m["name"] == "code"][0]
+    meta = next(m for m in bot.available_modes() if m["name"] == "code")
     assert meta["sandbox"] == SANDBOX_WORKSPACE_WRITE
     assert bot.projection.snapshot().sandbox_mode == SANDBOX_WORKSPACE_WRITE
-    assert any("不是合法沙箱模式" in record.message
-               for record in caplog.records), "非法配置必须留下 warning"
+    assert any("不是合法沙箱模式" in record.message for record in caplog.records), (
+        "非法配置必须留下 warning"
+    )
 
 
 def test_builtin_sandbox_is_still_reported(make_bot):
     """面板仍能读到模式的出厂默认值（用于区分「被配置覆盖」）。"""
-    bot = make_bot("builtin", mode="code",
-                   sandbox=SANDBOX_DANGER_FULL_ACCESS, mode_sandbox="")
-    meta = [m for m in bot.available_modes() if m["name"] == "code"][0]
+    bot = make_bot("builtin", mode="code", sandbox=SANDBOX_DANGER_FULL_ACCESS, mode_sandbox="")
+    meta = next(m for m in bot.available_modes() if m["name"] == "code")
     assert meta["workdir_policy"]["builtin_sandbox"] == SANDBOX_WORKSPACE_WRITE
     assert meta["workdir_policy"]["default_sandbox"] == SANDBOX_DANGER_FULL_ACCESS
 
@@ -222,7 +236,6 @@ def test_configured_sandbox_actually_gates_writes(make_bot, tmp_path):
     bot.set_approval_responder(AutoResponder("allow"))
 
     target = root / "x.txt"
-    result = bot._kernel_tools.call(
-        "write_file", {"path": str(target), "content": "x"})
+    result = bot._kernel_tools.call("write_file", {"path": str(target), "content": "x"})
     assert result.startswith("错误:")
     assert not target.exists(), "read-only 沙箱下写入竟然落盘了"

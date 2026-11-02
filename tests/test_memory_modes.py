@@ -61,6 +61,7 @@ REPOSITORY_DATABASE = PROJECT_ROOT / "database"
 # 夹具
 # ============================================================================
 
+
 @pytest.fixture
 def memory_root(tmp_path):
     """记忆落盘根目录（永远在临时目录里）"""
@@ -87,21 +88,26 @@ def _fingerprint(directory: Path):
     for path in sorted(directory.rglob("*")):
         if path.is_file():
             stat = path.stat()
-            records.append((path.relative_to(directory).as_posix(),
-                            stat.st_size, stat.st_mtime_ns))
+            records.append((path.relative_to(directory).as_posix(), stat.st_size, stat.st_mtime_ns))
     return tuple(records)
 
 
 def _engine(name, root, **kwargs):
     """在临时目录里造一个指定模式的引擎（不碰真实向量库）"""
-    return build_memory_engine({
-        "engine": name, "root": root, "index": InMemoryIndex(), **kwargs,
-    })
+    return build_memory_engine(
+        {
+            "engine": name,
+            "root": root,
+            "index": InMemoryIndex(),
+            **kwargs,
+        }
+    )
 
 
 # ============================================================================
 # 1. 模式切换与独立存储
 # ============================================================================
+
 
 def test_default_engine_is_embedding(tmp_path):
     assert DEFAULT_ENGINE == MODE_EMBEDDING
@@ -139,15 +145,19 @@ def test_unknown_engine_name_raises():
         build_memory_engine({"engine": "vector", "index": InMemoryIndex()})
 
 
-@pytest.mark.parametrize("name,folder", [
-    (MODE_WIKI, "wiki"),
-    (MODE_SUMMARY, "summary"),
-])
+@pytest.mark.parametrize(
+    "name,folder",
+    [
+        (MODE_WIKI, "wiki"),
+        (MODE_SUMMARY, "summary"),
+    ],
+)
 def test_file_modes_write_to_their_own_paths(memory_root, name, folder):
     engine = _engine(name, memory_root)
     engine.add_memory("写入一条内容")
     assert engine.path == memory_root / folder / (
-        "records.jsonl" if name == MODE_SUMMARY else "entries.jsonl")
+        "records.jsonl" if name == MODE_SUMMARY else "entries.jsonl"
+    )
     assert engine.path.exists(), "各模式的存储文件应当落在自己的目录下"
 
 
@@ -180,14 +190,18 @@ def test_modes_do_not_see_each_others_memories(memory_root):
 
 def test_engine_options_from_other_modes_are_ignored(memory_root):
     """配置里多写了别的模式的键，不应让引擎构造失败"""
-    engine = build_memory_engine({
-        "engine": "wiki", "root": memory_root, "index": InMemoryIndex(),
-        "collection_name": "memories", "summary_threshold": 7,
-    })
+    engine = build_memory_engine(
+        {
+            "engine": "wiki",
+            "root": memory_root,
+            "index": InMemoryIndex(),
+            "collection_name": "memories",
+            "summary_threshold": 7,
+        }
+    )
     assert engine.name == MODE_WIKI
     # `index` 也是 embedding 专属参数，对 wiki 同样应当被忽略而不是报错
-    assert set(engine.ignored_options) == {
-        "collection_name", "index", "summary_threshold"}
+    assert set(engine.ignored_options) == {"collection_name", "index", "summary_threshold"}
 
 
 def test_every_engine_and_adapter_carry_the_legacy_manager_surface(memory_root):
@@ -205,8 +219,7 @@ def test_every_engine_and_adapter_carry_the_legacy_manager_surface(memory_root):
         # collection 只有 embedding 可能拿到真实集合，其余模式为 None
         assert engine.collection is None or name == MODE_EMBEDDING
 
-    adapter = MemoryEngineAdapter.from_config(
-        {"engine": "wiki", "root": memory_root / "adapter"})
+    adapter = MemoryEngineAdapter.from_config({"engine": "wiki", "root": memory_root / "adapter"})
     for attribute in ("add_memory", "search_memories", "clear", "collection"):
         assert hasattr(adapter, attribute), f"门面缺少 {attribute}"
     assert isinstance(adapter.count, int)
@@ -215,8 +228,7 @@ def test_every_engine_and_adapter_carry_the_legacy_manager_surface(memory_root):
 
 def test_embedding_exposes_a_real_collection_like_old_manager(tmp_path):
     """`collection` 属性必须给出真实 Chroma 集合（对齐旧 MemoryManager）"""
-    engine = EmbeddingMemory(tmp_path / "database", "memories",
-                             path=tmp_path / "text")
+    engine = EmbeddingMemory(tmp_path / "database", "memories", path=tmp_path / "text")
     collection = engine.collection
     assert collection is not None
     assert collection.count() == 0
@@ -243,10 +255,10 @@ def test_each_mode_exposes_the_same_read_write_interface(memory_root):
 # 2. 旧 MemoryManager 语义保留 + 旧数据可读
 # ============================================================================
 
+
 def test_embedding_keeps_legacy_manager_semantics(memory_root):
     engine = _engine("embedding", memory_root)
-    memory_id = engine.add_memory("用户喜欢喝美式咖啡",
-                                  datetime(2024, 5, 1, 9, 30, 0))
+    memory_id = engine.add_memory("用户喜欢喝美式咖啡", datetime(2024, 5, 1, 9, 30, 0))
     assert isinstance(memory_id, str) and memory_id
     assert engine.count() == 1
     texts = engine.search_memories("咖啡")
@@ -296,14 +308,11 @@ def test_legacy_database_written_by_old_manager_is_readable(tmp_path):
     """既有 database/ 的形状：用旧 MemoryManager 写入，新引擎原样读出"""
     legacy_dir = tmp_path / "database"
     legacy = ai.MemoryManager(str(legacy_dir), "memories")
-    legacy.add_memory("用户是程序员，主要写 Python",
-                      datetime(2024, 3, 1, 9, 30, 0))
-    legacy.add_memory("用户养了一只叫团子的猫",
-                      datetime(2024, 3, 2, 10, 0, 0))
+    legacy.add_memory("用户是程序员，主要写 Python", datetime(2024, 3, 1, 9, 30, 0))
+    legacy.add_memory("用户养了一只叫团子的猫", datetime(2024, 3, 2, 10, 0, 0))
     assert legacy.count == 2
 
-    engine = EmbeddingMemory(legacy_dir, "memories",
-                             path=tmp_path / "text")
+    engine = EmbeddingMemory(legacy_dir, "memories", path=tmp_path / "text")
     assert engine.count() == 2
     texts = engine.search_memories("用户")
     assert texts, "旧库里的数据必须能被新引擎读出"
@@ -315,20 +324,17 @@ def test_legacy_database_written_by_old_manager_is_readable(tmp_path):
 
 def test_writes_from_new_engine_are_readable_by_old_manager(tmp_path):
     """反向兼容：新引擎写入的数据，旧 MemoryManager 必须照读（同一个集合）"""
-    engine = EmbeddingMemory(tmp_path / "database", "memories",
-                             path=tmp_path / "text")
+    engine = EmbeddingMemory(tmp_path / "database", "memories", path=tmp_path / "text")
     engine.add_memory("新引擎写入的记忆", datetime(2024, 4, 4, 4, 4, 4))
 
     legacy = ai.MemoryManager(str(tmp_path / "database"), "memories")
     assert legacy.count == 1
-    assert legacy.search_memories("记忆") == [
-        "[2024-04-04 04:04:04] 新引擎写入的记忆"]
+    assert legacy.search_memories("记忆") == ["[2024-04-04 04:04:04] 新引擎写入的记忆"]
 
 
 def test_clear_empties_the_real_chroma_collection(tmp_path):
     """`clear()` 必须真的清空 Chroma 集合（旧 MemoryManager.clear 的语义）"""
-    engine = EmbeddingMemory(tmp_path / "database", "memories",
-                             path=tmp_path / "text")
+    engine = EmbeddingMemory(tmp_path / "database", "memories", path=tmp_path / "text")
     engine.add_memory("第一条")
     engine.add_memory("第二条")
     assert engine.collection.count() == 2
@@ -361,8 +367,9 @@ def test_legacy_metadata_shape_is_preserved(tmp_path):
     assert metadata["weekday"] == "Friday"
 
 
-@pytest.mark.skipif(not (REPOSITORY_DATABASE / "chroma.sqlite3").exists(),
-                    reason="仓库里没有既有 database/")
+@pytest.mark.skipif(
+    not (REPOSITORY_DATABASE / "chroma.sqlite3").exists(), reason="仓库里没有既有 database/"
+)
 def test_existing_repository_database_is_readable(tmp_path):
     """仓库既有 database/ 的真实数据：复制到临时目录后读出（仓库零写入）"""
     copied = tmp_path / "database"
@@ -403,8 +410,7 @@ def test_repository_database_stays_readable_after_copy(tmp_path):
 
 def test_entries_without_timestamp_keep_plain_text():
     """旧数据没有记录时间时不加前缀（与既有实现一致）"""
-    entry = MemoryEntry(content="没有时间的记忆", timestamp="", created_at="",
-                        updated_at="")
+    entry = MemoryEntry(content="没有时间的记忆", timestamp="", created_at="", updated_at="")
     assert entry.with_prefix() == "没有时间的记忆"
     stamped = MemoryEntry(content="有时间的记忆", timestamp="2024-01-02 03:04:05")
     assert stamped.with_prefix() == "[2024-01-02 03:04:05] 有时间的记忆"
@@ -414,6 +420,7 @@ def test_entries_without_timestamp_keep_plain_text():
 # 3. Worldbook：条目字段、匹配与上下文注入
 # ============================================================================
 
+
 @pytest.fixture
 def worldbook(tmp_path):
     return Worldbook(tmp_path / "memory")
@@ -421,8 +428,10 @@ def worldbook(tmp_path):
 
 def test_worldbook_entry_carries_required_fields(worldbook):
     entry = worldbook.add(
-        "称呼偏好", "用户希望被叫「小雨」",
-        trigger_words=["叫我", "称呼"], priority=7,
+        "称呼偏好",
+        "用户希望被叫「小雨」",
+        trigger_words=["叫我", "称呼"],
+        priority=7,
     )
     assert entry.trigger_words == ("叫我", "称呼")
     assert entry.priority == 7
@@ -468,8 +477,7 @@ def test_worldbook_orders_by_hits_then_priority(worldbook):
 
 def test_worldbook_match_respects_limit(worldbook):
     for index in range(6):
-        worldbook.add(f"条目{index}", f"内容{index}", trigger_words=["猫"],
-                      priority=index)
+        worldbook.add(f"条目{index}", f"内容{index}", trigger_words=["猫"], priority=index)
     assert len(worldbook.match("猫")) == 5
     assert len(worldbook.match("猫", limit=2)) == 2
     assert worldbook.match("猫", limit=0) == []
@@ -484,6 +492,7 @@ def test_worldbook_match_is_side_effect_free(worldbook):
 
 
 # --- t14 F5：match() 必须是纯查询 ---
+
 
 def test_worldbook_match_is_idempotent(worldbook):
     """反复调用结果完全一致，且不推进 revision、不改状态"""
@@ -537,8 +546,7 @@ def test_worldbook_relevant_is_what_keeps_entry_alive(worldbook):
     used = worldbook.add("常用设定", "常被用到的设定", trigger_words=["常用"])
     worldbook.archive(used.id, stamp="2024-01-01 00:00:00")
     # 归档条目默认不参与检索，显式带上 include_archived 才算「真的取用了」
-    worldbook.relevant("常用", include_archived=True,
-                       moment=datetime(2024, 5, 31, 0, 0, 0))
+    worldbook.relevant("常用", include_archived=True, moment=datetime(2024, 5, 31, 0, 0, 0))
 
     assert worldbook.get(used.id).access_count == 1
     assert worldbook.evict_stale(now=now, idle_days=30, max_access=1) == []
@@ -611,6 +619,7 @@ def test_worldbook_clear_removes_all(tmp_path):
 # 4. Worldbook 生命周期：归档 / 恢复 / 淘汰
 # ============================================================================
 
+
 def test_archive_hides_entry_but_keeps_data(worldbook):
     entry = worldbook.add("旧设定", "已经过时的设定", trigger_words=["旧"])
     archived = worldbook.archive(entry.id, reason="用户改口了")
@@ -652,8 +661,7 @@ def test_evict_stale_only_targets_archived_and_untouched(worldbook):
 
     for entry in (stale, used):
         worldbook.archive(entry.id, stamp="2024-01-01 00:00:00")
-    worldbook.update(used.id, {"access_count": 5,
-                               "last_accessed": "2024-01-01 00:00:00"})
+    worldbook.update(used.id, {"access_count": 5, "last_accessed": "2024-01-01 00:00:00"})
     worldbook.update(active.id, {"last_accessed": "2020-01-01 00:00:00"})
 
     victims = worldbook.evict_stale(now=now, idle_days=30, max_access=1)
@@ -725,6 +733,7 @@ def test_worldbook_corrupt_file_falls_back_to_empty(tmp_path):
 # 5. summary 滚动摘要与确定性压缩
 # ============================================================================
 
+
 def test_summary_appends_records_without_compressing(memory_root):
     memory = SummaryMemory(memory_root, threshold=3)
     memory.add_memory("第一条")
@@ -746,8 +755,7 @@ def test_summary_triggers_on_count_threshold(memory_root):
 
 
 def test_summary_triggers_on_char_threshold(memory_root):
-    memory = SummaryMemory(memory_root, threshold=1000, char_threshold=5,
-                           keep_recent=0)
+    memory = SummaryMemory(memory_root, threshold=1000, char_threshold=5, keep_recent=0)
     memory.add_memory("这是一段比较长的内容")
     assert memory.pending_chars() >= 5
     assert memory.should_compress() is True
@@ -777,8 +785,7 @@ def test_summary_compression_keeps_originals_as_shadowed(memory_root):
     archived = memory.archived()
     assert len(archived) == 2, "原文不能物理删除"
     assert all(entry.forgotten for entry in archived)
-    assert all(entry.metadata.get("compressed_into") == summary.id
-               for entry in archived)
+    assert all(entry.metadata.get("compressed_into") == summary.id for entry in archived)
     assert memory.count() == 1, "压缩后只算摘要一条"
 
 
@@ -808,8 +815,9 @@ def test_summary_compression_keeps_unfinished_markers(memory_root):
 
 
 def test_summary_never_truncates_unfinished_items(memory_root):
-    memory = SummaryMemory(memory_root, threshold=1, keep_recent=0,
-                           keep_chars=10, summary_char_limit=10)
+    memory = SummaryMemory(
+        memory_root, threshold=1, keep_recent=0, keep_chars=10, summary_char_limit=10
+    )
     unfinished = "[TODO] " + "很重要的待办事项" * 30
     memory.add_memory(unfinished)
     memory.add_memory("普通的一条很长的对话内容" * 30)
@@ -827,11 +835,12 @@ def test_summary_compression_collapses_duplicates(memory_root):
 
 
 def test_summary_bounds_long_history(memory_root):
-    memory = SummaryMemory(memory_root, threshold=10, keep_recent=2,
-                           summary_char_limit=300)
+    memory = SummaryMemory(memory_root, threshold=10, keep_recent=2, summary_char_limit=300)
     for index in range(200):
-        memory.add_memory(f"第 {index} 条：这是一段比较长的对话内容，用来撑大历史。",
-                          timestamp="2024-01-01 10:00:00")
+        memory.add_memory(
+            f"第 {index} 条：这是一段比较长的对话内容，用来撑大历史。",
+            timestamp="2024-01-01 10:00:00",
+        )
     rounds = 0
     while memory.should_compress() and rounds < 100:
         assert memory.compress() is not None
@@ -839,8 +848,11 @@ def test_summary_bounds_long_history(memory_root):
     assert rounds > 0
     assert len(memory.summaries()) < 40, "压缩必须真的减少条数，而不是越压越多"
     for summary in memory.summaries():
-        body = [line for line in summary.content.splitlines()
-                if line and not line.startswith("【未完成事项】")]
+        body = [
+            line
+            for line in summary.content.splitlines()
+            if line and not line.startswith("【未完成事项】")
+        ]
         assert len("\n".join(body)) < 1200, "单条摘要必须有界"
     assert memory.count() < 60, "压缩后总条数必须远小于原始 200 条"
 
@@ -870,9 +882,11 @@ def test_summary_clear_removes_everything(memory_root):
 # 6. 条目、存储层与工具函数
 # ============================================================================
 
+
 def test_memory_entry_round_trip():
-    entry = MemoryEntry(content="正文", title="标题", tags=["a", "b"],
-                        timestamp="2024-01-01 00:00:00")
+    entry = MemoryEntry(
+        content="正文", title="标题", tags=["a", "b"], timestamp="2024-01-01 00:00:00"
+    )
     restored = MemoryEntry.from_dict(entry.to_dict())
     assert restored.to_dict() == entry.to_dict()
 
@@ -953,7 +967,7 @@ def test_unfinished_marker_detection_rejects_ordinary_text(text):
     if match is not None:
         # 仅当文本里存在包裹/冒号等合法结构时才允许非裸写命中；
         # 这批反例全是普通叙述，命中必须发生在行首（裸写分支本身）。
-        assert match.start() == 0 or text[:match.start()].splitlines()[-1].strip() == "", (
+        assert match.start() == 0 or text[: match.start()].splitlines()[-1].strip() == "", (
             f"句中命中裸写标记: {text!r} -> {match.group(0)!r}"
         )
 
@@ -970,9 +984,10 @@ def test_todo_list_sentence_is_not_unfinished():
     assert match is None, f"裸写分支不应命中叙述中的 todo: {match and match.group(0)!r}"
 
 
-
-@pytest.mark.parametrize("marker", ["TODO 未完成：", "未完成：", "待办：", "[TODO] ",
-                                    "[未完成] ", "【待办】", "待办 ", "- TODO "])
+@pytest.mark.parametrize(
+    "marker",
+    ["TODO 未完成：", "未完成：", "待办：", "[TODO] ", "[未完成] ", "【待办】", "待办 ", "- TODO "],
+)
 def test_summary_keeps_bare_unfinished_text_byte_for_byte(memory_root, marker):
     """t14 F4 核心断言：800+ 字符的未完成事项压缩后**字符数不变**
 
@@ -984,8 +999,9 @@ def test_summary_keeps_bare_unfinished_text_byte_for_byte(memory_root, marker):
     unfinished = marker + body
     assert len(unfinished) > 800, "用例本身要制造超长输入"
 
-    memory = SummaryMemory(memory_root, threshold=1, keep_recent=0,
-                           keep_chars=100, summary_char_limit=200)
+    memory = SummaryMemory(
+        memory_root, threshold=1, keep_recent=0, keep_chars=100, summary_char_limit=200
+    )
     memory.add_memory(unfinished)
     memory.add_memory("另一条普通内容" * 200)
     summary = memory.compress(force=True)
@@ -1048,8 +1064,7 @@ def test_jsonl_store_tolerates_torn_tail(tmp_path):
 
 def test_jsonl_store_rejects_broken_middle_line(tmp_path):
     path = tmp_path / "records.jsonl"
-    path.write_text('{"id": "1", "v": 1}\n坏了\n{"id": "3", "v": 1}\n',
-                    encoding="utf-8")
+    path.write_text('{"id": "1", "v": 1}\n坏了\n{"id": "3", "v": 1}\n', encoding="utf-8")
     with pytest.raises(MemoryStoreError):
         read_jsonl(path)
 
@@ -1089,19 +1104,23 @@ def test_build_index_uses_explicit_backend(tmp_path):
 # 7. 门面：MemoryEngineAdapter（写问答 / 组装上下文）
 # ============================================================================
 
+
 def test_adapter_builds_engine_from_config(memory_root):
     adapter = MemoryEngineAdapter.from_config(
-        {"engine": "wiki", "root": memory_root, "worldbook_enabled": True})
+        {"engine": "wiki", "root": memory_root, "worldbook_enabled": True}
+    )
     assert adapter.engine_name == MODE_WIKI
     adapter.remember_conversation("你好", "你好呀")
     assert adapter.engine.count() == 1
     assert adapter.engine.get(adapter.engine.entries()[0].id).content == (
-        "用户: 你好\n助理: 你好呀")
+        "用户: 你好\n助理: 你好呀"
+    )
 
 
 def test_adapter_worldbook_flag_follows_config(memory_root):
     adapter = MemoryEngineAdapter.from_config(
-        {"engine": "wiki", "root": memory_root, "worldbook_enabled": False})
+        {"engine": "wiki", "root": memory_root, "worldbook_enabled": False}
+    )
     adapter.worldbook.add("偏好", "用户喜欢猫", trigger_words=["猫"])
     assert adapter.context("猫").worldbook == ()
 
@@ -1147,13 +1166,14 @@ def test_adapter_context_is_empty_without_hits(memory_root):
 
 def test_adapter_delegates_legacy_methods(memory_root):
     adapter = MemoryEngineAdapter.from_config(
-        {"engine": "embedding", "root": memory_root, "index": InMemoryIndex()})
+        {"engine": "embedding", "root": memory_root, "index": InMemoryIndex()}
+    )
     adapter.engine.add_memory("用户喜欢喝美式咖啡")
     assert adapter.search_memories("咖啡")[0].endswith("用户喜欢喝美式咖啡")
     assert adapter.count == 1
     assert adapter.collection is None
     with pytest.raises(AttributeError):
-        adapter.this_method_does_not_exist
+        adapter.this_method_does_not_exist  # noqa: B018 - 故意访问不存在的属性
 
 
 def test_adapter_clear_all_wipes_memory_and_worldbook(memory_root):
@@ -1167,15 +1187,14 @@ def test_adapter_clear_all_wipes_memory_and_worldbook(memory_root):
 
 def test_adapter_compress_only_applies_to_summary(memory_root):
     summary_adapter = MemoryEngineAdapter.from_config(
-        {"engine": "summary", "root": memory_root / "s",
-         "summary_threshold": 2, "keep_recent": 0})
+        {"engine": "summary", "root": memory_root / "s", "summary_threshold": 2, "keep_recent": 0}
+    )
     summary_adapter.remember("内容一")
     summary_adapter.remember("内容二")
     assert summary_adapter.should_compress() is True
     assert summary_adapter.compress() is not None
 
-    wiki_adapter = MemoryEngineAdapter.from_config(
-        {"engine": "wiki", "root": memory_root / "w"})
+    wiki_adapter = MemoryEngineAdapter.from_config({"engine": "wiki", "root": memory_root / "w"})
     wiki_adapter.remember("内容")
     assert wiki_adapter.should_compress() is False
     assert wiki_adapter.compress() is None
@@ -1184,6 +1203,7 @@ def test_adapter_compress_only_applies_to_summary(memory_root):
 # ============================================================================
 # 8. 隔离性：测试不得写进仓库
 # ============================================================================
+
 
 def test_memory_writes_stay_under_explicitly_configured_roots(tmp_path, monkeypatch):
     """记忆写入必须落在显式配置的 root 下——即便从仓库根启动。
@@ -1200,9 +1220,13 @@ def test_memory_writes_stay_under_explicitly_configured_roots(tmp_path, monkeypa
     monkeypatch.chdir(PROJECT_ROOT)
     for name in ENGINE_NAMES:
         root = tmp_path / name
-        adapter = MemoryEngineAdapter.from_config({
-            "engine": name, "root": root, "index": InMemoryIndex(),
-        })
+        adapter = MemoryEngineAdapter.from_config(
+            {
+                "engine": name,
+                "root": root,
+                "index": InMemoryIndex(),
+            }
+        )
         adapter.remember_conversation("你好", "你好呀")
         adapter.worldbook.add("偏好", "用户喜欢猫", trigger_words=["猫"])
         assert adapter.context("猫").text, "装配好的门面必须可用"
@@ -1239,25 +1263,30 @@ def test_adapter_worldbook_never_lands_in_the_working_directory(tmp_path, monkey
     monkeypatch.chdir(working_directory)
 
     for name in ENGINE_NAMES:
-        adapter = MemoryEngineAdapter.from_config({
-            "engine": name, "root": tmp_path / name, "index": InMemoryIndex(),
-        })
+        adapter = MemoryEngineAdapter.from_config(
+            {
+                "engine": name,
+                "root": tmp_path / name,
+                "index": InMemoryIndex(),
+            }
+        )
         adapter.worldbook.add("偏好", "用户喜欢猫", trigger_words=["猫"])
 
         assert adapter.worldbook.path.exists()
         assert tmp_path in adapter.worldbook.path.resolve().parents, (
             f"{name}: Worldbook 落到了 {adapter.worldbook.path}"
         )
-    assert not (working_directory / "memory").exists(), (
-        "Worldbook 不得写进调用方的当前工作目录"
-    )
+    assert not (working_directory / "memory").exists(), "Worldbook 不得写进调用方的当前工作目录"
 
 
 def test_embedding_root_matches_its_text_layer_parent(tmp_path):
     """embedding 的 root 语义与 wiki/summary 一致：文本层目录的父目录"""
-    engine = EmbeddingMemory(tmp_path / "database", "memories",
-                             path=tmp_path / "memory" / "memories_text",
-                             index=InMemoryIndex())
+    engine = EmbeddingMemory(
+        tmp_path / "database",
+        "memories",
+        path=tmp_path / "memory" / "memories_text",
+        index=InMemoryIndex(),
+    )
     assert Path(engine.root) == tmp_path / "memory"
     assert Path(engine.path) == tmp_path / "memory" / "memories_text"
 
@@ -1265,9 +1294,13 @@ def test_embedding_root_matches_its_text_layer_parent(tmp_path):
 def test_adapter_from_config_places_worldbook_under_configured_root(tmp_path):
     """显式配置 root 时，Worldbook 必须落在该 root 下"""
     for name in ENGINE_NAMES:
-        adapter = MemoryEngineAdapter.from_config({
-            "engine": name, "root": tmp_path / name, "index": InMemoryIndex(),
-        })
+        adapter = MemoryEngineAdapter.from_config(
+            {
+                "engine": name,
+                "root": tmp_path / name,
+                "index": InMemoryIndex(),
+            }
+        )
         assert Path(adapter.worldbook.path) == tmp_path / name / "worldbook.json"
 
 

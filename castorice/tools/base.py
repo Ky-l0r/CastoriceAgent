@@ -19,7 +19,6 @@ DSH defineTool 的元数据与**构造期校验**（对齐 dsh-tools 的 restric
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass, field, replace
 from typing import (
@@ -31,13 +30,11 @@ from typing import (
     List,
     Mapping,
     Optional,
-    Sequence,
     Tuple,
 )
 
-from ..permissions import PermissionGateway
 from ..modes import ToolSpec as KernelToolSpec
-
+from ..permissions import PermissionGateway
 
 # ----------------------------------------------------------------------------
 # 词汇
@@ -58,24 +55,46 @@ TOOL_KIND_NETWORK = "network"
 TOOL_KIND_WRITE = "write"
 TOOL_KIND_COMMAND = "command"
 TOOL_KIND_ACTION = "action"
-TOOL_KINDS: FrozenSet[str] = frozenset({
-    TOOL_KIND_GENERIC, TOOL_KIND_NETWORK, TOOL_KIND_WRITE,
-    TOOL_KIND_COMMAND, TOOL_KIND_ACTION,
-})
+TOOL_KINDS: FrozenSet[str] = frozenset(
+    {
+        TOOL_KIND_GENERIC,
+        TOOL_KIND_NETWORK,
+        TOOL_KIND_WRITE,
+        TOOL_KIND_COMMAND,
+        TOOL_KIND_ACTION,
+    }
+)
 
 #: 工具结果默认上限（字符）；超过走 head/tail 截断 + 省略说明
 DEFAULT_RESULT_LIMIT = 20_000
 
 #: parameters 只允许的 JSON Schema 关键字（R11：受支持子集）
-ALLOWED_SCHEMA_KEYS: FrozenSet[str] = frozenset({
-    "type", "properties", "required", "additionalProperties",
-    "description", "enum", "items", "default", "title",
-})
+ALLOWED_SCHEMA_KEYS: FrozenSet[str] = frozenset(
+    {
+        "type",
+        "properties",
+        "required",
+        "additionalProperties",
+        "description",
+        "enum",
+        "items",
+        "default",
+        "title",
+    }
+)
 
 #: 允许的 JSON 类型
-ALLOWED_SCHEMA_TYPES: FrozenSet[str] = frozenset({
-    "object", "array", "string", "number", "integer", "boolean", "null",
-})
+ALLOWED_SCHEMA_TYPES: FrozenSet[str] = frozenset(
+    {
+        "object",
+        "array",
+        "string",
+        "number",
+        "integer",
+        "boolean",
+        "null",
+    }
+)
 
 #: 统一的可读错误前缀（harness 据此把结果标记为失败，但**不抛异常**）
 ERROR_PREFIX = "错误: "
@@ -97,6 +116,7 @@ class ToolSchemaError(ToolDefinitionError):
 # 文本工具
 # ----------------------------------------------------------------------------
 
+
 def error_text(message: Any, code: str = "") -> str:
     """构造统一的错误结果文本（不抛异常，轮次继续）。
 
@@ -110,8 +130,7 @@ def error_text(message: Any, code: str = "") -> str:
     return text
 
 
-def truncate_text(text: Any, limit: int = DEFAULT_RESULT_LIMIT,
-                  *, note: str = "") -> str:
+def truncate_text(text: Any, limit: int = DEFAULT_RESULT_LIMIT, *, note: str = "") -> str:
     """head/tail 截断 + 明确的省略说明（对齐 P20 的有界结果）。"""
     content = "" if text is None else str(text)
     if limit <= 0 or len(content) <= limit:
@@ -127,21 +146,28 @@ def truncate_text(text: Any, limit: int = DEFAULT_RESULT_LIMIT,
 # schema 校验（R11）
 # ----------------------------------------------------------------------------
 
+
 def validate_parameters(schema: Any, *, where: str = "parameters") -> None:
     """校验 parameters 是受支持的 JSON Schema 子集，否则抛 ToolSchemaError。"""
     if not isinstance(schema, Mapping):
         raise ToolSchemaError(where + " 必须是 dict（JSON Schema 对象）")
-    unknown = sorted(set(str(key) for key in schema) - ALLOWED_SCHEMA_KEYS)
+    unknown = sorted({str(key) for key in schema} - ALLOWED_SCHEMA_KEYS)
     if unknown:
         raise ToolSchemaError(
-            where + " 含有不受支持的 JSON Schema 关键字 " + repr(unknown)
-            + "；只允许 " + repr(sorted(ALLOWED_SCHEMA_KEYS))
+            where
+            + " 含有不受支持的 JSON Schema 关键字 "
+            + repr(unknown)
+            + "；只允许 "
+            + repr(sorted(ALLOWED_SCHEMA_KEYS))
         )
     schema_type = schema.get("type")
     if schema_type is not None and str(schema_type) not in ALLOWED_SCHEMA_TYPES:
         raise ToolSchemaError(
-            where + ".type 非法: " + repr(schema_type)
-            + "，可选 " + repr(sorted(ALLOWED_SCHEMA_TYPES))
+            where
+            + ".type 非法: "
+            + repr(schema_type)
+            + "，可选 "
+            + repr(sorted(ALLOWED_SCHEMA_TYPES))
         )
     if schema_type == "object" or "properties" in schema:
         properties = schema.get("properties", {})
@@ -178,21 +204,22 @@ def validate_modes(modes: Any, *, name: str = "") -> FrozenSet[str]:
     try:
         resolved = frozenset(str(item) for item in modes)
     except TypeError:
-        raise ToolModeError(
-            "工具 " + repr(name) + " 的 modes 必须是可迭代的模式名集合"
-        ) from None
+        raise ToolModeError("工具 " + repr(name) + " 的 modes 必须是可迭代的模式名集合") from None
     if not resolved:
         raise ToolModeError("工具 " + repr(name) + " 的 modes 不能为空集合")
     unknown = sorted(resolved - KNOWN_MODES)
     if unknown:
         raise ToolModeError(
-            "工具 " + repr(name) + " 声明了未知模式 " + repr(unknown)
-            + "；已知模式: " + repr(sorted(KNOWN_MODES))
+            "工具 "
+            + repr(name)
+            + " 声明了未知模式 "
+            + repr(unknown)
+            + "；已知模式: "
+            + repr(sorted(KNOWN_MODES))
         )
     if "chat" in resolved:
         raise ToolModeError(
-            "工具 " + repr(name) + " 不能声明 chat 模式："
-            "Chat 绝不向模型暴露任何工具（红线 E）"
+            "工具 " + repr(name) + " 不能声明 chat 模式：Chat 绝不向模型暴露任何工具（红线 E）"
         )
     return resolved
 
@@ -200,6 +227,7 @@ def validate_modes(modes: Any, *, name: str = "") -> FrozenSet[str]:
 # ----------------------------------------------------------------------------
 # 工具描述符
 # ----------------------------------------------------------------------------
+
 
 def _empty_schema() -> Dict[str, Any]:
     return {"type": "object", "properties": {}, "additionalProperties": False}
@@ -240,15 +268,23 @@ class ToolSpec:
         source = str(self.source or SOURCE_BUILTIN)
         if source not in KNOWN_SOURCES:
             raise ToolDefinitionError(
-                "工具 " + repr(name) + " 的 source 非法: " + repr(source)
-                + "，可选 " + repr(sorted(KNOWN_SOURCES))
+                "工具 "
+                + repr(name)
+                + " 的 source 非法: "
+                + repr(source)
+                + "，可选 "
+                + repr(sorted(KNOWN_SOURCES))
             )
         object.__setattr__(self, "source", source)
         kind = str(self.kind or TOOL_KIND_GENERIC)
         if kind not in TOOL_KINDS:
             raise ToolDefinitionError(
-                "工具 " + repr(name) + " 的 kind 非法: " + repr(kind)
-                + "，可选 " + repr(sorted(TOOL_KINDS))
+                "工具 "
+                + repr(name)
+                + " 的 kind 非法: "
+                + repr(kind)
+                + "，可选 "
+                + repr(sorted(TOOL_KINDS))
             )
         object.__setattr__(self, "kind", kind)
         if self.requires_approval is None:
@@ -283,7 +319,7 @@ class ToolSpec:
             "kind": self.kind,
         }
 
-    def with_handler(self, handler: Callable[..., Any]) -> "ToolSpec":
+    def with_handler(self, handler: Callable[..., Any]) -> ToolSpec:
         return replace(self, handler=handler)
 
     def kernel_spec(self) -> KernelToolSpec:
@@ -300,6 +336,7 @@ class ToolSpec:
 # ----------------------------------------------------------------------------
 # 注册表
 # ----------------------------------------------------------------------------
+
 
 class ToolRegistry:
     """工具注册表：构造期校验 + 按名字取用 + OpenAI schema 导出。
@@ -319,13 +356,14 @@ class ToolRegistry:
         """注册一个工具。重名默认抛错（构造期校验，不静默覆盖）。"""
         if not isinstance(spec, ToolSpec):
             raise ToolDefinitionError(
-                "只能注册 castorice.tools.ToolSpec，得到 "
-                + type(spec).__name__
+                "只能注册 castorice.tools.ToolSpec，得到 " + type(spec).__name__
             )
         if spec.name in self._tools and not replace_existing:
             raise ToolDefinitionError(
-                "工具名重复: " + repr(spec.name)
-                + "（已注册 " + repr(self._tools[spec.name].source)
+                "工具名重复: "
+                + repr(spec.name)
+                + "（已注册 "
+                + repr(self._tools[spec.name].source)
                 + " 来源的同名工具；如确实要覆盖请显式传 replace_existing=True）"
             )
         self._tools[spec.name] = spec
@@ -377,26 +415,23 @@ class ToolRegistry:
         spec = self._tools.get(str(name))
         if spec is None:
             known = ", ".join(self._tools) or "（当前没有任何已注册工具）"
-            return error_text("未知工具 " + str(name) + "，可用工具: " + known,
-                              "UNKNOWN_TOOL")
+            return error_text("未知工具 " + str(name) + "，可用工具: " + known, "UNKNOWN_TOOL")
         if spec.handler is None:
-            return error_text(
-                "工具 " + str(name) + " 只有 schema 没有执行实现", "NO_HANDLER")
+            return error_text("工具 " + str(name) + " 只有 schema 没有执行实现", "NO_HANDLER")
         try:
             result = spec.handler(**dict(arguments or {}))
         except TypeError as exc:
             # 参数不匹配也沿用「调用工具 X 失败」的既有措辞，只附加错误码
-            return error_text(
-                "调用工具 " + str(name) + " 失败: " + str(exc), "BAD_ARGUMENTS")
+            return error_text("调用工具 " + str(name) + " 失败: " + str(exc), "BAD_ARGUMENTS")
         except Exception as exc:
-            return error_text(
-                "调用工具 " + str(name) + " 失败: " + str(exc), "TOOL_FAILED")
+            return error_text("调用工具 " + str(name) + " 失败: " + str(exc), "TOOL_FAILED")
         return truncate_text(result, spec.result_limit)
 
 
 # ----------------------------------------------------------------------------
 # 执行运行时（带网关复查）
 # ----------------------------------------------------------------------------
+
 
 def _denial_code(decision: Any) -> str:
     """取拒绝结果里最有信息量的错误码。
@@ -412,6 +447,7 @@ def _denial_code(decision: Any) -> str:
             return code
     return "PERMISSION_DENIED"
 
+
 class ToolRuntime:
     """内核使用的工具入口：all_tools() + call()，并在执行前复查权限策略。
 
@@ -420,10 +456,15 @@ class ToolRuntime:
     的执行路径也无法跳过路径边界与命令白名单。
     """
 
-    def __init__(self, registry: ToolRegistry,
-                 gateway: Optional[PermissionGateway] = None, *,
-                 mode: str = "chat", enforce: bool = True,
-                 already_authorized: Optional[Callable[[], bool]] = None) -> None:
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        gateway: Optional[PermissionGateway] = None,
+        *,
+        mode: str = "chat",
+        enforce: bool = True,
+        already_authorized: Optional[Callable[[], bool]] = None,
+    ) -> None:
         self.registry = registry
         self.gateway = gateway
         self.mode = str(mode or "chat")
@@ -450,7 +491,7 @@ class ToolRuntime:
         try:
             return bool(callback())
         except Exception:
-            return False        # 判定不了就当没有：宁可多判一次，不可漏判
+            return False  # 判定不了就当没有：宁可多判一次，不可漏判
 
     def call(self, name: str, arguments: Optional[Mapping[str, Any]] = None) -> str:
         args = dict(arguments or {})
@@ -468,13 +509,11 @@ class ToolRuntime:
             try:
                 decision = self.gateway.pre_execute(request)
             except Exception as exc:
-                return error_text("权限复查异常，按拒绝关闭: " + str(exc),
-                                  "PERMISSION_ERROR")
+                return error_text("权限复查异常，按拒绝关闭: " + str(exc), "PERMISSION_ERROR")
             # 这里只做**策略维度**的复查（不触发审批，避免 harness 路径下的
             # 同一次调用被审批两次）：deny / unavailable 一律拦下。
             if decision.decision in ("deny", "unavailable"):
-                return error_text(
-                    decision.reason or decision.decision, "PERMISSION_DENIED")
+                return error_text(decision.reason or decision.decision, "PERMISSION_DENIED")
             # ask 必须分清两种情况：
             #   * 上层已经做过完整判定（harness 派发路径）—— 直接放行，
             #     否则同一次调用会弹两次审批（allowed-once 被破坏）；
@@ -484,27 +523,28 @@ class ToolRuntime:
             if decision.decision == "ask" and not self._authorized():
                 full = getattr(self.gateway, "decide", None)
                 if not callable(full):
-                    return error_text(
-                        "权限网关不支持完整判定，按拒绝关闭", "PERMISSION_DENIED")
+                    return error_text("权限网关不支持完整判定，按拒绝关闭", "PERMISSION_DENIED")
                 try:
                     # 必须把工作区作为 cwd 传下去：否则相对路径会按**进程的**
                     # 当前目录解析，而不是工具上下文的工作区，越界判定就错了。
                     resolved = full(
-                        name, args, mode=self.mode,
+                        name,
+                        args,
+                        mode=self.mode,
                         target_paths=_target_paths(args),
-                        cwd=self.gateway.workspace)
+                        cwd=self.gateway.workspace,
+                    )
                 except Exception as exc:
-                    return error_text(
-                        "权限判定异常，按拒绝关闭: " + str(exc), "PERMISSION_ERROR")
+                    return error_text("权限判定异常，按拒绝关闭: " + str(exc), "PERMISSION_ERROR")
                 if not getattr(resolved, "allowed", False):
-                    return error_text(
-                        resolved.reason or "未获批准", "PERMISSION_DENIED")
+                    return error_text(resolved.reason or "未获批准", "PERMISSION_DENIED")
         return self.registry.call(name, args)
 
 
 # ----------------------------------------------------------------------------
 # 工具上下文（工作区绑定与观察记录）
 # ----------------------------------------------------------------------------
+
 
 @dataclass
 class ToolContext:
@@ -521,7 +561,7 @@ class ToolContext:
     session_id: str = ""
     roots: Tuple[str, ...] = ()
     gateway: Optional[PermissionGateway] = None
-    policy: Any = None                     # castorice.permissions.PathPolicy
+    policy: Any = None  # castorice.permissions.PathPolicy
     #: 绝对路径 -> (mtime, size, sha1)；供 edit_file 的「编辑前必须读取」（R6）
     observed: Dict[str, Tuple[float, int, str]] = field(default_factory=dict)
 
@@ -545,12 +585,14 @@ class ToolContext:
         return self.cwd or self.effective_workspace
 
     def check_read(self, path: Any) -> str:
-        return self.policy.check(path, write=False, cwd=self.cwd_or_workspace(),
-                                 sandbox=self.sandbox)
+        return self.policy.check(
+            path, write=False, cwd=self.cwd_or_workspace(), sandbox=self.sandbox
+        )
 
     def check_write(self, path: Any) -> str:
-        return self.policy.check(path, write=True, cwd=self.cwd_or_workspace(),
-                                 sandbox=self.sandbox)
+        return self.policy.check(
+            path, write=True, cwd=self.cwd_or_workspace(), sandbox=self.sandbox
+        )
 
     # ---- 观察记录（R5 / R6） ----
 

@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
 
 from .channels.base import ChannelError, OutboundMessage, normalize_target
-from .notify import DeliveryResult, DesktopNotifier
+from .notify import DesktopNotifier
 
 __all__ = [
     "MAX_TITLE_LEN",
@@ -67,8 +67,10 @@ class ScheduleError(RuntimeError):
 # 时点推算（纯函数，便于单测）
 # ----------------------------------------------------------------------------
 
-def previous_occurrence(kind: str, spec: Dict[str, Any], now: datetime,
-                        *, first_at: Optional[datetime] = None) -> Optional[datetime]:
+
+def previous_occurrence(
+    kind: str, spec: Dict[str, Any], now: datetime, *, first_at: Optional[datetime] = None
+) -> Optional[datetime]:
     """返回 kind/spec 定义的时刻序列中 <= now 的最近一次发生时点。
 
     返回 None 表示「尚无任何发生时点」（周期起点还未到）——这种情况下
@@ -154,8 +156,7 @@ def previous_occurrence(kind: str, spec: Dict[str, Any], now: datetime,
         if first_at is not None:
             floor = first_at.replace(second=0, microsecond=0)
             if candidate < floor:
-                first_possible = floor + timedelta(
-                    days=(floor.weekday() - weekday) % 7)
+                first_possible = floor + timedelta(days=(floor.weekday() - weekday) % 7)
                 first_possible = first_possible.replace(hour=hh, minute=mm)
                 if first_possible > now:
                     return None
@@ -164,8 +165,9 @@ def previous_occurrence(kind: str, spec: Dict[str, Any], now: datetime,
     raise ScheduleError(f"未知触发器类型: {kind!r}")
 
 
-def _next_occurrence(kind: str, spec: Dict[str, Any], now: datetime,
-                     first_at: Optional[datetime]) -> Optional[datetime]:
+def _next_occurrence(
+    kind: str, spec: Dict[str, Any], now: datetime, first_at: Optional[datetime]
+) -> Optional[datetime]:
     """返回 > now 的下一次发生时点（内部计算，供 sleep / 展示用）。"""
     try:
         if kind == "after_seconds":
@@ -214,6 +216,7 @@ def _next_occurrence(kind: str, spec: Dict[str, Any], now: datetime,
 # 数据模型
 # ----------------------------------------------------------------------------
 
+
 @dataclass
 class SchedulerTarget:
     """一个投递目标。
@@ -223,8 +226,8 @@ class SchedulerTarget:
     """
 
     id: str
-    channel: str = "desktop"     # "desktop" | "qq"
-    fallback: str = "skip"       # 渠道离线时策略："desktop" | "skip"
+    channel: str = "desktop"  # "desktop" | "qq"
+    fallback: str = "skip"  # 渠道离线时策略："desktop" | "skip"
 
     def validate(self) -> None:
         raw = str(self.id or "").strip()
@@ -242,8 +245,7 @@ class SchedulerTarget:
         elif self.channel != "desktop":
             raise ScheduleError(f"未知 target 渠道: {self.channel!r}")
         if self.fallback not in ("desktop", "skip"):
-            raise ScheduleError(
-                f"target.fallback 必须是 desktop|skip，得到 {self.fallback!r}")
+            raise ScheduleError(f"target.fallback 必须是 desktop|skip，得到 {self.fallback!r}")
 
 
 @dataclass
@@ -276,16 +278,17 @@ class ScheduleSpec:
         if not title:
             raise ScheduleError("schedule.title 必填")
         if len(title) > MAX_TITLE_LEN:
-            raise ScheduleError(
-                f"schedule.title 超过 {MAX_TITLE_LEN} 字符: {len(title)}")
+            raise ScheduleError(f"schedule.title 超过 {MAX_TITLE_LEN} 字符: {len(title)}")
         if not isinstance(self.triggers, dict) or not self.triggers:
             raise ScheduleError("schedule.triggers 必须是非空映射")
         selected = [k for k in SCHEDULE_KINDS if k in self.triggers]
         if len(selected) != 1:
             raise ScheduleError(
-                "触发器五选一（互斥），实际有 " + repr(selected)
+                "触发器五选一（互斥），实际有 "
+                + repr(selected)
                 + "；未知键: "
-                + repr([k for k in self.triggers if k not in SCHEDULE_KINDS]))
+                + repr([k for k in self.triggers if k not in SCHEDULE_KINDS])
+            )
         kind = selected[0]
         spec_value = self.triggers[kind]
         if kind in ("after_seconds", "every_seconds"):
@@ -305,7 +308,8 @@ class ScheduleSpec:
             previous_occurrence(
                 "weekly",
                 {"weekly": spec_value, "weekday": self.triggers.get("weekday")},
-                datetime.now())
+                datetime.now(),
+            )
         if not self.targets:
             raise ScheduleError("schedule.targets 至少一个")
         for target in self.targets:
@@ -320,8 +324,7 @@ class ScheduleSpec:
             "triggers": dict(self.triggers),
             "proactive_message": self.proactive_message,
             "targets": [
-                {"id": t.id, "channel": t.channel, "fallback": t.fallback}
-                for t in self.targets
+                {"id": t.id, "channel": t.channel, "fallback": t.fallback} for t in self.targets
             ],
             "enabled": bool(self.enabled),
             "first_at": self.first_at,
@@ -329,7 +332,7 @@ class ScheduleSpec:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ScheduleSpec":
+    def from_dict(cls, data: Dict[str, Any]) -> ScheduleSpec:
         if not isinstance(data, dict):
             raise ScheduleError("schedule 条目必须是映射")
         targets_raw = data.get("targets") or []
@@ -341,7 +344,8 @@ class ScheduleSpec:
                 channel=str(t.get("channel") or "desktop"),
                 fallback=str(t.get("fallback") or "skip"),
             )
-            for t in targets_raw if isinstance(t, dict)
+            for t in targets_raw
+            if isinstance(t, dict)
         ]
         return cls(
             id=str(data.get("id") or ""),
@@ -377,13 +381,13 @@ class ScheduleSpec:
 
     def previous_due(self, now: datetime) -> Optional[datetime]:
         return previous_occurrence(
-            self.trigger_kind(), self.trigger_spec(), now,
-            first_at=self._first_at_dt())
+            self.trigger_kind(), self.trigger_spec(), now, first_at=self._first_at_dt()
+        )
 
     def next_due(self, now: datetime) -> Optional[datetime]:
         return _next_occurrence(
-            self.trigger_kind(), self.trigger_spec(), now,
-            first_at=self._first_at_dt())
+            self.trigger_kind(), self.trigger_spec(), now, first_at=self._first_at_dt()
+        )
 
 
 # ----------------------------------------------------------------------------
@@ -434,15 +438,14 @@ class ScheduleStore:
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_name(self.path.name + ".tmp")
-        tmp.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         tmp.replace(self.path)
 
 
 # ----------------------------------------------------------------------------
 # agent 侧协议 / 触发记录
 # ----------------------------------------------------------------------------
+
 
 class AgentProxy(Protocol):
     """调度器对 agent 侧的最小依赖（鸭子类型，避免 import ai）。
@@ -462,9 +465,15 @@ class AgentProxy(Protocol):
 class ProactiveResult:
     """一次主动触发的执行记录（测试与日志消费）。"""
 
-    def __init__(self, schedule_id: str, due: datetime, ok: bool,
-                 reply: str = "", deliveries: int = 0,
-                 error: str = "") -> None:
+    def __init__(
+        self,
+        schedule_id: str,
+        due: datetime,
+        ok: bool,
+        reply: str = "",
+        deliveries: int = 0,
+        error: str = "",
+    ) -> None:
         self.schedule_id = schedule_id
         self.due = due
         self.ok = ok
@@ -473,26 +482,30 @@ class ProactiveResult:
         self.error = error
 
     def __repr__(self) -> str:  # pragma: no cover - 调试便利
-        return (f"ProactiveResult(schedule={self.schedule_id!r}, ok={self.ok}, "
-                f"deliveries={self.deliveries}, error={self.error!r})")
+        return (
+            f"ProactiveResult(schedule={self.schedule_id!r}, ok={self.ok}, "
+            f"deliveries={self.deliveries}, error={self.error!r})"
+        )
 
 
 # ----------------------------------------------------------------------------
 # 调度器
 # ----------------------------------------------------------------------------
 
+
 @dataclass
 class SchedulerConfig:
     """调度器可配置项（来自 config.yaml 或装配方注入）。"""
 
-    check_interval: float = 10.0        # 后台线程的轮询间隔（秒）
+    check_interval: float = 10.0  # 后台线程的轮询间隔（秒）
     #: 未识别渠道 target 的行为：skip（跳过并记日志）| desktop（回退桌面）
     offline_fallback: str = "skip"
 
     def validate(self) -> None:
         if self.offline_fallback not in ("skip", "desktop"):
             raise ScheduleError(
-                f"offline_fallback 必须是 skip|desktop，得到 {self.offline_fallback!r}")
+                f"offline_fallback 必须是 skip|desktop，得到 {self.offline_fallback!r}"
+            )
 
 
 class Scheduler:
@@ -547,15 +560,15 @@ class Scheduler:
                 return
             self._stop.clear()
             self._thread = threading.Thread(
-                target=self._run_loop, name="proactive-scheduler", daemon=True)
+                target=self._run_loop, name="proactive-scheduler", daemon=True
+            )
             self._thread.start()
 
     def close(self) -> None:
         """停止后台线程；幂等。"""
         self._stop.set()
         thread = self._thread
-        if thread is not None and thread.is_alive() \
-                and thread is not threading.current_thread():
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
             thread.join(timeout=self.config.check_interval + 5.0)
         self._thread = None
 
@@ -607,12 +620,10 @@ class Scheduler:
         try:
             self._ensure_session(spec)
         except Exception as exc:
-            return ProactiveResult(spec.id, due, ok=False,
-                                   error=f"召回会话失败: {exc}")
+            return ProactiveResult(spec.id, due, ok=False, error=f"召回会话失败: {exc}")
         harness = getattr(self.bot, "harness", None)
         if harness is None:
-            return ProactiveResult(spec.id, due, ok=False,
-                                   error="bot 未提供 harness 属性")
+            return ProactiveResult(spec.id, due, ok=False, error="bot 未提供 harness 属性")
 
         trigger_text = _build_trigger_text(spec, due)
         reply = ""
@@ -623,16 +634,14 @@ class Scheduler:
             # pre-step / pre-request 语义检查点 flush。
             # 注：任务书写的 source='schedule' 与内核既有的 "proactive"
             # 判定值对齐——语义一致，取内核既有值，不改 harness 签名。
-            for kind, payload in harness.run_stream(trigger_text,
-                                                    source="proactive"):
+            for kind, payload in harness.run_stream(trigger_text, source="proactive"):
                 if kind == "text":
                     reply += str(payload)
                 elif kind == "done":
                     reply = str(payload)
                     break
         except Exception as exc:
-            return ProactiveResult(spec.id, due, ok=False,
-                                   error=f"agent 轮次失败: {exc}")
+            return ProactiveResult(spec.id, due, ok=False, error=f"agent 轮次失败: {exc}")
 
         # ---- 约定②：投递前强制 flush（fail-closed）----
         session = getattr(harness, "session", None)
@@ -640,10 +649,8 @@ class Scheduler:
             try:
                 session.flush(reason="proactive-delivery")
             except Exception as exc:
-                self.logger.error(
-                    "主动消息 flush 失败，放弃投递（约定②）: %s", exc)
-                return ProactiveResult(spec.id, due, ok=False,
-                                       error=f"flush 失败: {exc}")
+                self.logger.error("主动消息 flush 失败，放弃投递（约定②）: %s", exc)
+                return ProactiveResult(spec.id, due, ok=False, error=f"flush 失败: {exc}")
 
         count, skipped_by_policy = self._deliver(spec, due, reply)
         # 全部目标投递失败且没有一个是「skip 策略下的正常放弃」->
@@ -651,10 +658,10 @@ class Scheduler:
         # 同一时点（与约定①的自愈语义一致）。skip 策略下的 0 投递是
         # 配置允许的正常结果（已记日志），不算失败、不重试。
         if count == 0 and not skipped_by_policy:
-            return ProactiveResult(spec.id, due, ok=False, reply=reply,
-                                   deliveries=0, error="所有目标投递失败")
-        return ProactiveResult(spec.id, due, ok=True, reply=reply,
-                               deliveries=count)
+            return ProactiveResult(
+                spec.id, due, ok=False, reply=reply, deliveries=0, error="所有目标投递失败"
+            )
+        return ProactiveResult(spec.id, due, ok=True, reply=reply, deliveries=count)
 
     def _ensure_session(self, spec: ScheduleSpec) -> None:
         """召回/新建冷会话：主动消息永远走全新 chat 会话，不打断用户
@@ -665,8 +672,7 @@ class Scheduler:
 
     # ---- 双投递 ----
 
-    def _deliver(self, spec: ScheduleSpec, due: datetime, reply: str
-                 ) -> Tuple[int, bool]:
+    def _deliver(self, spec: ScheduleSpec, due: datetime, reply: str) -> Tuple[int, bool]:
         """把 reply 投递到 spec.targets 的每个目标。
 
         返回 (成功数, skipped_by_policy)：skipped_by_policy=True 表示至少
@@ -684,8 +690,7 @@ class Scheduler:
                 skipped_by_policy = True
         return delivered, skipped_by_policy
 
-    def _deliver_one(self, target: SchedulerTarget, title: str,
-                     body: str) -> Tuple[bool, bool]:
+    def _deliver_one(self, target: SchedulerTarget, title: str, body: str) -> Tuple[bool, bool]:
         """投递单个目标；返回 (是否成功, 是否 skip 策略下的正常放弃)。"""
         channel, _, _chat_part = target.id.partition(":")
         if channel == "qq":
@@ -694,14 +699,12 @@ class Scheduler:
             return self._deliver_desktop(target, title, body), False
         # 未识别渠道：按全局配置降级
         if self.config.offline_fallback == "desktop" and self.desktop is not None:
-            self.logger.warning(
-                "未识别渠道 %r，回退桌面投递: %s", channel, target.id)
+            self.logger.warning("未识别渠道 %r，回退桌面投递: %s", channel, target.id)
             return self._deliver_desktop(target, title, body), False
         self.logger.warning("未识别渠道 %r，跳过投递: %s", channel, target.id)
-        return False, True   # skip 并记日志：策略性放弃
+        return False, True  # skip 并记日志：策略性放弃
 
-    def _deliver_desktop(self, target: SchedulerTarget, title: str,
-                         body: str) -> bool:
+    def _deliver_desktop(self, target: SchedulerTarget, title: str, body: str) -> bool:
         if self.desktop is None:
             self.logger.warning("桌面通知实现未注册，跳过投递: %s", target.id)
             return False
@@ -716,8 +719,7 @@ class Scheduler:
         self.logger.warning("桌面投递失败 %s: %s", target.id, result.detail)
         return False
 
-    def _deliver_qq(self, target: SchedulerTarget, title: str,
-                    body: str) -> Tuple[bool, bool]:
+    def _deliver_qq(self, target: SchedulerTarget, title: str, body: str) -> Tuple[bool, bool]:
         chat_part = target.id.split(":", 1)[1] if ":" in target.id else ""
         try:
             chat_id = normalize_target(chat_part)
@@ -732,24 +734,23 @@ class Scheduler:
             self.logger.info("QQ 投递成功: %s", chat_id)
             return True, False
         except ChannelError as exc:
-            return self._qq_fallback(target, f"QQ 渠道发送失败: {exc}",
-                                     title, body)
+            return self._qq_fallback(target, f"QQ 渠道发送失败: {exc}", title, body)
 
-    def _qq_fallback(self, target: SchedulerTarget, reason: str,
-                     title: str, body: str) -> Tuple[bool, bool]:
+    def _qq_fallback(
+        self, target: SchedulerTarget, reason: str, title: str, body: str
+    ) -> Tuple[bool, bool]:
         """渠道离线/发送失败的降级：回退桌面或跳过并记日志（可配置）。"""
         if target.fallback == "desktop" and self.desktop is not None:
-            self.logger.warning(
-                "QQ 投递失败（%s），回退桌面投递: %s", reason, target.id)
+            self.logger.warning("QQ 投递失败（%s），回退桌面投递: %s", reason, target.id)
             return self._deliver_desktop(target, title, body), False
-        self.logger.warning(
-            "QQ 投递失败（%s），按 skip 策略跳过: %s", reason, target.id)
-        return False, True   # skip 并记日志：策略性放弃
+        self.logger.warning("QQ 投递失败（%s），按 skip 策略跳过: %s", reason, target.id)
+        return False, True  # skip 并记日志：策略性放弃
 
 
 # ----------------------------------------------------------------------------
 # 内部工具
 # ----------------------------------------------------------------------------
+
 
 def _iso(dt: datetime) -> str:
     return dt.replace(microsecond=0).isoformat()
@@ -771,7 +772,10 @@ def _build_trigger_text(spec: ScheduleSpec, due: datetime) -> str:
     模型看到的是「系统发起的主动话头」而非用户输入。
     """
     return (
-        "[主动触发] " + spec.title
-        + "（计划时点 " + _iso(due) + "，本地时间）\n"
+        "[主动触发] "
+        + spec.title
+        + "（计划时点 "
+        + _iso(due)
+        + "，本地时间）\n"
         + spec.proactive_message
     )

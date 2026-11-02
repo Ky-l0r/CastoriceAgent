@@ -17,8 +17,8 @@ OpenAICompatibleProvider 与 LLMProviderFactory 的行为完全不变，
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .capabilities import (
     TOOL_PROTOCOL_JSON,
@@ -31,23 +31,29 @@ from .capabilities import (
     resolve_capabilities,
 )
 from .json_protocol import (
-    JsonToolCall,
     build_json_protocol_instructions,
     parse_json_tool_calls,
 )
 
-
 # ----------------------------------------------------------------------------
 # 错误
 # ----------------------------------------------------------------------------
+
 
 class ProviderError(RuntimeError):
     """厂商层错误基类。to_dict() 给出结构化错误（UI 可直接展示）。"""
 
     code = "PROVIDER_ERROR"
 
-    def __init__(self, message: str, *, provider: str = "", model: str = "",
-                 code: Optional[str] = None, cause: Any = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        provider: str = "",
+        model: str = "",
+        code: Optional[str] = None,
+        cause: Any = None,
+    ) -> None:
         super().__init__(message)
         self.provider = provider
         self.model = model
@@ -69,9 +75,17 @@ class ProviderCallError(ProviderError):
 
     code = "PROVIDER_CALL_FAILED"
 
-    def __init__(self, message: str, *, provider: str = "", model: str = "",
-                 protocol: str = "", retryable: bool = False,
-                 degrade_to: Optional[str] = None, cause: Any = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        provider: str = "",
+        model: str = "",
+        protocol: str = "",
+        retryable: bool = False,
+        degrade_to: Optional[str] = None,
+        cause: Any = None,
+    ) -> None:
         super().__init__(message, provider=provider, model=model, cause=cause)
         self.protocol = protocol
         self.retryable = retryable
@@ -79,11 +93,13 @@ class ProviderCallError(ProviderError):
 
     def to_dict(self) -> Dict[str, Any]:
         payload = super().to_dict()
-        payload.update({
-            "protocol": self.protocol,
-            "retryable": self.retryable,
-            "degrade_to": self.degrade_to,
-        })
+        payload.update(
+            {
+                "protocol": self.protocol,
+                "retryable": self.retryable,
+                "degrade_to": self.degrade_to,
+            }
+        )
         return payload
 
 
@@ -96,6 +112,7 @@ class ProviderConfigurationError(ProviderError):
 # ----------------------------------------------------------------------------
 # 请求体裁剪
 # ----------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class PreparedRequest:
@@ -184,10 +201,14 @@ def prepare_request(
     estimated = estimate_message_tokens(messages)
     if enforce_budget and not capabilities.fits(estimated):
         raise ContextWindowExceeded(
-            "上下文超出模型可用窗口：估算输入 " + str(estimated)
-            + " tokens，可用预算 " + str(capabilities.input_budget)
-            + " tokens（context_window=" + str(capabilities.context_window)
-            + ", max_output_tokens=" + str(capabilities.max_output_tokens)
+            "上下文超出模型可用窗口：估算输入 "
+            + str(estimated)
+            + " tokens，可用预算 "
+            + str(capabilities.input_budget)
+            + " tokens（context_window="
+            + str(capabilities.context_window)
+            + ", max_output_tokens="
+            + str(capabilities.max_output_tokens)
             + "）；请缩减历史或改用更大窗口的模型（不会静默截断）",
             estimated=estimated,
             budget=capabilities.input_budget,
@@ -207,6 +228,7 @@ def prepare_request(
 # ----------------------------------------------------------------------------
 # 调用结果
 # ----------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class CallOutcome:
@@ -243,6 +265,7 @@ class CallOutcome:
 # 适配器
 # ----------------------------------------------------------------------------
 
+
 class ProviderAdapter:
     """把「能力感知 + 分级降级」包在任意 chat_completion 实现外面。
 
@@ -264,14 +287,16 @@ class ProviderAdapter:
         self.provider_name = str(provider_name or "")
         self.config = dict(config or {})
         self.logger = logger
-        self.capabilities = capabilities if capabilities is not None else \
-            resolve_capabilities(
-                self.provider_name, self.config,
+        self.capabilities = (
+            capabilities
+            if capabilities is not None
+            else resolve_capabilities(
+                self.provider_name,
+                self.config,
                 model=model if model is not None else self.config.get("model"),
             )
-        self.model = str(
-            model if model is not None else self.config.get("model", "")
         )
+        self.model = str(model if model is not None else self.config.get("model", ""))
         #: 当前生效的协议（调用失败降级后会下调）
         self.protocol = self.capabilities.protocol(tools_requested=True)
         self.notes: List[str] = []
@@ -294,13 +319,15 @@ class ProviderAdapter:
     def capability_summary(self) -> Dict[str, Any]:
         """供 UI / 诊断展示的能力摘要（tier 与协议级别都给出）。"""
         payload = self.capabilities.to_dict()
-        payload.update({
-            "provider": self.provider_name,
-            "model": self.model,
-            "protocol": self.protocol,
-            "degraded": self.protocol != TOOL_PROTOCOL_NATIVE,
-            "notes": list(self.notes),
-        })
+        payload.update(
+            {
+                "provider": self.provider_name,
+                "model": self.model,
+                "protocol": self.protocol,
+                "degraded": self.protocol != TOOL_PROTOCOL_NATIVE,
+                "notes": list(self.notes),
+            }
+        )
         return payload
 
     # ---- 提示词注入 ----
@@ -315,9 +342,7 @@ class ProviderAdapter:
             return build_json_protocol_instructions(tool_specs)
         return ""
 
-    def system_prompt_with_protocol(
-        self, system_prompt: str, tool_specs: Sequence[Any]
-    ) -> str:
+    def system_prompt_with_protocol(self, system_prompt: str, tool_specs: Sequence[Any]) -> str:
         extra = self.protocol_instructions(tool_specs)
         if not extra:
             return system_prompt
@@ -335,8 +360,13 @@ class ProviderAdapter:
             self.notes.append("降级到 " + target + "：" + reason)
         if self.logger is not None and callable(getattr(self.logger, "warning", None)):
             self.logger.warning(
-                "provider " + (self.provider_name or "?") + " 降级到 "
-                + target + "（" + (reason or "未说明原因") + "）"
+                "provider "
+                + (self.provider_name or "?")
+                + " 降级到 "
+                + target
+                + "（"
+                + (reason or "未说明原因")
+                + "）"
             )
         return self.protocol
 
@@ -355,9 +385,15 @@ class ProviderAdapter:
             return False
         text = str(error).lower()
         markers = (
-            "does not support tool", "not support tool", "tool_calls is not",
-            "unsupported parameter", "unknown parameter", "tools is not",
-            "function calling", "function_call", "unexpected keyword argument 'tools'",
+            "does not support tool",
+            "not support tool",
+            "tool_calls is not",
+            "unsupported parameter",
+            "unknown parameter",
+            "tools is not",
+            "function calling",
+            "function_call",
+            "unexpected keyword argument 'tools'",
             "invalid_request_error",
         )
         return any(marker in text for marker in markers)
@@ -406,19 +442,27 @@ class ProviderAdapter:
                 )
             except ContextWindowExceeded as exc:
                 return CallOutcome(
-                    text="", tool_calls=(), protocol=self.protocol,
-                    degraded=bool(degrade_reason), degrade_reason=degrade_reason,
-                    error=str(exc), attempts=attempts,
+                    text="",
+                    tool_calls=(),
+                    protocol=self.protocol,
+                    degraded=bool(degrade_reason),
+                    degrade_reason=degrade_reason,
+                    error=str(exc),
+                    attempts=attempts,
                 )
 
             self.last_prepared = prepared
             runner = getattr(self.provider, "chat_completion", None)
             if not callable(runner):
                 return CallOutcome(
-                    text="", tool_calls=(), protocol=prepared.protocol,
-                    degraded=bool(degrade_reason), degrade_reason=degrade_reason,
+                    text="",
+                    tool_calls=(),
+                    protocol=prepared.protocol,
+                    degraded=bool(degrade_reason),
+                    degrade_reason=degrade_reason,
                     error="provider 未实现 chat_completion，无法调用（"
-                          + type(self.provider).__name__ + "）",
+                    + type(self.provider).__name__
+                    + "）",
                     attempts=attempts,
                 )
 
@@ -427,8 +471,12 @@ class ProviderAdapter:
                 text, tool_calls = runner(**kwargs)
             except Exception as exc:
                 error = ProviderCallError(
-                    "模型调用失败（provider=" + (self.provider_name or "?")
-                    + ", protocol=" + prepared.protocol + "）：" + str(exc),
+                    "模型调用失败（provider="
+                    + (self.provider_name or "?")
+                    + ", protocol="
+                    + prepared.protocol
+                    + "）："
+                    + str(exc),
                     provider=self.provider_name,
                     model=self.model,
                     protocol=prepared.protocol,
@@ -442,18 +490,20 @@ class ProviderAdapter:
                     if new_protocol != prepared.protocol:
                         continue
                 return CallOutcome(
-                    text="", tool_calls=(), protocol=prepared.protocol,
-                    degraded=bool(degrade_reason), degrade_reason=degrade_reason,
-                    error=str(error), attempts=attempts,
+                    text="",
+                    tool_calls=(),
+                    protocol=prepared.protocol,
+                    degraded=bool(degrade_reason),
+                    degrade_reason=degrade_reason,
+                    error=str(error),
+                    attempts=attempts,
                 )
 
             normalised = tuple(dict(call) for call in (tool_calls or ()))
             if prepared.protocol == TOOL_PROTOCOL_JSON and not normalised:
                 parsed, remainder = parse_json_tool_calls(text)
                 if parsed:
-                    normalised = tuple(
-                        call.to_openai(index) for index, call in enumerate(parsed)
-                    )
+                    normalised = tuple(call.to_openai(index) for index, call in enumerate(parsed))
                     text = remainder
             return CallOutcome(
                 text=str(text or ""),
@@ -466,7 +516,9 @@ class ProviderAdapter:
 
     # ---- 诊断 ----
 
-    def call(self, messages: Sequence[Mapping[str, Any]], **kwargs: Any) -> Tuple[str, List[Dict[str, Any]]]:
+    def call(
+        self, messages: Sequence[Mapping[str, Any]], **kwargs: Any
+    ) -> Tuple[str, List[Dict[str, Any]]]:
         """与既有 provider.chat_completion 同形的便捷入口（失败返回空结果）。"""
         outcome = self.complete(messages, **kwargs)
         if not outcome.ok:

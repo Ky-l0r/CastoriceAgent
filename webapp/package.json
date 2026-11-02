@@ -16,7 +16,9 @@
     "start": "electron .",
     "check:renderer": "tsc -p tsconfig.json --noEmit",
     "check:main": "tsc -p tsconfig.main.json --noEmit",
-    "check:preload": "tsc -p tsconfig.preload.json --noEmit"
+    "check:preload": "tsc -p tsconfig.preload.json --noEmit",
+    "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"electron/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"electron/**/*.ts\""
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
@@ -28,14 +30,13 @@
     "cross-env": "^7.0.3",
     "electron": "^44.4.3",
     "electron-builder": "^26.15.3",
+    "prettier": "^3.9.10",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.9.3",
     "vite": "^8.3.0"
   },
   "dependencies": {
-    "jotai": "^2.15.0",
     "lucide-react": "^1.32.0",
-    "motion": "^13.4.3",
     "radix-ui": "^1.6.7",
     "react": "^19.2.8",
     "react-dom": "^19.3.0",

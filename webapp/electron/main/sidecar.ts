@@ -6,6 +6,24 @@ import { Readable } from "node:stream";
 import type { SidecarReady } from "../shared/bridge-protocol";
 
 /**
+ * 从 sidecar 的 stderr 尾巴里提炼一句可读的失败原因。
+ *
+ * Python 的 traceback 有好几行（`File "..."`、`raise ...`、缩进的调用栈），
+ * 全塞进界面只会让人更懵。这里只留「真正描述问题的那一行」：优先取
+ * 异常类型行（`ValueError: ...`），其次是最后一行非栈帧文本。
+ */
+function summarizeStderr(tail: string): string {
+  const lines = tail
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("File \"") && !line.startsWith("Traceback"));
+  if (lines.length === 0) return "";
+  const exceptionLine = [...lines].reverse().find((line) => /^[A-Za-z_.]*(Error|Exception|Exit)\b/.test(line));
+  const picked = exceptionLine ?? lines[lines.length - 1];
+  return picked.length > 400 ? picked.slice(0, 400) + "…" : picked;
+}
+
+/**
  * 强杀一个进程及其所有子进程（Windows 用 taskkill /T，其它平台用进程组）。
  *
  * 存在理由：PyInstaller onedir 的 sidecar.exe 是引导器，真正干活的
@@ -45,6 +63,8 @@ export interface SidecarOptions {
   dataRoot?: string;
   /** stderr 日志落盘目录（dev 可省略）。 */
   logDir?: string;
+  /** 握手超时毫秒数（默认 180s；见 start() 的注释）。 */
+  handshakeTimeoutMs?: number;
 }
 
 export type SidecarState = "starting" | "ready" | "exited";
@@ -66,6 +86,8 @@ export class Sidecar extends EventEmitter {
   private readonly castoriceRoot: string;
   private readonly dataRoot?: string;
   private readonly logDir?: string;
+  /** 握手超时（毫秒）。打包版冷启动要加载 chromadb / embedding，留足余量。 */
+  private readonly handshakeTimeoutMs: number;
 
   constructor(private readonly scriptPath: string, options: SidecarOptions = {}) {
     super();
@@ -73,17 +95,30 @@ export class Sidecar extends EventEmitter {
     this.castoriceRoot = options.castoriceRoot ?? path.resolve(scriptPath, "../../..");
     this.dataRoot = options.dataRoot;
     this.logDir = options.logDir;
+    this.handshakeTimeoutMs = options.handshakeTimeoutMs ?? 180_000;
   }
 
   get isReady(): boolean {
     return this.state === "ready" && this.readyInfo !== null;
   }
 
+  /** 是否还有子进程在跑（stop 后为 false）。 */
+  get isRunning(): boolean {
+    return this.proc !== null;
+  }
+
   get ready(): SidecarReady | null {
     return this.readyInfo;
   }
 
-  /** 拉起 sidecar 并等待握手行（10s 超时 fail-fast）。 */
+  /**
+   * 拉起 sidecar 并等待握手行。
+   *
+   * handshakeTimeoutMs 默认 180s：打包版首次启动要初始化 chromadb 与
+   * embedding 模型（实测冷启动 15~60s，杀软扫描时更久）。超时不再无限
+   * 等待，而是整棵进程树强杀后抛错，让上层按退避重试——否则界面会
+   * 永远停在「正在启动后端…」。
+   */
   async start(): Promise<SidecarReady> {
     if (this.proc) throw new Error("sidecar already running");
     this.state = "starting";
@@ -145,7 +180,25 @@ export class Sidecar extends EventEmitter {
     if (!proc.stdout) throw new Error("sidecar stdout unavailable");
     const lineStream = Readable.from(proc.stdout).setEncoding("utf8");
 
-    try {
+    // 握手的最后几行 stderr：sidecar 崩在启动阶段时，真正的原因只在这里
+    // 出现（例如「配置文件格式错误: ... line 102」）。把它带进异常，
+    // 界面才能显示用户能看懂、能自己修的原因。
+    let stderrTail = "";
+    proc.stderr?.on("data", (chunk: string) => {
+      stderrTail = (stderrTail + chunk).slice(-1200);
+    });
+
+    const timeoutMs = this.handshakeTimeoutMs;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(
+          "后端启动超时（" + Math.round(timeoutMs / 1000) + " 秒）：" +
+          "可能是首次启动正在加载记忆模型，或配置文件/端口存在异常"));
+      }, timeoutMs);
+    });
+
+    const handshake = (async (): Promise<SidecarReady> => {
       for await (const line of lineStream as AsyncIterable<string>) {
         const trimmed = line.trim();
         if (!trimmed) continue;
@@ -169,9 +222,25 @@ export class Sidecar extends EventEmitter {
         }
       }
       throw new Error("sidecar exited before handshake");
+    })();
+
+    try {
+      return await Promise.race([handshake, timeout]);
     } catch (err) {
-      proc.kill();
-      throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      killTree(proc.pid);
+      // 给 stderr 的最后一波数据一点时间落地（Python 的 traceback 往往在
+      // 退出前一瞬才写出来），再把它提炼成一句人话。
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      // 立刻放开内部状态：失败后上层会退避重试，而 if (this.proc)
+      // 的「已在运行」检查会让重试白白失败几轮。
+      if (this.proc === proc) this.proc = null;
+      this.state = "exited";
+      this.readyInfo = null;
+      const reason = summarizeStderr(stderrTail);
+      throw new Error(reason ? message + " · " + reason : message);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 

@@ -44,6 +44,28 @@ export const APPEARANCE_DEFAULTS: AppearanceSettings = {
   bubbles: true,
 };
 
+/**
+ * 聊天连发合并（ui_settings.json 的 chatBatch 视图）。
+ *
+ * enabled：是否启用「连发合并」（只在聊天模式生效）；
+ * threshold：攒到几条就进入整理窗口；
+ * windowSeconds：整理窗口上限（用户要求的「一段时间内回复」）；
+ * quietSeconds：用户停止输入多久就提前发送。
+ */
+export interface ChatBatchSettings {
+  enabled: boolean;
+  threshold: number;
+  windowSeconds: number;
+  quietSeconds: number;
+}
+
+export const CHAT_BATCH_DEFAULTS: ChatBatchSettings = {
+  enabled: true,
+  threshold: 3,
+  windowSeconds: 180,
+  quietSeconds: 8,
+};
+
 export interface UiSettings {
   theme: ThemeMode;
   thinkingLevel: string;
@@ -109,6 +131,8 @@ interface BridgeStore {
   style: string;
   /** 外观偏好（气泡圆角 / 行距 / 段间距 / 气泡开关）。 */
   appearance: AppearanceSettings;
+  /** 聊天连发合并参数（设置中心「聊天」页可调）。 */
+  chatBatch: ChatBatchSettings;
 
   /** 审批卡当前展示的请求（null = 无待决审批）。 */
   approval: ApprovalDetail | null;
@@ -129,6 +153,13 @@ interface BridgeStore {
   sandboxes: Record<string, string>;
   /** 全局轻提示（一次一条，2.5s 自动消失）。 */
   toast: { ok: boolean; text: string } | null;
+  /**
+   * 后端启动失败的具体原因（主进程 bridge:backend-error 推送）。
+   *
+   * 有它，界面才能显示「配置文件格式错误：... line 102」这类
+   * 用户能自己修的原因；null 表示后端已起来。
+   */
+  backendError: string | null;
 
   setPhase: (phase: ConnectionPhase) => void;
   pushUser: (text: string) => void;
@@ -148,6 +179,12 @@ interface BridgeStore {
   setThinkingLevel: (level: string) => void;
   setStyle: (style: string) => void;
   setAppearance: (patch: Partial<AppearanceSettings>) => void;
+  setChatBatch: (patch: Partial<ChatBatchSettings>) => void;
+  /** 当前模式下是否走「连发合并」（只有聊天模式支持）。 */
+  shouldBatchChat: (mode: ModeName) => boolean;
+  /** 出站队列里还没发出去的消息条数（界面提示「N 条待发送」）。 */
+  pendingChat: number;
+  setPendingChat: (count: number) => void;
   setApproval: (detail: ApprovalDetail | null) => void;
   markChatStarted: () => void;
   setSessions: (sessions: SessionSummary[]) => void;
@@ -157,6 +194,7 @@ interface BridgeStore {
   setSandboxes: (sandboxes: Record<string, string>) => void;
   pushToast: (toast: { ok: boolean; text: string }) => void;
   clearToast: () => void;
+  setBackendError: (message: string | null) => void;
   toggleSidebar: () => void;
   /** 载入历史会话（entries 整体替换）。 */
   loadEntries: (entries: TranscriptEntry[]) => void;
@@ -172,7 +210,7 @@ export const normalizeMode = (value: unknown): ModeName => {
   return name === "work" || name === "code" || name === "learn" ? name : "chat";
 };
 
-export const useBridgeStore = create<BridgeStore>((set) => ({
+export const useBridgeStore = create<BridgeStore>((set, get) => ({
   phase: "connecting",
   busy: false,
   entries: [],
@@ -183,6 +221,8 @@ export const useBridgeStore = create<BridgeStore>((set) => ({
   thinkingLevel: "中",
   style: "默认",
   appearance: { ...APPEARANCE_DEFAULTS },
+  chatBatch: { ...CHAT_BATCH_DEFAULTS },
+  pendingChat: 0,
   approval: null,
   chatStarted: false,
   banners: [],
@@ -192,8 +232,11 @@ export const useBridgeStore = create<BridgeStore>((set) => ({
   workdirs: {},
   sandboxes: {},
   toast: null,
+  backendError: null,
 
   setPhase: (phase) => set({ phase }),
+
+  setBackendError: (message) => set({ backendError: message }),
 
   markChatStarted: () => set({ chatStarted: true }),
 
@@ -301,6 +344,16 @@ export const useBridgeStore = create<BridgeStore>((set) => ({
 
   setAppearance: (patch) =>
     set((s) => ({ appearance: { ...s.appearance, ...patch } })),
+
+  setChatBatch: (patch) =>
+    set((s) => ({ chatBatch: { ...s.chatBatch, ...patch } })),
+
+  shouldBatchChat: (mode) => {
+    const state = get();
+    return state.chatBatch.enabled && mode === "chat";
+  },
+
+  setPendingChat: (pendingChat) => set({ pendingChat }),
 
   setApproval: (approval) => set({ approval }),
 

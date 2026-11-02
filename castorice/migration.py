@@ -33,7 +33,7 @@ from typing import List
 
 from . import paths as cpaths
 
-__all__ = ["MIGRATED_FILES", "MIGRATED_DIRS", "migrate_legacy_data"]
+__all__ = ["MIGRATED_DIRS", "MIGRATED_FILES", "migrate_legacy_data"]
 
 logger = logging.getLogger(__name__)
 

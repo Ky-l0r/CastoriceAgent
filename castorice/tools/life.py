@@ -18,10 +18,10 @@ import json
 import os
 import platform
 import sys
-from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Sequence
 
+from ..permissions import SandboxDenied
 from .base import (
     TOOL_KIND_ACTION,
     TOOL_KIND_GENERIC,
@@ -32,12 +32,21 @@ from .base import (
     truncate_text,
 )
 from .fs import _atomic_write, _read_text, _sha1_text
-from ..permissions import SandboxDenied
 
 #: 支持的音频后缀
-AUDIO_SUFFIXES = frozenset({
-    ".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma", ".ape",
-})
+AUDIO_SUFFIXES = frozenset(
+    {
+        ".mp3",
+        ".wav",
+        ".flac",
+        ".m4a",
+        ".aac",
+        ".ogg",
+        ".opus",
+        ".wma",
+        ".ape",
+    }
+)
 
 #: 队列与提醒的落盘文件名（放在工作区根目录下）
 QUEUE_FILE = "music_queue.jsonl"
@@ -61,8 +70,7 @@ def _append_jsonl(context: ToolContext, name: str, payload: Mapping[str, Any]) -
 def make_play_music(context: ToolContext):
     def play_music(path: str = "", query: str = "") -> str:
         if not str(path or "").strip() and not str(query or "").strip():
-            return error_text("必须提供 path（本地音频文件）或 query（曲目名）",
-                              "BAD_ARGUMENTS")
+            return error_text("必须提供 path（本地音频文件）或 query（曲目名）", "BAD_ARGUMENTS")
         entry: Dict[str, Any] = {
             "requested_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "query": str(query or ""),
@@ -76,8 +84,10 @@ def make_play_music(context: ToolContext):
                 return error_text("音频文件不存在: " + target, "FS_NOT_FOUND")
             if os.path.splitext(target)[1].lower() not in AUDIO_SUFFIXES:
                 return error_text(
-                    "不是受支持的音频格式: " + repr(os.path.splitext(target)[1])
-                    + "，可选 " + repr(sorted(AUDIO_SUFFIXES)),
+                    "不是受支持的音频格式: "
+                    + repr(os.path.splitext(target)[1])
+                    + "，可选 "
+                    + repr(sorted(AUDIO_SUFFIXES)),
                     "UNSUPPORTED_FORMAT",
                 )
             entry["path"] = target
@@ -89,10 +99,14 @@ def make_play_music(context: ToolContext):
             return error_text("写入播放队列失败: " + str(exc), "FS_WRITE_FAILED")
 
         target_desc = entry.get("path") or ("曲目 " + repr(entry.get("query")))
-        return ("已把播放请求加入队列：" + target_desc
-                + "\n队列文件: " + queue_path
-                + "\n说明：第一期不自动启动外部播放器，界面层会消费该队列"
-                "（这是刻意的安全设计——工具本身不产生副作用）。")
+        return (
+            "已把播放请求加入队列："
+            + target_desc
+            + "\n队列文件: "
+            + queue_path
+            + "\n说明：第一期不自动启动外部播放器，界面层会消费该队列"
+            "（这是刻意的安全设计——工具本身不产生副作用）。"
+        )
 
     return play_music
 
@@ -104,8 +118,8 @@ def make_set_reminder(context: ToolContext):
             return error_text("必须提供 text（提醒内容）", "BAD_ARGUMENTS")
         if len(content) > MAX_REMINDER_CHARS:
             return error_text(
-                "提醒内容过长（上限 " + str(MAX_REMINDER_CHARS) + " 字符）",
-                "BAD_ARGUMENTS")
+                "提醒内容过长（上限 " + str(MAX_REMINDER_CHARS) + " 字符）", "BAD_ARGUMENTS"
+            )
         entry = {
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "when": str(when or "").strip(),
@@ -127,16 +141,15 @@ def make_set_reminder(context: ToolContext):
 def make_list_reminders(context: ToolContext):
     def list_reminders(include_done: bool = True) -> str:
         try:
-            target = context.check_read(
-                os.path.join(context.effective_workspace, REMINDER_FILE))
+            target = context.check_read(os.path.join(context.effective_workspace, REMINDER_FILE))
         except SandboxDenied as exc:
             return error_text(str(exc), exc.code)
         if not os.path.exists(target):
             return "还没有任何提醒。"
         text = _read_text(target) or ""
         reminders: List[Dict[str, Any]] = []
-        for line in text.splitlines():
-            line = line.strip()
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
             if not line:
                 continue
             try:
@@ -151,10 +164,12 @@ def make_list_reminders(context: ToolContext):
         for index, item in enumerate(reminders, 1):
             when = item.get("when") or "（未指定时间）"
             mark = "已完成 " if item.get("done") else ""
-            rendered.append(str(index) + ". [" + str(when) + "] " + mark
-                            + str(item.get("text", "")))
-        return truncate_text("提醒（" + str(len(rendered)) + " 条）：\n"
-                             + "\n".join(rendered), 8000)
+            rendered.append(
+                str(index) + ". [" + str(when) + "] " + mark + str(item.get("text", ""))
+            )
+        return truncate_text(
+            "提醒（" + str(len(rendered)) + " 条）：\n" + "\n".join(rendered), 8000
+        )
 
     return list_reminders
 
@@ -162,8 +177,7 @@ def make_list_reminders(context: ToolContext):
 def make_clear_reminders(context: ToolContext):
     def clear_reminders() -> str:
         try:
-            target = context.check_write(
-                os.path.join(context.effective_workspace, REMINDER_FILE))
+            target = context.check_write(os.path.join(context.effective_workspace, REMINDER_FILE))
         except SandboxDenied as exc:
             return error_text(str(exc), exc.code)
         if not os.path.exists(target):
@@ -221,10 +235,12 @@ def build_life_tools(context: ToolContext) -> List[ToolSpec]:
                 "把一首本地音频加入播放队列并返回播放指令（不会自动启动外部播放器）。"
                 "可以给 path（本地文件）或 query（曲目名）。"
             ),
-            parameters=_schema({
-                "path": {"type": "string", "description": "本地音频文件路径"},
-                "query": {"type": "string", "description": "曲目名（交给界面层匹配）"},
-            }),
+            parameters=_schema(
+                {
+                    "path": {"type": "string", "description": "本地音频文件路径"},
+                    "query": {"type": "string", "description": "曲目名（交给界面层匹配）"},
+                }
+            ),
             handler=make_play_music(context),
             read_only=False,
             parallel_safe=False,
@@ -233,10 +249,13 @@ def build_life_tools(context: ToolContext) -> List[ToolSpec]:
         ToolSpec(
             name="set_reminder",
             description="记下一条提醒（写入工作区的 reminders.jsonl）。",
-            parameters=_schema({
-                "text": {"type": "string", "description": "提醒内容"},
-                "when": {"type": "string", "description": "时间描述，如「明天上午」"},
-            }, ["text"]),
+            parameters=_schema(
+                {
+                    "text": {"type": "string", "description": "提醒内容"},
+                    "when": {"type": "string", "description": "时间描述，如「明天上午」"},
+                },
+                ["text"],
+            ),
             handler=make_set_reminder(context),
             read_only=False,
             parallel_safe=False,
@@ -245,9 +264,11 @@ def build_life_tools(context: ToolContext) -> List[ToolSpec]:
         ToolSpec(
             name="list_reminders",
             description="列出已经记下的提醒。",
-            parameters=_schema({
-                "include_done": {"type": "boolean", "description": "是否包含已完成，默认 true"},
-            }),
+            parameters=_schema(
+                {
+                    "include_done": {"type": "boolean", "description": "是否包含已完成，默认 true"},
+                }
+            ),
             handler=make_list_reminders(context),
             read_only=True,
             kind=TOOL_KIND_GENERIC,

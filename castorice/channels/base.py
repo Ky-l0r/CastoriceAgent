@@ -17,7 +17,7 @@ ai.AI 冻结接口（get_response_stream / set_mode / set_approval_responder）
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, Optional, Protocol, runtime_checkable
+from typing import Any, Dict, Iterator, Protocol, runtime_checkable
 
 __all__ = [
     "Channel",
@@ -59,7 +59,7 @@ class ChannelMessage:
     语义剥掉命令前缀（命令由渠道自己处理，不进 agent）。
     """
 
-    channel: str            # "feishu" | "wechat_ilink" | "qq" | ...
+    channel: str  # "feishu" | "wechat_ilink" | "qq" | ...
     sender_id: str
     chat_id: str
     text: str

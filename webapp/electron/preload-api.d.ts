@@ -17,6 +17,8 @@ export interface CastoriceBridgeApi {
   /** 窗口控制：最小化 / 隐藏到托盘 / 最大化切换（自绘标题栏用）。 */
   minimize(): void;
   hide(): void;
+  /** 关闭窗口（标题栏「×」）：按 closeToTray 设置隐藏到托盘或退出程序。 */
+  requestClose(): void;
   toggleMaximize(): void;
   /** 目录选择对话框（工作目录绑定）；取消返回 null。 */
   pickDirectory(): Promise<string | null>;
@@ -30,6 +32,39 @@ export interface CastoriceBridgeApi {
   /** 关闭行为：true = 关闭时最小化到托盘（默认）；false = 直接退出。 */
   getCloseAction(): Promise<boolean>;
   setCloseAction(value: boolean): Promise<boolean>;
+
+  // ---- 壳层设置（设置中心「通用」页）----
+  getShellState(): Promise<ShellState>;
+  setAutostart(enabled: boolean): Promise<AutostartState & { shell?: ShellState }>;
+  setSilentStart(enabled: boolean): Promise<ShellState>;
+  openDataDir(): Promise<{ ok: boolean; error?: string }>;
+  restartBackend(): Promise<{ ok: boolean; error?: string }>;
+  onShellStateChanged(listener: (state: ShellState) => void): () => void;
+  onBackendError(listener: (info: { message: string } | null) => void): () => void;
+}
+
+/** 开机自启动的登记状态。 */
+export interface AutostartState {
+  enabled: boolean;
+  supported: boolean;
+  error?: string;
+}
+
+/** 壳层完整状态（主进程是唯一事实源）。 */
+export interface ShellState {
+  closeToTray: boolean;
+  /** 开机自启时不弹主窗口（后台静默运行）。 */
+  silentStart: boolean;
+  autostart: AutostartState;
+  /** 本次启动是否由自启动触发。 */
+  autostartLaunch: boolean;
+  /** 本次启动是否静默（没有弹出主窗口）。 */
+  silentLaunch: boolean;
+  /** 可写数据目录（配置 / 记忆 / 会话）。 */
+  dataRoot: string;
+  version: string;
+  packaged: boolean;
+  platform: string;
 }
 
 /** approval.detail RPC 返回的请求详情（前端审批卡渲染数据）。 */

@@ -48,18 +48,15 @@
 
 """
 
-
-
 from __future__ import annotations
-
 
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 __all__ = [
-    "AppPaths",
     "CORE_SECTIONS",
+    "AppPaths",
     "build_app",
     "build_default_paths",
     "ensure_core_sections",
@@ -69,6 +66,7 @@ __all__ = [
 # ----------------------------------------------------------------------------
 # 运行期目录约定（docs/refactor/05-channel-contract.md 的数据落盘部分）
 # ----------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class AppPaths:
@@ -129,36 +127,33 @@ CORE_SECTIONS: Tuple[str, ...] = ("mode", "modes", "permissions", "memory")
 
 #: 缺失节的补齐内容——与 example_config.yaml 保持语义一致（注释随节写入）。
 _SECTION_TEMPLATES: Dict[str, str] = {
-    "mode": (
-        '# 当前会话模式\n'
-        'mode: "chat"                 # 可选: chat | work | code | learn\n'
-    ),
+    "mode": ('# 当前会话模式\nmode: "chat"                 # 可选: chat | work | code | learn\n'),
     "modes": (
-        '# 各模式的工作目录绑定（Code=可信代码目录，Learn=Obsidian Vault）\n'
-        '# 留空表示未绑定；登记的目录同时是「可信根」，越界会被拒绝。\n'
-        'modes:\n'
-        '  work:\n'
+        "# 各模式的工作目录绑定（Code=可信代码目录，Learn=Obsidian Vault）\n"
+        "# 留空表示未绑定；登记的目录同时是「可信根」，越界会被拒绝。\n"
+        "modes:\n"
+        "  work:\n"
         '    workdir: ""            # 工作模式的目录（可选）\n'
-        '  code:\n'
+        "  code:\n"
         '    workdir: ""            # 编程模式的可信代码目录\n'
         '    sandbox: "workspace-write"\n'
-        '  learn:\n'
+        "  learn:\n"
         '    vault: ""              # 学习模式的 Obsidian Vault 根目录\n'
         '    sandbox: "workspace-write"\n'
     ),
     "permissions": (
-        '# 权限与审批\n'
-        'permissions:\n'
+        "# 权限与审批\n"
+        "permissions:\n"
         '  sandbox_default: "read-only"   # read-only | workspace-write | danger-full-access\n'
         '  approval_policy: "ask"         # ask | never\n'
-        '  command_allowlist: []          # 追加到内置只读命令白名单的命令\n'
+        "  command_allowlist: []          # 追加到内置只读命令白名单的命令\n"
     ),
     "memory": (
-        '# 记忆引擎\n'
-        'memory:\n'
+        "# 记忆引擎\n"
+        "memory:\n"
         '  engine: "embedding"            # embedding | wiki | summary\n'
-        '  summary_threshold: 40          # 累积多少条后压缩\n'
-        '  worldbook_enabled: true\n'
+        "  summary_threshold: 40          # 累积多少条后压缩\n"
+        "  worldbook_enabled: true\n"
     ),
 }
 
@@ -227,8 +222,10 @@ def ensure_core_sections(
     path.write_text(text, encoding="utf-8")
 
     for name in missing:
-        log(f"提示: config.yaml 缺少 {name} 节，已按默认值补齐"
-            "（详见 example_config.yaml 的注释说明）")
+        log(
+            f"提示: config.yaml 缺少 {name} 节，已按默认值补齐"
+            "（详见 example_config.yaml 的注释说明）"
+        )
     return missing
 
 
@@ -236,8 +233,10 @@ def ensure_core_sections(
 # 组合根视图
 # ----------------------------------------------------------------------------
 
-def build_app(root: Optional[Path] = None,
-              config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+
+def build_app(
+    root: Optional[Path] = None, config: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """第一期组合根视图：目录约定 + 装配入口说明。
 
     第二期接入飞书 / 微信 iLink / QQ 渠道时，渠道适配层只依赖这里的
@@ -254,5 +253,6 @@ def build_app(root: Optional[Path] = None,
         for name in missing_core_sections(config):
             warnings.append(
                 f"config.yaml 缺少 {name} 节，将按代码内默认值运行"
-                "（mode=chat / sandbox=read-only / approval=ask / engine=embedding）")
+                "（mode=chat / sandbox=read-only / approval=ask / engine=embedding）"
+            )
     return {"paths": paths, "warnings": warnings}

@@ -9,7 +9,7 @@ import yaml
 
 import ai
 
-CONFIG = '''# config.yaml - 支持多种LLM提供商
+CONFIG = """# config.yaml - 支持多种LLM提供商
 
 # 当前激活的提供商
 active_provider: "deepseek"  # 可选: openai, deepseek, aliyun
@@ -28,7 +28,7 @@ providers:
     base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
     model: "qwen-plus"
     temperature: 0.5
-'''
+"""
 
 
 @pytest.fixture
@@ -39,6 +39,7 @@ def cm(write_config):
 # ----------------------------------------------------------------------------
 # get_provider_config
 # ----------------------------------------------------------------------------
+
 
 def test_get_provider_config_returns_provider_block(cm):
     config = cm.get_provider_config("deepseek")
@@ -75,6 +76,7 @@ def test_provider_names(cm):
 # get_active_provider
 # ----------------------------------------------------------------------------
 
+
 def test_get_active_provider(cm):
     assert cm.get_active_provider() == "deepseek"
 
@@ -88,6 +90,7 @@ def test_get_active_provider_missing_raises(write_config):
 # ----------------------------------------------------------------------------
 # set_active_provider
 # ----------------------------------------------------------------------------
+
 
 def test_set_active_provider_updates_memory(cm):
     cm.set_active_provider("aliyun")
@@ -143,6 +146,7 @@ def test_switching_back_and_forth(cm):
 # set_provider_values / set_values
 # ----------------------------------------------------------------------------
 
+
 def test_set_provider_values_updates_and_persists(cm):
     cm.set_provider_values("deepseek", {"api_key": "sk-new", "temperature": 0.2})
     config = cm.get_provider_config("deepseek")
@@ -174,6 +178,7 @@ def test_reload_picks_up_external_change(cm):
 # ----------------------------------------------------------------------------
 # get / 错误路径
 # ----------------------------------------------------------------------------
+
 
 def test_get_dotted_path_and_default(cm):
     assert cm.get("providers.deepseek.model") == "deepseek-chat"

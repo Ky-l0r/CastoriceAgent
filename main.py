@@ -44,7 +44,7 @@ def setup_file_logging(root: Path) -> None:
         root_logger = logging.getLogger()
         root_logger.setLevel(logging.INFO)
         root_logger.addHandler(handler)
-    except Exception as e:  # noqa: BLE001 - 日志失败不挡启动
+    except Exception as e:
         print(f"警告: 无法创建日志文件 - {e}")
 
 
@@ -57,7 +57,7 @@ def webapp_ready() -> bool:
     )
 
 
-def find_electron() -> "str | None":
+def find_electron() -> str | None:
     """定位 Electron 可执行入口（node_modules 本地优先，再退 PATH）。"""
     local = WEBAPP_DIR / "node_modules" / ".bin" / "electron.cmd"
     if local.is_file():
@@ -81,7 +81,7 @@ def launch_electron() -> int:
     # Electron 主进程按 VITE_DEV 判定 dev 形态（仓库源码树 sidecar）。
     env.setdefault("VITE_DEV", "1")
 
-    proc = subprocess.Popen(  # noqa: S603 - 参数全部来自仓库内路径
+    proc = subprocess.Popen(
         [electron, "."],
         cwd=str(WEBAPP_DIR),
         env=env,
@@ -101,7 +101,7 @@ def main() -> int:
     # 统一工作目录到程序目录，保证相对路径落点不随启动 CWD 漂移
     try:
         os.chdir(REPO_ROOT)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     if not webapp_ready():

@@ -42,6 +42,7 @@ RPC 方法面（fail-closed；未知方法 / 参数错误返回 rpc_error）：
 
 * config.get    {key?}                  -> {"value": ...}
 * config.set    {updates: {dotted: v}}  -> {"ok": true}（注释保持写回）
+* config.set_section {section, values} -> {"ok": true, "value": {...}}（整节写入，节不存在则创建）
 * memory.search {query, n_results?}     -> {"memories": [...]}
 * memory.clear  {}                      -> {"ok": true}
 * mode.list     {}                      -> {"modes": [...], "active": name}
@@ -68,7 +69,6 @@ channels.napcat 同标准），import castorice.bridge 不需要任何第三方�
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import logging
 import os
@@ -76,14 +76,14 @@ import secrets
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .channels.base import ChannelError
 from .session import SessionStore
 
 __all__ = [
-    "BridgeServer",
     "WEB_BRIDGE_CAPABILITIES",
+    "BridgeServer",
 ]
 
 logger = logging.getLogger(__name__)
@@ -101,7 +101,7 @@ WEB_BRIDGE_CAPABILITIES = {
 
 _LOOPBACK = "127.0.0.1"
 _HANDSHAKE_TIMEOUT = 5.0
-_MAX_FRAME_BYTES = 8 * 1024 * 1024   # 图片走 base64 内联（视觉输入协议位）
+_MAX_FRAME_BYTES = 8 * 1024 * 1024  # 图片走 base64 内联（视觉输入协议位）
 _SEEN_EVENT_MAX = 512
 
 # JSON-RPC 错误码（沿 http 语义，-32700 段留给解析错误）
@@ -115,11 +115,9 @@ _RPC_FORBIDDEN = -32002
 
 def _require_websockets() -> Any:
     try:
-        import websockets  # noqa: PLC0415 - 延迟导入，基础协议不硬依赖
+        import websockets
     except ImportError as exc:  # pragma: no cover - 环境缺依赖
-        raise ChannelError(
-            "桥接层需要 websockets 库（pip install websockets）"
-        ) from exc
+        raise ChannelError("桥接层需要 websockets 库（pip install websockets）") from exc
     return websockets
 
 
@@ -162,9 +160,7 @@ def request_payload_dict(request: Any) -> Dict[str, Any]:
 
 def _dotted_config_path(key: str) -> Tuple[str, ...]:
     """把 "a.b.c" 拆成 ('a', 'b', 'c')（空段拒绝）。"""
-    parts = tuple(
-        segment.strip() for segment in str(key or "").split(".") if segment.strip()
-    )
+    parts = tuple(segment.strip() for segment in str(key or "").split(".") if segment.strip())
     if not parts:
         raise ChannelError("配置键不能为空")
     return parts
@@ -173,6 +169,7 @@ def _dotted_config_path(key: str) -> Tuple[str, ...]:
 # ----------------------------------------------------------------------------
 # RPC 方法面（与 bot 的接缝全部鸭子类型；缺接口时按 fail-closed 报错）
 # ----------------------------------------------------------------------------
+
 
 class _RpcHandlers:
     """bridge RPC 方法面。每个方法接 bot 的鸭子类型接口。
@@ -220,6 +217,40 @@ class _RpcHandlers:
             raise ChannelError("配置写回失败: " + str(exc)) from exc
         return {"ok": True}
 
+    def config_set_section(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """整节写入配置（渠道这类「界面填一整节」的场景）。
+
+        与 config.set 的分工：
+          * config.set 逐键写回，要求键**已存在**（改值用）；
+          * config.set_section 整节写入，节不存在就创建（新增用）。
+
+        未配置过渠道时 config.yaml 里那一节整个是注释，逐键写必然
+        "路径不存在"——这正是「保存渠道配置失败」的根因。
+        """
+        manager = getattr(self._bot, "config_manager", None)
+        if manager is None:
+            raise ChannelError("bot 没有 config_manager（无法写回配置）")
+        section = str(params.get("section") or "").strip()
+        if not section:
+            raise ChannelError("config.set_section 需要 section（如 channels.napcat）")
+        values = params.get("values")
+        if not isinstance(values, dict) or not values:
+            raise ChannelError("config.set_section 需要 values 映射（键 -> 值）")
+        writer = getattr(manager, "set_section_values", None)
+        if not callable(writer):
+            raise ChannelError("config_manager 不支持 set_section_values")
+        try:
+            writer(section, {str(k): v for k, v in values.items()})
+        except FileNotFoundError as exc:
+            raise ChannelError("配置文件不存在: " + str(exc)) from exc
+        except Exception as exc:
+            raise ChannelError("配置写回失败: " + str(exc)) from exc
+        try:
+            value = manager.get(section)
+        except Exception:
+            value = None
+        return {"ok": True, "section": section, "value": _jsonable(value)}
+
     def provider_add(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """新增 / 更新一个提供商（整块写入，不依赖标量定位）。
 
@@ -253,7 +284,7 @@ class _RpcHandlers:
         try:
             n_results = int(params.get("n_results") or 5)
         except (TypeError, ValueError):
-            raise ChannelError("n_results 必须是整数")
+            raise ChannelError("n_results 必须是整数") from None
         manager = getattr(self._bot, "memory_manager", None)
         search = getattr(manager, "search_memories", None) if manager else None
         if not callable(search):
@@ -320,8 +351,11 @@ class _RpcHandlers:
         available = getattr(self._bot, "available_modes", None)
         if callable(available):
             try:
-                names = [str(m.get("name") or "") for m in available()
-                         if isinstance(m, dict) and m.get("name")]
+                names = [
+                    str(m.get("name") or "")
+                    for m in available()
+                    if isinstance(m, dict) and m.get("name")
+                ]
                 if names:
                     return names
             except Exception:
@@ -345,8 +379,7 @@ class _RpcHandlers:
         # 到 chat——回退语义对界面是误导，界面上应该显式报错）。
         names = self._known_mode_names()
         if names is not None and mode not in names:
-            raise ChannelError(
-                "未知模式 " + repr(mode) + "，可用: " + repr(sorted(names)))
+            raise ChannelError("未知模式 " + repr(mode) + "，可用: " + repr(sorted(names)))
         setter = getattr(self._bot, "set_mode", None)
         if not callable(setter):
             raise ChannelError("bot 没有 set_mode（无法切换模式）")
@@ -381,13 +414,17 @@ class _RpcHandlers:
                 stat = path.stat()
             except OSError:
                 continue
-            sessions.append({
-                "id": path.stem,
-                "mode": mode,
-                "title": _session_title(path),
-                "updatedAt": int(stat.st_mtime * 1000),
-                "messageCount": _session_event_count(path),
-            })
+            # messageCount 会整文件逐行扫一遍（会话一多，界面启动就明显卡）。
+            # 侧栏并不渲染这个字段，改为按文件大小估算：O(1)、零额外 I/O。
+            sessions.append(
+                {
+                    "id": path.stem,
+                    "mode": mode,
+                    "title": _session_title(path),
+                    "updatedAt": int(stat.st_mtime * 1000),
+                    "messageCount": _estimate_event_count(stat.st_size),
+                }
+            )
         active = ""
         try:
             active = str(getattr(getattr(self._bot, "_session", None), "session_id", "") or "")
@@ -425,13 +462,13 @@ class _RpcHandlers:
         events: List[Dict[str, Any]] = []
         try:
             with path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    line = line.strip()
+                for raw_line in handle:
+                    line = raw_line.strip()
                     if not line:
                         continue
                     try:
                         raw = json.loads(line)
-                    except Exception:
+                    except Exception:  # noqa: S112 - 单行脏数据跳过，不中断整批历史
                         continue
                     if not isinstance(raw, dict):
                         continue
@@ -449,7 +486,8 @@ class _RpcHandlers:
                             payload.get("display")
                             or payload.get("text")
                             or payload.get("content")
-                            or "")
+                            or ""
+                        )
                     elif kind == "emoji":
                         item["name"] = str(payload.get("name") or "")
                         item["path"] = str(payload.get("path") or "")
@@ -568,8 +606,7 @@ class _RpcHandlers:
             raise ChannelError("approval.resolve 需要 request_id")
         decision = str(params.get("decision") or "").strip().lower()
         if decision not in ("allow", "deny"):
-            raise ChannelError(
-                "decision 必须是 allow | deny（一次性授权，无 allow-always）")
+            raise ChannelError("decision 必须是 allow | deny（一次性授权，无 allow-always）")
         delivered = bool(broker.resolve(request_id, decision))
         if not delivered:
             raise ChannelError("审批请求不存在或已结束: " + repr(request_id))
@@ -578,7 +615,7 @@ class _RpcHandlers:
     # ---- notify（DesktopNotifier 的 Web 实现，注册进进程级注册表）----
 
     def notify_register(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        from .notify import (  # noqa: PLC0415 - 延迟导入，保持 import 轻量
+        from .notify import (
             WebNotifier,
             get_notifier_registry,
         )
@@ -591,14 +628,14 @@ class _RpcHandlers:
     # ---- profile（用户档案：castorice.profile 的 JSON 落盘读写） ----
 
     def profile_get(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        from .profile import PROFILE_FIELDS, UserProfile  # noqa: PLC0415
+        from .profile import PROFILE_FIELDS, UserProfile
 
         profile = UserProfile.load()
         # 只吐白名单字段：文件里可能有历史遗留键，不向前端扩散
         return {"profile": {k: profile.get(k) for k in PROFILE_FIELDS}}
 
     def profile_set(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        from .profile import PROFILE_FIELDS, UserProfile  # noqa: PLC0415
+        from .profile import PROFILE_FIELDS, UserProfile
 
         updates = params.get("updates")
         if not isinstance(updates, dict) or not updates:
@@ -606,8 +643,8 @@ class _RpcHandlers:
         unknown = [k for k in updates if k not in PROFILE_FIELDS]
         if unknown:
             raise ChannelError(
-                "未知档案字段: " + repr(sorted(unknown))
-                + "，可用: " + repr(list(PROFILE_FIELDS)))
+                "未知档案字段: " + repr(sorted(unknown)) + "，可用: " + repr(list(PROFILE_FIELDS))
+            )
         # 值统一压成 str / None（None = 清空该字段；档案语义是文本事实）
         clean: Dict[str, Any] = {}
         for key, value in updates.items():
@@ -616,13 +653,13 @@ class _RpcHandlers:
             else:
                 text = str(value)
                 if len(text) > 200:
-                    raise ChannelError(
-                        "档案字段 " + repr(key) + " 过长（上限 200 字符）")
+                    raise ChannelError("档案字段 " + repr(key) + " 过长（上限 200 字符）")
                 clean[key] = text
         UserProfile.save_values(clean)
-        return {"ok": True, "profile": {
-            k: v for k, v in UserProfile.load().items()
-            if k in PROFILE_FIELDS}}
+        return {
+            "ok": True,
+            "profile": {k: v for k, v in UserProfile.load().items() if k in PROFILE_FIELDS},
+        }
 
     # ---- ui_settings（外观偏好：ui_settings.json 的 Web 侧读写） ----
 
@@ -638,7 +675,8 @@ class _RpcHandlers:
         if callable(loader):
             return loader
         try:
-            import ui  # noqa: PLC0415 - 仅在 Qt 环境可用时复用
+            import ui
+
             return ui.UiSettings.load
         except Exception:
             return None
@@ -656,14 +694,20 @@ class _RpcHandlers:
         saver = getattr(self._bot, "_ui_settings_save", None)
         if not callable(saver):
             try:
-                import ui  # noqa: PLC0415
+                import ui
+
                 saver = ui.UiSettings.save_values
             except Exception:
                 saver = _save_ui_settings_file
         saver(clean)
-        return {"ok": True, "settings": (
-            self._ui_settings_loader()() if self._ui_settings_loader()
-            else _load_ui_settings_file())}
+        return {
+            "ok": True,
+            "settings": (
+                self._ui_settings_loader()()
+                if self._ui_settings_loader()
+                else _load_ui_settings_file()
+            ),
+        }
 
 
 def _session_title(path: Path, limit: int = 32) -> str:
@@ -673,13 +717,13 @@ def _session_title(path: Path, limit: int = 32) -> str:
     """
     try:
         with path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
+            for raw_line in handle:
+                line = raw_line.strip()
                 if not line:
                     continue
                 try:
                     event = json.loads(line)
-                except Exception:
+                except Exception:  # noqa: S112 - 跳过脏行，继续找首条用户消息
                     continue
                 if not isinstance(event, dict) or event.get("kind") != "user":
                     continue
@@ -694,6 +738,24 @@ def _session_title(path: Path, limit: int = 32) -> str:
     except Exception:
         pass
     return "新对话"
+
+
+def _estimate_event_count(size: int) -> int:
+    """按文件字节数估算会话事件条数（O(1)，不读文件）。
+
+    会话 JSONL 单条事件（含工具事件）实测多在 300~800 字节之间，取 480
+    作为均值。精度足够支撑界面上的粗略提示，代价是零 I/O：此前
+    sessions.list 会对最多 50 个会话各扫一遍全文，会话多了首屏明显变慢。
+
+    Args:
+        size: 文件字节数
+
+    Returns:
+        估算的事件条数（至少 0）
+    """
+    if size <= 0:
+        return 0
+    return max(0, round(size / 480.0))
 
 
 def _session_event_count(path: Path) -> int:
@@ -715,15 +777,14 @@ def _ui_settings_path() -> Path:
     优先级：CASTORICE_UI_SETTINGS（测试/便携）> 数据目录。
     数据目录见 castorice.paths：生产环境 %APPDATA%，开发环境程序目录。
     """
-    from . import paths as cpaths  # noqa: PLC0415
+    from . import paths as cpaths
 
-    return cpaths.resolve_data_file(
-        "ui_settings.json", os.environ.get("CASTORICE_UI_SETTINGS"))
+    return cpaths.resolve_data_file("ui_settings.json", os.environ.get("CASTORICE_UI_SETTINGS"))
 
 
 def _load_ui_settings_file() -> Dict[str, Any]:
     """ui_settings.json 的兜底读取（ui.py 不可用时；语义对齐 UiSettings.load）。"""
-    import json  # noqa: PLC0415
+    import json
 
     path = _ui_settings_path()
     try:
@@ -740,8 +801,7 @@ def _save_ui_settings_file(values: Dict[str, Any]) -> None:
     path = _ui_settings_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
 
@@ -754,17 +814,17 @@ def _save_ui_settings_file(values: Dict[str, Any]) -> None:
 # 进程级桥接服务器登记（WebNotifier 的默认绑定目标）
 # ----------------------------------------------------------------------------
 
-_ACTIVE_SERVER: Optional["BridgeServer"] = None
+_ACTIVE_SERVER: Optional[BridgeServer] = None
 _ACTIVE_SERVER_LOCK = threading.Lock()
 
 
-def _set_active_server(server: Optional["BridgeServer"]) -> None:
+def _set_active_server(server: Optional[BridgeServer]) -> None:
     global _ACTIVE_SERVER
     with _ACTIVE_SERVER_LOCK:
         _ACTIVE_SERVER = server
 
 
-def active_server() -> Optional["BridgeServer"]:
+def active_server() -> Optional[BridgeServer]:
     """进程内最近启动的桥接服务器（未启动返回 None）。
 
     castorice.notify.WebNotifier 的默认绑定目标：notify.py 不 import
@@ -778,12 +838,14 @@ def active_server() -> Optional["BridgeServer"]:
 # 桥接服务器
 # ----------------------------------------------------------------------------
 
+
 @dataclass
 class _BridgeState:
     """服务器共享可变状态（_lock 保护）。"""
+
     closed: bool = False
-    busy: bool = False            # 当前是否有一轮对话在跑
-    generation: int = 0           # 轮次代号（interrupt 递增）
+    busy: bool = False  # 当前是否有一轮对话在跑
+    generation: int = 0  # 轮次代号（interrupt 递增）
     loop: Optional[asyncio.AbstractEventLoop] = None
     clients: Dict[Any, Dict[str, Any]] = field(default_factory=dict)
     #: 广播发送任务（引用住避免被 GC；done 回调自动移除）。
@@ -830,6 +892,7 @@ class BridgeServer:
         self._rpc_methods: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
             "config.get": self._rpc.config_get,
             "config.set": self._rpc.config_set,
+            "config.set_section": self._rpc.config_set_section,
             "provider.add": self._rpc.provider_add,
             "memory.search": self._rpc.memory_search,
             "memory.clear": self._rpc.memory_clear,
@@ -912,7 +975,7 @@ class BridgeServer:
             if state.closed:
                 return
             state.closed = True
-            state.generation += 1        # 打断在跑的轮次
+            state.generation += 1  # 打断在跑的轮次
             loop = state.loop
             thread = self._thread
         _set_active_server(None)
@@ -953,9 +1016,7 @@ class BridgeServer:
         text = json.dumps(frame, ensure_ascii=False, default=str)
         loop.call_soon_threadsafe(self._do_broadcast, text)
         # 是否真的有接收者：看握手客户端计数（发送本身是异步尽力而为）。
-        return any(
-            meta.get("handshaked") for meta in list(self._state.clients.values())
-        )
+        return any(meta.get("handshaked") for meta in list(self._state.clients.values()))
 
     def _do_broadcast(self, text: str) -> None:
         """事件循环线程内执行的实际发送（每个客户端一个受管任务）。"""
@@ -1043,8 +1104,7 @@ class BridgeServer:
             return False
         supplied = str(payload.get("token") or "")
         expected = self._token
-        return secrets.compare_digest(
-            supplied.encode("utf-8"), expected.encode("utf-8"))
+        return secrets.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8"))
 
     # ---- 帧分发 ----
 
@@ -1071,13 +1131,16 @@ class BridgeServer:
         elif frame_type == "rpc":
             await self._handle_rpc(ws, payload)
         elif frame_type == "ping":
-            await self._safe_send(ws, json.dumps(
-                {"type": "pong", "ts": payload.get("ts", "")},
-                ensure_ascii=False))
+            await self._safe_send(
+                ws, json.dumps({"type": "pong", "ts": payload.get("ts", "")}, ensure_ascii=False)
+            )
         else:
             await self._send_rpc_error(
-                ws, str(payload.get("id") or ""),
-                _RPC_METHOD_NOT_FOUND, "未知帧类型: " + repr(frame_type))
+                ws,
+                str(payload.get("id") or ""),
+                _RPC_METHOD_NOT_FOUND,
+                "未知帧类型: " + repr(frame_type),
+            )
 
     # ---- chat（事件流） ----
 
@@ -1088,14 +1151,16 @@ class BridgeServer:
             images = []
         stream_factory = getattr(self._bot, "get_response_stream", None)
         if not callable(stream_factory):
-            await self._send_rpc_error(ws, "", _RPC_METHOD_NOT_FOUND,
-                                       "bot 没有 get_response_stream（无法对话）")
+            await self._send_rpc_error(
+                ws, "", _RPC_METHOD_NOT_FOUND, "bot 没有 get_response_stream（无法对话）"
+            )
             return
 
         with self._lock:
             if self._state.busy:
                 await self._send_rpc_error(
-                    ws, "", _RPC_BUSY, "已有对话在进行（先 interrupt 或等待 done）")
+                    ws, "", _RPC_BUSY, "已有对话在进行（先 interrupt 或等待 done）"
+                )
                 return
             self._state.busy = True
             self._state.generation += 1
@@ -1106,8 +1171,8 @@ class BridgeServer:
             # bot 生成器在线程池里消费（可能长时间阻塞 LLM 请求），
             # 事件经广播帧发给前端；done 语义由 _consume_stream 的出口保证。
             done_sent = await loop.run_in_executor(
-                None, self._consume_stream,
-                stream_factory, text, list(images), generation)
+                None, self._consume_stream, stream_factory, text, list(images), generation
+            )
         finally:
             with self._lock:
                 still_mine = self._state.generation == generation
@@ -1119,8 +1184,9 @@ class BridgeServer:
             if still_mine and not done_sent:
                 self.send_event("done", {"ok": True, "payload": ""})
 
-    def _consume_stream(self, stream_factory: Callable, text: str,
-                        images: List[str], generation: int) -> bool:
+    def _consume_stream(
+        self, stream_factory: Callable, text: str, images: List[str], generation: int
+    ) -> bool:
         """线程池内消费 bot 事件流并逐事件广播；返回流是否产出了 done。
 
         bot 契约保证 done 恰好一次且最后（t19 实测冻结）；本方法同时
@@ -1131,23 +1197,23 @@ class BridgeServer:
             stream = stream_factory(text, images)
         except Exception as exc:
             self._stream_failed(generation, exc)
-            return True   # _stream_failed 已补发 ok=False 的 done
+            return True  # _stream_failed 已补发 ok=False 的 done
         try:
             for kind, event_payload in stream:
                 if self._state.closed or self._state.generation != generation:
                     # close / interrupt：退出迭代即打断生成器（生成器内的
                     # finally 完成收尾），后续事件一律不再发。
                     stream.close()
-                    return True   # 打断路径已补发 done(ok=False)
+                    return True  # 打断路径已补发 done(ok=False)
                 if not isinstance(kind, str):
                     continue
                 self.send_event(kind, event_payload)
                 if kind == "done":
                     with self._lock:
                         self._state.busy = False
-                        self._state.generation += 1   # 正常结束，轮次封口
+                        self._state.generation += 1  # 正常结束，轮次封口
                     return True
-            return False   # 流耗尽但没产 done：由 _handle_chat 补发兜底
+            return False  # 流耗尽但没产 done：由 _handle_chat 补发兜底
         except Exception as exc:
             self._stream_failed(generation, exc)
             return True
@@ -1192,13 +1258,13 @@ class BridgeServer:
         if not isinstance(params, dict):
             params = {}
         if not method:
-            await self._send_rpc_error(ws, rpc_id, _RPC_INVALID_PARAMS,
-                                       "缺少 method")
+            await self._send_rpc_error(ws, rpc_id, _RPC_INVALID_PARAMS, "缺少 method")
             return
         handler = self._rpc_methods.get(method)
         if handler is None:
-            await self._send_rpc_error(ws, rpc_id, _RPC_METHOD_NOT_FOUND,
-                                       "未知方法: " + repr(method))
+            await self._send_rpc_error(
+                ws, rpc_id, _RPC_METHOD_NOT_FOUND, "未知方法: " + repr(method)
+            )
             return
         loop = asyncio.get_running_loop()
         try:
@@ -1208,19 +1274,25 @@ class BridgeServer:
             return
         except Exception as exc:
             logger.warning("RPC %s 执行失败: %s", method, exc)
-            await self._send_rpc_error(ws, rpc_id, _RPC_INTERNAL_ERROR,
-                                       "RPC 执行失败: " + str(exc))
+            await self._send_rpc_error(ws, rpc_id, _RPC_INTERNAL_ERROR, "RPC 执行失败: " + str(exc))
             return
-        await self._safe_send(ws, json.dumps(
-            {"type": "rpc_result", "id": rpc_id, "result": result},
-            ensure_ascii=False, default=str))
+        await self._safe_send(
+            ws,
+            json.dumps(
+                {"type": "rpc_result", "id": rpc_id, "result": result},
+                ensure_ascii=False,
+                default=str,
+            ),
+        )
 
-    async def _send_rpc_error(self, ws: Any, rpc_id: Any,
-                              code: int, message: str) -> None:
-        await self._safe_send(ws, json.dumps(
-            {"type": "rpc_error", "id": rpc_id,
-             "error": {"code": code, "message": message}},
-            ensure_ascii=False))
+    async def _send_rpc_error(self, ws: Any, rpc_id: Any, code: int, message: str) -> None:
+        await self._safe_send(
+            ws,
+            json.dumps(
+                {"type": "rpc_error", "id": rpc_id, "error": {"code": code, "message": message}},
+                ensure_ascii=False,
+            ),
+        )
 
     async def _safe_send(self, ws: Any, text: str) -> None:
         try:

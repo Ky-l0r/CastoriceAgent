@@ -118,14 +118,16 @@ def test_system_prompt_section_empty_without_profile():
 
 
 def test_system_prompt_section_injects_all_fields():
-    UserProfile.save_values({
-        "appellation": "阁下",
-        "nickname": "开拓者",
-        "gender": "女",
-        "birthday": "01-01",
-        "city": "上海",
-        "timezone": "Asia/Shanghai",
-    })
+    UserProfile.save_values(
+        {
+            "appellation": "阁下",
+            "nickname": "开拓者",
+            "gender": "女",
+            "birthday": "01-01",
+            "city": "上海",
+            "timezone": "Asia/Shanghai",
+        }
+    )
     section = system_prompt_section()
     assert section.startswith("\n\n【用户档案】")
     assert "「阁下」" in section
@@ -163,8 +165,9 @@ def test_format_now_without_timezone_is_legacy_format():
 
 
 def test_format_now_with_timezone_renders_that_zone():
-    import ai
     from datetime import datetime
+
+    import ai
 
     UserProfile.save_values({"timezone": "Asia/Shanghai"})
     text = ai.AI._format_now(datetime(2026, 10, 3, 16, 20, 15))
@@ -174,8 +177,9 @@ def test_format_now_with_timezone_renders_that_zone():
 
 
 def test_format_now_with_bad_timezone_falls_back_to_local():
-    import ai
     from datetime import datetime
+
+    import ai
 
     UserProfile.save_values({"timezone": "Mars/Olympus"})
     text = ai.AI._format_now(datetime(2026, 10, 3, 16, 20, 15))
@@ -198,13 +202,23 @@ def test_build_system_prompt_includes_profile_section():
     bot = ai.AI.__new__(ai.AI)
     bot.prompt_manager = PromptStub()
     bot.emoji_catalog = None
-    bot._mode_registry = type("R", (), {
-        "visible_tool_names": staticmethod(lambda mode: []),
-        "names": staticmethod(lambda: ["chat"]),
-        "get": staticmethod(lambda name: type("M", (), {
-            "system_prompt_sections": (),
-        })()),
-    })()
+    bot._mode_registry = type(
+        "R",
+        (),
+        {
+            "visible_tool_names": staticmethod(lambda mode: []),
+            "names": staticmethod(lambda: ["chat"]),
+            "get": staticmethod(
+                lambda name: type(
+                    "M",
+                    (),
+                    {
+                        "system_prompt_sections": (),
+                    },
+                )()
+            ),
+        },
+    )()
 
     prompt = bot._build_system_prompt(mode="chat", user_message="hi")
     assert prompt.startswith("BASE")
@@ -216,12 +230,12 @@ def test_build_system_prompt_includes_profile_section():
 
 def test_get_response_stream_query_carries_city():
     """get_response_stream 的记忆检索 query 附带城市后缀（源码级断言）。"""
-    import ai
     import inspect
+
+    import ai
 
     src = inspect.getsource(ai.AI.get_response_stream)
     assert "memory_query_suffix" in src
-
 
 
 # ----------------------------------------------------------------------------
@@ -249,12 +263,13 @@ def server_and_client():
 def test_profile_get_returns_whitelist_defaults(server_and_client):
     frame = server_and_client.rpc("profile.get")
     assert frame["type"] == "rpc_result"
-    assert frame["result"]["profile"] == {k: None for k in PROFILE_FIELDS}
+    assert frame["result"]["profile"] == dict.fromkeys(PROFILE_FIELDS)
 
 
 def test_profile_set_roundtrip(server_and_client):
     frame = server_and_client.rpc(
-        "profile.set", {"updates": {"nickname": "开拓者", "city": "上海"}})
+        "profile.set", {"updates": {"nickname": "开拓者", "city": "上海"}}
+    )
     assert frame["type"] == "rpc_result"
     assert frame["result"]["profile"]["city"] == "上海"
     frame = server_and_client.rpc("profile.get")
@@ -262,8 +277,7 @@ def test_profile_set_roundtrip(server_and_client):
 
 
 def test_profile_set_rejects_unknown_field(server_and_client):
-    frame = server_and_client.rpc(
-        "profile.set", {"updates": {"hacker": "x"}})
+    frame = server_and_client.rpc("profile.set", {"updates": {"hacker": "x"}})
     assert frame["type"] == "rpc_error"
     assert "未知档案字段" in frame["error"]["message"]
 
@@ -274,8 +288,7 @@ def test_profile_set_rejects_empty_updates(server_and_client):
 
 
 def test_profile_set_rejects_overlong_value(server_and_client):
-    frame = server_and_client.rpc(
-        "profile.set", {"updates": {"nickname": "x" * 201}})
+    frame = server_and_client.rpc("profile.set", {"updates": {"nickname": "x" * 201}})
     assert frame["type"] == "rpc_error"
     assert "过长" in frame["error"]["message"]
 
@@ -288,8 +301,7 @@ def test_profile_set_none_clears_field(server_and_client):
 
 
 def test_ui_settings_set_then_get(server_and_client):
-    frame = server_and_client.rpc(
-        "ui_settings.set", {"updates": {"theme": "dark", "radius": 16}})
+    frame = server_and_client.rpc("ui_settings.set", {"updates": {"theme": "dark", "radius": 16}})
     assert frame["type"] == "rpc_result"
     assert frame["result"]["settings"]["theme"] == "dark"
     frame = server_and_client.rpc("ui_settings.get")
@@ -313,8 +325,7 @@ def test_ui_settings_set_rejects_empty_updates(server_and_client):
 
 def test_ui_settings_compat_with_ui_py_keys(server_and_client):
     """向后兼容：theme / ui_mode 键写出的文件形态与 ui.py 约定一致。"""
-    server_and_client.rpc(
-        "ui_settings.set", {"updates": {"theme": "light", "ui_mode": "work"}})
+    server_and_client.rpc("ui_settings.set", {"updates": {"theme": "light", "ui_mode": "work"}})
     path = Path(os.environ["CASTORICE_UI_SETTINGS"])
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data == {"theme": "light", "ui_mode": "work"}

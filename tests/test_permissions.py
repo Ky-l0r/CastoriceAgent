@@ -11,10 +11,8 @@
 """
 
 import os
-import sys
 import threading
 import time
-from pathlib import Path
 
 import pytest
 
@@ -26,16 +24,17 @@ from castorice.modes import (
     SANDBOX_WORKSPACE_WRITE,
 )
 
-
 # ----------------------------------------------------------------------------
 # 夹具
 # ----------------------------------------------------------------------------
 
+
 class FakeSpec:
     """工具描述符的鸭子类型替身（网关只按属性读取）。"""
 
-    def __init__(self, name, *, read_only=False, requires_approval=None,
-                 kind="generic", parallel_safe=True):
+    def __init__(
+        self, name, *, read_only=False, requires_approval=None, kind="generic", parallel_safe=True
+    ):
         self.name = name
         self.read_only = read_only
         self.requires_approval = requires_approval
@@ -53,9 +52,17 @@ SPECS = [
 ]
 
 
-def build_gateway(root, *, mode="code", sandbox=SANDBOX_WORKSPACE_WRITE,
-                  approval_policy="ask", responder=None, config=None,
-                  visibility=None, command_allowlist=None):
+def build_gateway(
+    root,
+    *,
+    mode="code",
+    sandbox=SANDBOX_WORKSPACE_WRITE,
+    approval_policy="ask",
+    responder=None,
+    config=None,
+    visibility=None,
+    command_allowlist=None,
+):
     settings = dict(config or {})
     settings.setdefault("approval_policy", approval_policy)
     settings.setdefault("sandbox_default", sandbox)
@@ -65,7 +72,8 @@ def build_gateway(root, *, mode="code", sandbox=SANDBOX_WORKSPACE_WRITE,
         mode=mode,
         roots=[str(root)],
         sandbox=sandbox,
-        mode_command_allowlist=command_allowlist or {
+        mode_command_allowlist=command_allowlist
+        or {
             "code": ("dir", "ls", "type", "cat", "git status", "git diff"),
             "learn": (),
         },
@@ -86,6 +94,7 @@ def workspace(tmp_path):
 # ============================================================================
 # 1. 判定接口：allow / ask / deny 与理由
 # ============================================================================
+
 
 def test_allow_verdict_for_readonly_tool(workspace):
     gateway = build_gateway(workspace)
@@ -131,8 +140,7 @@ def test_unknown_tool_is_denied_with_known_list(workspace):
 
 def test_mode_visibility_is_enforced(workspace):
     """复用 t3 的可见性裁决：不可见的工具一律拒绝。"""
-    gateway = build_gateway(
-        workspace, visibility=lambda mode, tool: tool != "write_file")
+    gateway = build_gateway(workspace, visibility=lambda mode, tool: tool != "write_file")
     decision = gateway.decide("write_file", {"path": str(workspace / "a.txt")})
     assert decision.decision == "deny"
     assert decision.info["code"] == perms.CODE_TOOL_NOT_VISIBLE
@@ -156,8 +164,9 @@ def test_read_only_sandbox_denies_side_effect_tools(workspace):
 
 
 def test_danger_full_access_allows_outside_paths(tmp_path):
-    gateway = build_gateway(tmp_path, sandbox=SANDBOX_DANGER_FULL_ACCESS,
-                            responder=perms.AutoResponder("allow"))
+    gateway = build_gateway(
+        tmp_path, sandbox=SANDBOX_DANGER_FULL_ACCESS, responder=perms.AutoResponder("allow")
+    )
     decision = gateway.decide("write_file", {"path": str(tmp_path.parent / "x.txt")})
     assert decision.decision == "allow"
 
@@ -165,6 +174,7 @@ def test_danger_full_access_allows_outside_paths(tmp_path):
 # ============================================================================
 # 2. 单调 guard（P9）
 # ============================================================================
+
 
 def test_first_denying_guard_wins_and_cannot_be_overridden(workspace):
     gateway = build_gateway(workspace, responder=perms.AutoResponder("allow"))
@@ -191,13 +201,13 @@ def test_guard_exception_fails_closed(workspace):
 def test_guard_passes_through_when_returning_none(workspace):
     gateway = build_gateway(workspace)
     gateway.guard(lambda req: None)
-    assert gateway.decide("read_file",
-                          {"path": str(workspace / "a.txt")}).decision == "allow"
+    assert gateway.decide("read_file", {"path": str(workspace / "a.txt")}).decision == "allow"
 
 
 # ============================================================================
 # 3. 审批：never / 无应答者 / 超时 / ALREADY_IN_FLIGHT / allowed-once
 # ============================================================================
+
 
 def test_never_policy_rejects_before_dispatch_and_never_calls_responder(workspace):
     responder = perms.AutoResponder("allow")
@@ -205,7 +215,7 @@ def test_never_policy_rejects_before_dispatch_and_never_calls_responder(workspac
     decision = gateway.decide("write_file", {"path": str(workspace / "a.txt")})
     assert decision.decision == "deny"
     assert decision.info["code"] == perms.CODE_APPROVAL_POLICY_NEVER
-    assert responder.call_count == 0          # 应答者根本不该被调用
+    assert responder.call_count == 0  # 应答者根本不该被调用
 
 
 def test_missing_responder_is_unavailable_not_allow(workspace):
@@ -241,8 +251,9 @@ def test_responder_timeout_fails_closed(workspace):
         return None
 
     broker.set_ask_callback(defer_only)
-    decision = broker.request(PermissionRequest(
-        tool="write_file", mode="code", call_id="call_timeout"))
+    decision = broker.request(
+        PermissionRequest(tool="write_file", mode="code", call_id="call_timeout")
+    )
     assert decision.decision == perms.DECISION_UNAVAILABLE
     assert decision.info["code"] == perms.CODE_APPROVAL_TIMEOUT
 
@@ -267,8 +278,9 @@ def test_async_resolve_supplies_the_decision(workspace):
 
     worker = threading.Thread(target=answerer, daemon=True)
     worker.start()
-    decision = broker.request(PermissionRequest(
-        tool="write_file", mode="code", call_id="call_async"))
+    decision = broker.request(
+        PermissionRequest(tool="write_file", mode="code", call_id="call_async")
+    )
     worker.join(timeout=3)
     assert decision.decision == "allow"
 
@@ -282,13 +294,11 @@ def test_allowed_once_is_not_remembered(workspace):
         return answers.pop(0) if answers else "deny"
 
     broker = perms.ApprovalBroker("ask", sequenced)
-    first = broker.request(PermissionRequest(
-        tool="write_file", mode="code", call_id="c1"))
-    second = broker.request(PermissionRequest(
-        tool="write_file", mode="code", call_id="c2"))
+    first = broker.request(PermissionRequest(tool="write_file", mode="code", call_id="c1"))
+    second = broker.request(PermissionRequest(tool="write_file", mode="code", call_id="c2"))
     assert first.decision == "allow"
     assert second.decision == "deny"
-    assert responder.decision == "allow"     # 未使用，仅确认没有全局缓存
+    assert responder.decision == "allow"  # 未使用，仅确认没有全局缓存
 
 
 def test_second_request_with_same_key_is_already_in_flight():
@@ -360,9 +370,11 @@ def test_coerce_decision_accepts_strings_and_mappings():
 # 4. 路径边界（P3 / P4 / P5）
 # ============================================================================
 
+
 def test_relative_path_resolves_against_cwd(workspace):
-    policy = perms.PathPolicy(roots=(str(workspace),), workspace=str(workspace),
-                              sandbox=SANDBOX_WORKSPACE_WRITE)
+    policy = perms.PathPolicy(
+        roots=(str(workspace),), workspace=str(workspace), sandbox=SANDBOX_WORKSPACE_WRITE
+    )
     assert policy.check_write("a.txt", cwd=str(workspace)) == str(workspace / "a.txt")
 
 
@@ -450,8 +462,9 @@ def test_sandbox_resolution_prefers_explicit_then_default(workspace):
 
 
 def test_read_only_sandbox_blocks_writes_but_allows_reads(workspace):
-    policy = perms.PathPolicy(roots=(str(workspace),), workspace=str(workspace),
-                              sandbox=SANDBOX_READ_ONLY)
+    policy = perms.PathPolicy(
+        roots=(str(workspace),), workspace=str(workspace), sandbox=SANDBOX_READ_ONLY
+    )
     assert policy.is_readable(str(workspace / "a.txt")) is True
     assert policy.is_writable(str(workspace / "a.txt")) is False
     with pytest.raises(perms.SandboxDenied) as excinfo:
@@ -469,27 +482,31 @@ def test_empty_path_is_denied():
 # 5. 命令白名单（P22）
 # ============================================================================
 
-@pytest.mark.parametrize("argv, allowed", [
-    (["dir"], True),
-    (["ls", "-la"], True),
-    (["type", "a.txt"], True),
-    (["cat", "a.txt"], True),
-    (["git", "status"], True),
-    (["git", "diff", "HEAD"], True),
-    (["git", "push"], False),
-    (["python", "-m", "pytest"], True),
-    (["python", "-m", "pip", "install", "x"], False),
-    (["rm", "-rf", "/"], False),
-    (["del", "a.txt"], False),
-    (["curl", "http://x"], False),
-    (["powershell", "-c", "x"], False),
-    (["Invoke-WebRequest", "http://x"], False),
-    (["echo", "hi"], False),
-])
+
+@pytest.mark.parametrize(
+    "argv, allowed",
+    [
+        (["dir"], True),
+        (["ls", "-la"], True),
+        (["type", "a.txt"], True),
+        (["cat", "a.txt"], True),
+        (["git", "status"], True),
+        (["git", "diff", "HEAD"], True),
+        (["git", "push"], False),
+        (["python", "-m", "pytest"], True),
+        (["python", "-m", "pip", "install", "x"], False),
+        (["rm", "-rf", "/"], False),
+        (["del", "a.txt"], False),
+        (["curl", "http://x"], False),
+        (["powershell", "-c", "x"], False),
+        (["Invoke-WebRequest", "http://x"], False),
+        (["echo", "hi"], False),
+    ],
+)
 def test_command_allowlist_matching(argv, allowed):
-    policy = perms.CommandPolicy(allowlist=("dir", "ls", "type", "cat",
-                                            "git status", "git diff",
-                                            "python -m pytest"))
+    policy = perms.CommandPolicy(
+        allowlist=("dir", "ls", "type", "cat", "git status", "git diff", "python -m pytest")
+    )
     if allowed:
         assert policy.check(argv)
     else:
@@ -500,8 +517,7 @@ def test_command_allowlist_matching(argv, allowed):
 def test_denied_commands_are_rejected_even_if_allowlisted():
     """显式拒绝表优先于白名单（防御 rm/pip install 之类的错误配置）。"""
     policy = perms.CommandPolicy(allowlist=("rm", "pip", "powershell"))
-    for argv in (["rm", "-rf", "x"], ["pip", "install", "x"],
-                 ["powershell", "-c", "x"]):
+    for argv in (["rm", "-rf", "x"], ["pip", "install", "x"], ["powershell", "-c", "x"]):
         with pytest.raises(perms.CommandDenied) as excinfo:
             policy.check(argv)
         assert "拒绝表" in str(excinfo.value)
@@ -523,8 +539,12 @@ def test_python_alias_is_normalised():
 
 
 def test_command_gateway_denies_by_default_in_chat_mode(workspace):
-    gateway = build_gateway(workspace, mode="chat", responder=perms.AutoResponder("allow"),
-                            command_allowlist={"chat": ()})
+    gateway = build_gateway(
+        workspace,
+        mode="chat",
+        responder=perms.AutoResponder("allow"),
+        command_allowlist={"chat": ()},
+    )
     decision = gateway.decide("run_command", {"command": "dir"})
     assert decision.decision == "deny"
     assert decision.info["code"] == perms.CODE_COMMAND_MODE_DENIED
@@ -535,7 +555,7 @@ def test_command_gateway_allows_allowlisted_command_then_asks(workspace):
     gateway = build_gateway(workspace, responder=responder)
     decision = gateway.decide("run_command", {"command": "git status"})
     assert decision.decision == "allow"
-    assert responder.call_count == 1          # 已授权模式下仍需过审批
+    assert responder.call_count == 1  # 已授权模式下仍需过审批
 
 
 def test_command_gateway_denies_unlisted_command(workspace):
@@ -561,8 +581,10 @@ def test_command_argv_accepts_list_and_string_forms():
 
 def test_configured_extra_commands_extend_the_allowlist(workspace):
     gateway = build_gateway(
-        workspace, responder=perms.AutoResponder("allow"),
-        config={"command_allowlist": ["node --version"]})
+        workspace,
+        responder=perms.AutoResponder("allow"),
+        config={"command_allowlist": ["node --version"]},
+    )
     decision = gateway.decide("run_command", {"command": "node --version"})
     assert decision.decision == "allow"
     assert "node --version" in gateway.command_allowlist("code")

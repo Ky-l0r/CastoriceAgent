@@ -1,4 +1,15 @@
-@import "tailwindcss";
+/*
+ * Tailwind v4 的源扫描范围**显式收窄**到这里。
+ *
+ * 默认行为是按 gitignore 规则自动探测整个工程：webapp 目录下有 dist/、
+ * release/、public/（表情包图片），以及 pnpm 的 node_modules 软链接，扫描
+ * 一遍非常慢（实测单这一步就占掉构建时间的九成以上）。
+ * 本工程的类名只可能出现在 src/ 与 index.html 里，因此用 source(none)
+ * 关掉自动探测，再用 @source 显式指向这两处。
+ */
+@import "tailwindcss" source(none);
+@source "../../index.html";
+@source "../**/*.{ts,tsx}";
 
 /*
  * 设计令牌（第四期视觉重构）
@@ -321,6 +332,22 @@ html[data-maximized="true"] .window-shell {
 
 .ui-fade-in {
   animation: ui-fade-in 180ms ease-out both;
+}
+
+/* 贴纸 / 弹层的轻微弹出（替换原 motion 动画：纯 CSS 更省，不建 JS 动画实例） */
+@keyframes ui-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.ui-pop-in {
+  animation: ui-pop-in 180ms ease-out both;
 }
 
 /* 骨架屏 */

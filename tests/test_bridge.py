@@ -21,7 +21,6 @@ from castorice.bridge import (
     BridgeServer,
     request_payload_dict,
 )
-from castorice.channels.base import ChannelError
 from castorice.harness import PermissionRequest
 
 LOOPBACK = "127.0.0.1"
@@ -55,13 +54,17 @@ class FakeBot:
     ) -> None:
         self.calls: List[str] = []
         self.images_seen: List[List[str]] = []
-        self.events = events if events is not None else [
-            ("text", "你好"),
-            ("tool", {"name": "read_file", "status": "start"}),
-            ("tool", {"name": "read_file", "status": "done"}),
-            ("text", "，世界"),
-            ("done", "你好，世界"),
-        ]
+        self.events = (
+            events
+            if events is not None
+            else [
+                ("text", "你好"),
+                ("tool", {"name": "read_file", "status": "start"}),
+                ("tool", {"name": "read_file", "status": "done"}),
+                ("text", "，世界"),
+                ("done", "你好，世界"),
+            ]
+        )
         self.error = error
         self.slow_event = slow_event
         self.mode = "chat"
@@ -98,6 +101,7 @@ class ConfigStub:
     def __init__(self, data: Dict[str, Any]) -> None:
         self._data = data
         self.written: List[Dict[tuple, Any]] = []
+        self.sections_written: List[tuple] = []
 
     def get(self, key: str, default: Any = None) -> Any:
         value: Any = self._data
@@ -118,6 +122,14 @@ class ConfigStub:
             for part in path[:-1]:
                 node = node.setdefault(part, {})
             node[path[-1]] = value
+
+    def set_section_values(self, section: str, values: Dict[str, Any]) -> None:
+        """整节写入的替身（真实实现见 ai.ConfigManager）。"""
+        self.sections_written.append((section, dict(values)))
+        node = self._data
+        for part in [p for p in section.split(".") if p]:
+            node = node.setdefault(part, {})
+        node.update(values)
 
 
 class MemoryStub:
@@ -145,10 +157,12 @@ class ApprovalBrokerStub:
 
 def make_bot(**kwargs: Any) -> FakeBot:
     bot = FakeBot(**kwargs)
-    bot.config_manager = ConfigStub({
-        "active_provider": "deepseek",
-        "providers": {"deepseek": {"api_key": "sk-test", "model": "x"}},
-    })
+    bot.config_manager = ConfigStub(
+        {
+            "active_provider": "deepseek",
+            "providers": {"deepseek": {"api_key": "sk-test", "model": "x"}},
+        }
+    )
     bot.memory_manager = MemoryStub()
     bot.approval_broker = ApprovalBrokerStub()
     return bot
@@ -157,6 +171,7 @@ def make_bot(**kwargs: Any) -> FakeBot:
 # ----------------------------------------------------------------------------
 # 客户端辅助
 # ----------------------------------------------------------------------------
+
 
 class BridgeClient:
     """同步测试客户端（独立事件循环线程）。"""
@@ -170,14 +185,14 @@ class BridgeClient:
         self.loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+
         async def _connect():
-            return await websockets.connect(
-                "ws://" + LOOPBACK + ":" + str(port), open_timeout=5)
+            return await websockets.connect("ws://" + LOOPBACK + ":" + str(port), open_timeout=5)
 
         self.ws = self._call(_connect())
         if do_handshake:
             self.send({"type": "hello", "token": token})
-            self.recv(timeout=5)   # hello_ok
+            self.recv(timeout=5)  # hello_ok
 
     def _run(self) -> None:
         asyncio.set_event_loop(self.loop)
@@ -193,23 +208,22 @@ class BridgeClient:
         try:
             raw = self._call(self.ws.recv(), timeout=timeout)
         except asyncio.TimeoutError:
-            raise TimeoutError("等待服务端帧超时")
+            raise TimeoutError("等待服务端帧超时") from None
         return json.loads(raw)
 
-    def rpc(self, method: str, params: Optional[Dict[str, Any]] = None,
-            timeout: float = 5.0) -> Dict[str, Any]:
+    def rpc(
+        self, method: str, params: Optional[Dict[str, Any]] = None, timeout: float = 5.0
+    ) -> Dict[str, Any]:
         """发一条 rpc 并等到对应 id 的回帧（跳过 event 帧）。"""
         rpc_id = "rpc-" + str(time.monotonic_ns())
-        self.send({"type": "rpc", "id": rpc_id, "method": method,
-                   "params": params or {}})
+        self.send({"type": "rpc", "id": rpc_id, "method": method, "params": params or {}})
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("RPC " + method + " 回帧超时")
             frame = self.recv(timeout=remaining)
-            if frame.get("type") in ("rpc_result", "rpc_error") and \
-                    frame.get("id") == rpc_id:
+            if frame.get("type") in ("rpc_result", "rpc_error") and frame.get("id") == rpc_id:
                 return frame
 
     def close(self) -> None:
@@ -255,12 +269,13 @@ def wait_until(predicate, timeout: float = 5.0, interval: float = 0.02) -> None:
 # 生命周期 / 握手
 # ----------------------------------------------------------------------------
 
+
 def test_server_starts_on_random_loopback_port_and_reports_it(server_and_client):
     server, client, bot = server_and_client()
     assert server.host == LOOPBACK
     assert server.port > 0
     assert server.capabilities == WEB_BRIDGE_CAPABILITIES
-    assert server.token   # 启动期生成，非空
+    assert server.token  # 启动期生成，非空
 
 
 def test_repeated_start_is_idempotent():
@@ -279,8 +294,8 @@ def test_close_is_idempotent_and_restart_allowed():
     server = BridgeServer(bot)
     server.start()
     server.close()
-    server.close()   # 幂等
-    port = server.start()   # 复用同一实例重启
+    server.close()  # 幂等
+    port = server.start()  # 复用同一实例重启
     try:
         assert port > 0
     finally:
@@ -327,7 +342,7 @@ def test_handshake_timeout_closes_idle_connection():
         with pytest.raises(Exception):
             client.recv(timeout=8)
         elapsed = time.monotonic() - start
-        assert elapsed < 7.5   # 握手超时（5s）触发，而不是无限等待
+        assert elapsed < 7.5  # 握手超时（5s）触发，而不是无限等待
         client.close()
     finally:
         server.close()
@@ -337,6 +352,7 @@ def test_handshake_timeout_closes_idle_connection():
 # 事件流（恒 2 元组 -> event 帧，done 恰好一次且最后）
 # ----------------------------------------------------------------------------
 
+
 def test_chat_forwards_events_and_done_exactly_once_at_end(server_and_client):
     server, client, bot = server_and_client()
     client.send({"type": "chat", "text": "在吗"})
@@ -344,8 +360,7 @@ def test_chat_forwards_events_and_done_exactly_once_at_end(server_and_client):
     while True:
         frame = client.recv(timeout=10)
         frames.append(frame)
-        if frame.get("type") == "event" and \
-                frame["event"]["kind"] == "done":
+        if frame.get("type") == "event" and frame["event"]["kind"] == "done":
             break
     events = [f["event"] for f in frames if f.get("type") == "event"]
     kinds = [e["kind"] for e in events]
@@ -393,7 +408,7 @@ def test_bot_without_done_gets_synthesized_done(server_and_client):
 def test_second_chat_while_busy_is_rejected(server_and_client):
     server, client, bot = server_and_client(bot=make_bot(slow_event=0.3))
     client.send({"type": "chat", "text": "第一轮"})
-    time.sleep(0.1)   # 让第一轮进入 busy
+    time.sleep(0.1)  # 让第一轮进入 busy
     client.send({"type": "chat", "text": "第二轮"})
     busy_rejected = False
     deadline = time.monotonic() + 10
@@ -416,7 +431,7 @@ def test_second_chat_while_busy_is_rejected(server_and_client):
 def test_interrupt_stops_the_stream_and_sends_done(server_and_client):
     server, client, bot = server_and_client(bot=make_bot(slow_event=0.4))
     client.send({"type": "chat", "text": "慢慢说"})
-    time.sleep(0.2)   # 进入流消费
+    time.sleep(0.2)  # 进入流消费
     client.send({"type": "interrupt"})
     seen_done_ok_false = False
     deadline = time.monotonic() + 10
@@ -444,6 +459,7 @@ def test_interrupt_stops_the_stream_and_sends_done(server_and_client):
 # RPC 方法面
 # ----------------------------------------------------------------------------
 
+
 def test_rpc_config_get_whole_and_by_key(server_and_client):
     server, client, _ = server_and_client()
     whole = client.rpc("config.get", {})
@@ -459,12 +475,34 @@ def test_rpc_config_get_whole_and_by_key(server_and_client):
 
 def test_rpc_config_set_writes_back_comment_preserved(server_and_client):
     server, client, bot = server_and_client()
-    reply = client.rpc("config.set",
-                       {"updates": {"providers.deepseek.model": "deepseek-chat"}})
+    reply = client.rpc("config.set", {"updates": {"providers.deepseek.model": "deepseek-chat"}})
     assert reply["type"] == "rpc_result"
     assert reply["result"]["ok"] is True
-    assert bot.config_manager.written == [
-        {("providers", "deepseek", "model"): "deepseek-chat"}]
+    assert bot.config_manager.written == [{("providers", "deepseek", "model"): "deepseek-chat"}]
+
+
+def test_rpc_config_set_section_creates_missing_section(server_and_client):
+    """未配置过的节（模板里整节都是注释）也能一次写入。"""
+    server, client, bot = server_and_client()
+    reply = client.rpc(
+        "config.set_section",
+        {
+            "section": "channels.napcat",
+            "values": {"url": "ws://127.0.0.1:3001", "report_tools": False},
+        },
+    )
+    assert reply["type"] == "rpc_result"
+    assert reply["result"]["ok"] is True
+    assert bot.config_manager.sections_written == [
+        ("channels.napcat", {"url": "ws://127.0.0.1:3001", "report_tools": False})
+    ]
+    assert reply["result"]["value"]["report_tools"] is False
+
+
+def test_rpc_config_set_section_rejects_bad_params(server_and_client):
+    server, client, _ = server_and_client()
+    assert client.rpc("config.set_section", {"values": {}})["type"] == "rpc_error"
+    assert client.rpc("config.set_section", {"section": "channels.napcat"})["type"] == "rpc_error"
 
 
 def test_rpc_memory_search_and_clear(server_and_client):
@@ -496,17 +534,14 @@ def test_rpc_approval_pending_and_resolve(server_and_client):
     pending = client.rpc("approval.pending", {})
     assert pending["result"]["pending"] == ["req-1"]
 
-    resolved = client.rpc("approval.resolve",
-                          {"request_id": "req-1", "decision": "allow"})
+    resolved = client.rpc("approval.resolve", {"request_id": "req-1", "decision": "allow"})
     assert resolved["result"] == {"delivered": True}
     assert bot.approval_broker.resolved == [("req-1", "allow")]
 
-    gone = client.rpc("approval.resolve",
-                      {"request_id": "req-1", "decision": "deny"})
+    gone = client.rpc("approval.resolve", {"request_id": "req-1", "decision": "deny"})
     assert gone["type"] == "rpc_error"
 
-    bad = client.rpc("approval.resolve",
-                     {"request_id": "req-1", "decision": "always"})
+    bad = client.rpc("approval.resolve", {"request_id": "req-1", "decision": "always"})
     assert bad["type"] == "rpc_error"
 
 
@@ -563,6 +598,7 @@ def test_ping_pong(server_and_client):
 # 通知投递（send_event / WebNotifier 软失败）
 # ----------------------------------------------------------------------------
 
+
 def test_send_event_returns_false_without_clients():
     bot = make_bot()
     server = BridgeServer(bot)
@@ -575,8 +611,12 @@ def test_send_event_returns_false_without_clients():
 
 def test_request_payload_dict_serializes_permission_request():
     request = PermissionRequest(
-        tool="run_command", arguments={"command": "git status"},
-        mode="work", call_id="c1", target_paths=("D:/a",))
+        tool="run_command",
+        arguments={"command": "git status"},
+        mode="work",
+        call_id="c1",
+        target_paths=("D:/a",),
+    )
     payload = request_payload_dict(request)
     assert payload["tool"] == "run_command"
     assert payload["arguments"] == {"command": "git status"}

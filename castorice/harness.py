@@ -52,7 +52,6 @@ from typing import (
 
 from .modes import ModeRegistry
 from .session import (
-    CheckpointFailed,
     KIND_ASSISTANT,
     KIND_CONTEXT,
     KIND_MODE,
@@ -60,9 +59,10 @@ from .session import (
     KIND_STOP,
     KIND_TOOL_RESULT,
     KIND_USER,
-    SessionStore,
     TOOL_OUTCOME_UNKNOWN,
     TOOL_OUTCOME_UNKNOWN_TEXT,
+    CheckpointFailed,
+    SessionStore,
 )
 
 #: 工具结果默认长度上限（P20 的有界结果；t4 会按工具覆盖）
@@ -76,18 +76,19 @@ MAX_ITERATIONS_NOTE = "（已达到处理步数上限，以上是当前进展。
 # 终止原因
 # ----------------------------------------------------------------------------
 
+
 class StopReason(str, Enum):
     """一轮 agent 循环的显式终止原因（对齐 DSH 的 turn/end cause）。
 
     继承 str 便于直接落进 JSON 事件与投影快照。
     """
 
-    FINAL_ANSWER = "final_answer"          # 模型不再调用工具
-    MAX_ITERATIONS = "max_iterations"      # 达到步数上限
-    CANCELLED = "cancelled"                # 用户中止
-    ERROR = "error"                        # 内部失败
+    FINAL_ANSWER = "final_answer"  # 模型不再调用工具
+    MAX_ITERATIONS = "max_iterations"  # 达到步数上限
+    CANCELLED = "cancelled"  # 用户中止
+    ERROR = "error"  # 内部失败
     CHECKPOINT_FAILED = "checkpoint_failed"  # 检查点失败（fail-closed）
-    PREEMPTED = "preempted"                # 被新的一轮抢占（单机助手不会并行跑两轮）
+    PREEMPTED = "preempted"  # 被新的一轮抢占（单机助手不会并行跑两轮）
 
     def __str__(self) -> str:
         return self.value
@@ -96,6 +97,7 @@ class StopReason(str, Enum):
 # ----------------------------------------------------------------------------
 # 数据结构
 # ----------------------------------------------------------------------------
+
 
 def new_call_id() -> str:
     return "call_" + datetime.now().strftime("%H%M%S%f")
@@ -112,7 +114,7 @@ class ToolCall:
     parse_error: Optional[str] = None
 
     @classmethod
-    def from_openai(cls, raw: Mapping[str, Any]) -> "ToolCall":
+    def from_openai(cls, raw: Mapping[str, Any]) -> ToolCall:
         call_id = str(raw.get("id") or new_call_id())
         function = raw.get("function") if isinstance(raw, Mapping) else None
         if not isinstance(function, Mapping):
@@ -130,8 +132,13 @@ class ToolCall:
                 parsed = dict(loaded) if isinstance(loaded, Mapping) else {"value": loaded}
             except (ValueError, TypeError) as exc:
                 parse_error = str(exc)
-        return cls(id=call_id, name=name, arguments=parsed,
-                   raw_arguments=str(arguments_text), parse_error=parse_error)
+        return cls(
+            id=call_id,
+            name=name,
+            arguments=parsed,
+            raw_arguments=str(arguments_text),
+            parse_error=parse_error,
+        )
 
     def to_openai(self) -> Dict[str, Any]:
         return {
@@ -212,6 +219,7 @@ class PermissionDecision:
 # 权限桥（t4 会是真正的 PermissionGateway；这里提供 fail-closed 的默认实现）
 # ----------------------------------------------------------------------------
 
+
 class PermissionBridge:
     """权限判定的最小接口 + 单调 guard 链。
 
@@ -280,12 +288,14 @@ def _normalize_decision(value: Any) -> PermissionDecision:
                 dict(value.get("info") or {}) or None,
             )
     return PermissionDecision(
-        "unavailable", "权限网关返回了无法识别的结果，按拒绝关闭: " + repr(value))
+        "unavailable", "权限网关返回了无法识别的结果，按拒绝关闭: " + repr(value)
+    )
 
 
 # ----------------------------------------------------------------------------
 # 重复调用提醒（P21）
 # ----------------------------------------------------------------------------
+
 
 class RepeatReminder:
     """同一工具 + 同一参数重复调用且无进展时的温和提醒（第 3/5/8 次）。
@@ -319,8 +329,11 @@ class RepeatReminder:
         count = self._counts[key]
         if count in self.thresholds:
             return (
-                "（提示：你已经用完全相同的参数调用过 " + name + " "
-                + str(count) + " 次且结果没有变化，"
+                "（提示：你已经用完全相同的参数调用过 "
+                + name
+                + " "
+                + str(count)
+                + " 次且结果没有变化，"
                 "如果信息已经足够，请直接基于现有结果作答。）"
             )
         return None
@@ -329,6 +342,7 @@ class RepeatReminder:
 # ----------------------------------------------------------------------------
 # 主循环
 # ----------------------------------------------------------------------------
+
 
 class HarnessLoop:
     """agent 主循环：组装 → 检查点 → 请求 → 派发工具 → 续轮。"""
@@ -504,12 +518,12 @@ class HarnessLoop:
 
         full_text = ""
         if source == "proactive":
-            self.session.append(KIND_USER, {"content": str(user_message or ""),
-                                            "source": "proactive"})
+            self.session.append(
+                KIND_USER, {"content": str(user_message or ""), "source": "proactive"}
+            )
 
         try:
-            for kind, payload in self._run_steps(
-                    user_message, images, source, display_text):
+            for kind, payload in self._run_steps(user_message, images, source, display_text):
                 if kind == "text":
                     full_text += str(payload)
                 elif kind == "done":
@@ -551,15 +565,15 @@ class HarnessLoop:
                 stop_reason = StopReason.MAX_ITERATIONS
                 note = "\n\n" + MAX_ITERATIONS_NOTE
                 full_reply += note
-                steps.append(StepRecord(index=iteration, text=note,
-                                        stop_reason=StopReason.MAX_ITERATIONS))
+                steps.append(
+                    StepRecord(index=iteration, text=note, stop_reason=StopReason.MAX_ITERATIONS)
+                )
                 yield ("text", note)
                 break
 
             if self._cancel.is_set():
                 stop_reason = StopReason.CANCELLED
-                steps.append(StepRecord(index=iteration, text="",
-                                        stop_reason=StopReason.CANCELLED))
+                steps.append(StepRecord(index=iteration, text="", stop_reason=StopReason.CANCELLED))
                 break
 
             step_index = iteration
@@ -591,8 +605,9 @@ class HarnessLoop:
                 stop_reason = StopReason.ERROR
                 self.last_error = str(exc)
                 message = "抱歉，处理您的请求时出现了错误：" + str(exc)
-                steps.append(StepRecord(index=step_index, text=message,
-                                        stop_reason=StopReason.ERROR))
+                steps.append(
+                    StepRecord(index=step_index, text=message, stop_reason=StopReason.ERROR)
+                )
                 yield ("text", message)
                 full_reply += message
                 break
@@ -634,19 +649,24 @@ class HarnessLoop:
             # f. 结果补全（P14：配对完整且不自动重试）
             self._complete_missing_results(calls)
 
-            steps.append(StepRecord(
-                index=step_index,
-                text=text,
-                tool_calls=tuple(step_calls),
-                stop_reason=None,
-            ))
+            steps.append(
+                StepRecord(
+                    index=step_index,
+                    text=text,
+                    tool_calls=tuple(step_calls),
+                    stop_reason=None,
+                )
+            )
 
             # g. 取消：保留已交付文本，就地结束
             if self._cancel.is_set():
                 stop_reason = StopReason.CANCELLED
-                steps[-1] = StepRecord(index=step_index, text=text,
-                                       tool_calls=tuple(step_calls),
-                                       stop_reason=StopReason.CANCELLED)
+                steps[-1] = StepRecord(
+                    index=step_index,
+                    text=text,
+                    tool_calls=tuple(step_calls),
+                    stop_reason=StopReason.CANCELLED,
+                )
                 break
 
         if stop_reason is None:  # pragma: no cover - 防御性
@@ -657,12 +677,8 @@ class HarnessLoop:
 
     # ---- 消息组装 ----
 
-    def _prepare_history(
-        self, user_message: Any, display_text: Optional[str] = None
-    ) -> None:
-        if self._system_prompt and not any(
-            m.get("role") == "system" for m in self._history
-        ):
+    def _prepare_history(self, user_message: Any, display_text: Optional[str] = None) -> None:
+        if self._system_prompt and not any(m.get("role") == "system" for m in self._history):
             self._history.insert(0, {"role": "system", "content": self._system_prompt})
         if isinstance(user_message, Mapping):
             self._history.append(copy.deepcopy(dict(user_message)))
@@ -684,15 +700,16 @@ class HarnessLoop:
         mode = self.mode
         sandbox = mode.workdir_policy.default_sandbox
         workdir = self.workdir() or "（未绑定）"
-        text = "[系统] 当前模式：" + mode.display_name + "（" + mode.name + "）；工作目录：" + workdir
+        text = (
+            "[系统] 当前模式：" + mode.display_name + "（" + mode.name + "）；工作目录：" + workdir
+        )
         fingerprint = mode.name + "|" + str(workdir) + "|" + sandbox
         if self._announced.get("mode") == fingerprint:
             return
         self._history.append({"role": "user", "content": text})
         self.session.append(KIND_CONTEXT, {"text": text, "source": "runtime"})
         self.session.append(KIND_MODE, {"mode": mode.name, "display_name": mode.display_name})
-        self.session.append(KIND_SANDBOX, {"sandbox": sandbox,
-                                           "workdir": self.workdir()})
+        self.session.append(KIND_SANDBOX, {"sandbox": sandbox, "workdir": self.workdir()})
         self._announced["mode"] = fingerprint
 
     # ---- 请求体构造（可见性收口点） ----
@@ -784,8 +801,11 @@ class HarnessLoop:
 
             batch: List[ToolCall] = [call]
             cursor = index + 1
-            while (cursor < total and len(batch) < self.max_parallel_tool_calls
-                   and self._is_parallel_safe(calls[cursor])):
+            while (
+                cursor < total
+                and len(batch) < self.max_parallel_tool_calls
+                and self._is_parallel_safe(calls[cursor])
+            ):
                 batch.append(calls[cursor])
                 cursor += 1
             for event in self._execute_batch(batch, index, total):
@@ -802,9 +822,16 @@ class HarnessLoop:
             return position, result, payload, failed
 
         for call in batch:
-            yield (call.name, {"name": call.name, "status": "start",
-                               "call_id": call.id, "index": start_index,
-                               "total": total})
+            yield (
+                call.name,
+                {
+                    "name": call.name,
+                    "status": "start",
+                    "call_id": call.id,
+                    "index": start_index,
+                    "total": total,
+                },
+            )
         if len(batch) == 1:
             _pos, result, payload, failed = _run(0, batch[0])
             results[0] = (result, payload, failed)
@@ -824,20 +851,28 @@ class HarnessLoop:
     def _execute_one(
         self, call: ToolCall, index: int, total: int
     ) -> Iterator[Tuple[Optional[str], Dict[str, Any]]]:
-        yield (call.name, {"name": call.name, "status": "start",
-                           "call_id": call.id, "index": index, "total": total})
+        yield (
+            call.name,
+            {
+                "name": call.name,
+                "status": "start",
+                "call_id": call.id,
+                "index": index,
+                "total": total,
+            },
+        )
         result, payload, _failed = self._invoke(call)
         self._append_tool_result(call, result)
         yield (call.name, payload)
 
     def _is_parallel_safe(self, call: ToolCall) -> bool:
-        for spec in getattr(self.tools, "all_tools", lambda: [])():
+        for spec in getattr(self.tools, "all_tools", list)():
             if getattr(spec, "name", None) == call.name:
                 return bool(getattr(spec, "parallel_safe", True))
         return True
 
     def _result_limit(self, name: str) -> int:
-        for spec in getattr(self.tools, "all_tools", lambda: [])():
+        for spec in getattr(self.tools, "all_tools", list)():
             if getattr(spec, "name", None) == name:
                 return int(getattr(spec, "result_limit", DEFAULT_RESULT_LIMIT))
         return DEFAULT_RESULT_LIMIT
@@ -856,8 +891,16 @@ class HarnessLoop:
         """
         if call.parse_error:
             text = "错误: 解析工具 " + call.name + " 的参数失败: " + call.parse_error
-            return text, {"name": call.name, "status": "error",
-                          "call_id": call.id, "reason": "BAD_ARGUMENTS"}, True
+            return (
+                text,
+                {
+                    "name": call.name,
+                    "status": "error",
+                    "call_id": call.id,
+                    "reason": "BAD_ARGUMENTS",
+                },
+                True,
+            )
 
         # 1) 权限判定（有副作用的调用先过判定）
         decision = self._evaluate_permission(call)
@@ -873,9 +916,18 @@ class HarnessLoop:
             reason = decision.reason or decision.decision
             code = _denial_code(decision)
             text = "Error: " + reason + "（" + code + "）"
-            return text, {"name": call.name, "status": "error",
-                          "call_id": call.id, "decision": decision.decision,
-                          "reason": reason, "code": code}, True
+            return (
+                text,
+                {
+                    "name": call.name,
+                    "status": "error",
+                    "call_id": call.id,
+                    "decision": decision.decision,
+                    "reason": reason,
+                    "code": code,
+                },
+                True,
+            )
 
         # 2) 顶层工具的外部副作用前检查点（fail-closed）
         try:
@@ -883,22 +935,38 @@ class HarnessLoop:
         except Exception as exc:
             self.last_error = "检查点失败: " + str(exc)
             text = "Error: 检查点失败，工具未执行（" + str(exc) + "）"
-            return text, {"name": call.name, "status": "error",
-                          "call_id": call.id, "reason": "checkpoint_failed"}, True
+            return (
+                text,
+                {
+                    "name": call.name,
+                    "status": "error",
+                    "call_id": call.id,
+                    "reason": "checkpoint_failed",
+                },
+                True,
+            )
 
         # 3) 执行
         runner = getattr(self.tools, "call", None)
         if not callable(runner):
             text = "错误: 内核未提供工具执行入口（tools.call 不可用）"
-            return text, {"name": call.name, "status": "error",
-                          "call_id": call.id, "reason": "NO_TOOL_RUNNER"}, True
+            return (
+                text,
+                {
+                    "name": call.name,
+                    "status": "error",
+                    "call_id": call.id,
+                    "reason": "NO_TOOL_RUNNER",
+                },
+                True,
+            )
         failed = False
         try:
             result = str(runner(call.name, dict(call.arguments)))
         except Exception as exc:
             failed = True
             result = "错误: 调用工具 " + call.name + " 失败: " + str(exc)
-        if result.startswith("错误:") or result.startswith("Error:"):
+        if result.startswith(("错误:", "Error:")):
             failed = True
 
         # 4) 有界结果（P20）
@@ -910,8 +978,11 @@ class HarnessLoop:
             self.last_reminder = reminder
             result = result + "\n\n" + reminder
 
-        return result, {"name": call.name, "status": "error" if failed else "done",
-                        "call_id": call.id}, failed
+        return (
+            result,
+            {"name": call.name, "status": "error" if failed else "done", "call_id": call.id},
+            failed,
+        )
 
     def _evaluate_permission(self, call: ToolCall) -> PermissionDecision:
         request = PermissionRequest(
@@ -926,8 +997,7 @@ class HarnessLoop:
         )
         evaluator = getattr(self.permissions, "evaluate", None)
         if not callable(evaluator):
-            return PermissionDecision(
-                "unavailable", "权限网关不可用，按拒绝关闭")
+            return PermissionDecision("unavailable", "权限网关不可用，按拒绝关闭")
         try:
             return _normalize_decision(evaluator(request))
         except Exception as exc:
@@ -941,21 +1011,28 @@ class HarnessLoop:
         tail = limit - head
         return (
             text[:head]
-            + "\n…（工具结果过长，已省略 " + str(len(text) - limit) + " 字符）…\n"
+            + "\n…（工具结果过长，已省略 "
+            + str(len(text) - limit)
+            + " 字符）…\n"
             + text[-tail:]
         )
 
     def _append_tool_result(self, call: ToolCall, content: str) -> None:
-        self.session.append(KIND_TOOL_RESULT, {
-            "call_id": call.id,
-            "name": call.name,
-            "content": content,
-        })
-        self._history.append({
-            "role": "tool",
-            "tool_call_id": call.id,
-            "content": content,
-        })
+        self.session.append(
+            KIND_TOOL_RESULT,
+            {
+                "call_id": call.id,
+                "name": call.name,
+                "content": content,
+            },
+        )
+        self._history.append(
+            {
+                "role": "tool",
+                "tool_call_id": call.id,
+                "content": content,
+            }
+        )
 
     def _complete_missing_results(self, calls: Sequence[ToolCall]) -> int:
         """补全任何没有结果的 tool_call（TOOL_OUTCOME_UNKNOWN，不自动重试）。"""
@@ -968,25 +1045,31 @@ class HarnessLoop:
         for call in calls:
             if call.id in responded:
                 continue
-            self._history.append({
-                "role": "tool",
-                "tool_call_id": call.id,
-                "content": TOOL_OUTCOME_UNKNOWN_TEXT,
-            })
-            self.session.append(KIND_TOOL_RESULT, {
-                "call_id": call.id,
-                "name": call.name,
-                "outcome": TOOL_OUTCOME_UNKNOWN,
-                "content": TOOL_OUTCOME_UNKNOWN_TEXT,
-                "repaired": True,
-            })
+            self._history.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": TOOL_OUTCOME_UNKNOWN_TEXT,
+                }
+            )
+            self.session.append(
+                KIND_TOOL_RESULT,
+                {
+                    "call_id": call.id,
+                    "name": call.name,
+                    "outcome": TOOL_OUTCOME_UNKNOWN,
+                    "content": TOOL_OUTCOME_UNKNOWN_TEXT,
+                    "repaired": True,
+                },
+            )
             repaired += 1
         return repaired
 
     # ---- 回合收尾 ----
 
-    def _finish_turn(self, stop_reason: StopReason, full_reply: str,
-                     steps: List[StepRecord]) -> None:
+    def _finish_turn(
+        self, stop_reason: StopReason, full_reply: str, steps: List[StepRecord]
+    ) -> None:
         self.stop_reason = stop_reason
         self.steps = list(steps)
         self.session.append(KIND_STOP, {"stop_reason": stop_reason.value})
@@ -998,9 +1081,13 @@ class HarnessLoop:
         if self.logger is not None:
             try:
                 self.logger.info(
-                    "回合结束: stop_reason=" + stop_reason.value
-                    + " steps=" + str(len(steps))
-                    + " reply_len=" + str(len(full_reply)))
+                    "回合结束: stop_reason="
+                    + stop_reason.value
+                    + " steps="
+                    + str(len(steps))
+                    + " reply_len="
+                    + str(len(full_reply))
+                )
             except Exception:  # pragma: no cover
                 pass
 
@@ -1018,9 +1105,7 @@ class HarnessLoop:
 
     def _last_reply(self) -> str:
         return "".join(
-            str(m.get("content") or "")
-            for m in self._history[-1:]
-            if m.get("role") == "assistant"
+            str(m.get("content") or "") for m in self._history[-1:] if m.get("role") == "assistant"
         )
 
 
@@ -1029,11 +1114,22 @@ class HarnessLoop:
 # ----------------------------------------------------------------------------
 
 #: 权限判定需要关注的路径参数名（供 t4 的路径边界判定使用）
-PATH_ARGUMENT_KEYS = ("path", "file", "filepath", "target", "dst", "src", "directory",
-                      "dir", "root", "vault", "paths")
+PATH_ARGUMENT_KEYS = (
+    "path",
+    "file",
+    "filepath",
+    "target",
+    "dst",
+    "src",
+    "directory",
+    "dir",
+    "root",
+    "vault",
+    "paths",
+)
 
 
-def _denial_code(decision: "PermissionDecision") -> str:
+def _denial_code(decision: PermissionDecision) -> str:
     """取拒绝判定里最有信息量的结构化错误码。
 
     语义与 castorice.tools.base._denial_code 对齐（那边服务工具出口、这边
@@ -1073,7 +1169,10 @@ def _content_text(message: Mapping[str, Any]) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, (list, tuple)):
-        parts = [str(part.get("text", "")) for part in content
-                 if isinstance(part, Mapping) and part.get("type") == "text"]
+        parts = [
+            str(part.get("text", ""))
+            for part in content
+            if isinstance(part, Mapping) and part.get("type") == "text"
+        ]
         return "".join(parts)
     return ""

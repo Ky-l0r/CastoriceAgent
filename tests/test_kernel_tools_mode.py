@@ -10,23 +10,22 @@
 """
 
 import json
-import os
 from pathlib import Path
 
 import pytest
 
 import ai
 import castorice.session as session_module
-from castorice.modes import SANDBOX_DANGER_FULL_ACCESS, SANDBOX_WORKSPACE_WRITE
 from castorice.permissions import AutoResponder
-
 
 # ----------------------------------------------------------------------------
 # 夹具：造一个完全离线、目录全在 tmp_path 的 AI 实例
 # ----------------------------------------------------------------------------
 
-def write_config(root: Path, *, mode: str = "chat", sandbox: str = "",
-                 mode_sandbox: str = "", extra: str = "") -> Path:
+
+def write_config(
+    root: Path, *, mode: str = "chat", sandbox: str = "", mode_sandbox: str = "", extra: str = ""
+) -> Path:
     lines = [
         "mode: " + mode,
         "active_provider: fake",
@@ -62,7 +61,8 @@ def scaffold(root: Path) -> None:
     (root / "prompts" / "base.md").write_text("BASE-PROMPT", encoding="utf-8")
     for section in ("work", "code", "learn"):
         (root / "prompts" / "modes" / (section + ".md")).write_text(
-            "SECTION-" + section, encoding="utf-8")
+            "SECTION-" + section, encoding="utf-8"
+        )
 
 
 @pytest.fixture
@@ -70,13 +70,18 @@ def make_bot(tmp_path):
     """返回 (构造器, 已释放实例列表)。用例结束自动 close，避免写者登记外泄。"""
     created = []
 
-    def _make(case: str = "case", *, mode: str = "chat", sandbox: str = "",
-              mode_sandbox: str = "", sessions_dir=None) -> ai.AI:
+    def _make(
+        case: str = "case",
+        *,
+        mode: str = "chat",
+        sandbox: str = "",
+        mode_sandbox: str = "",
+        sessions_dir=None,
+    ) -> ai.AI:
         root = tmp_path / case
         root.mkdir(parents=True, exist_ok=True)
         scaffold(root)
-        config = write_config(root, mode=mode, sandbox=sandbox,
-                              mode_sandbox=mode_sandbox)
+        config = write_config(root, mode=mode, sandbox=sandbox, mode_sandbox=mode_sandbox)
         bot = ai.AI(
             config_path=str(config),
             prompts_dir=str(root / "prompts"),
@@ -95,9 +100,11 @@ def make_bot(tmp_path):
         except Exception:
             pass
 
+
 # ============================================================================
 # A. F2：内核工具出口的模式必须跟随当前模式
 # ============================================================================
+
 
 @pytest.mark.parametrize("mode", ["chat", "work", "code", "learn"])
 def test_tools_mode_follows_the_active_mode(make_bot, mode):
@@ -106,8 +113,7 @@ def test_tools_mode_follows_the_active_mode(make_bot, mode):
     assert bot.mode == mode
     assert bot.harness.mode_name == mode
     assert bot.permissions.mode == mode
-    assert bot.tools_mode == mode, (
-        "ai.AI._kernel_tools 的出口模式没有跟随模式切换（F2 回归）")
+    assert bot.tools_mode == mode, "ai.AI._kernel_tools 的出口模式没有跟随模式切换（F2 回归）"
 
 
 def test_tools_mode_follows_switching(make_bot):
@@ -156,8 +162,7 @@ def test_write_file_through_the_real_kernel_exit(make_bot, tmp_path):
     bot.set_approval_responder(AutoResponder("allow"))
 
     target = root / "out.txt"
-    result = bot._kernel_tools.call(
-        "write_file", {"path": str(target), "content": "hello"})
+    result = bot._kernel_tools.call("write_file", {"path": str(target), "content": "hello"})
 
     assert "已写入" in result, f"写入未成功: {result[:200]}"
     assert target.exists(), "工具报告成功但文件没有真实落盘"
@@ -171,8 +176,7 @@ def test_write_file_is_denied_without_a_responder(make_bot, tmp_path):
     bot.bind_mode_workdir("work", str(root))
 
     target = root / "never.txt"
-    result = bot._kernel_tools.call(
-        "write_file", {"path": str(target), "content": "x"})
+    result = bot._kernel_tools.call("write_file", {"path": str(target), "content": "x"})
 
     # 断言安全属性本身（拒绝且未落盘），而不是某一个具体错误码字符串：
     # 网关可能给出更具体的码（APPROVAL_NO_RESPONDER / APPROVAL_POLICY_NEVER）
@@ -188,8 +192,7 @@ def test_deny_responder_blocks_the_write(make_bot, tmp_path):
     bot.set_approval_responder(AutoResponder("deny"))
 
     target = root / "denied.txt"
-    result = bot._kernel_tools.call(
-        "write_file", {"path": str(target), "content": "x"})
+    result = bot._kernel_tools.call("write_file", {"path": str(target), "content": "x"})
 
     assert result.startswith("错误:")
     assert not target.exists(), "应答者明确拒绝后写入竟然落盘了"
@@ -217,22 +220,20 @@ def test_run_command_through_the_real_kernel_exit(make_bot, tmp_path):
     bot.set_approval_responder(AutoResponder("allow"))
 
     # python 不在内置白名单里，先确认被拒
-    denied = bot._kernel_tools.call(
-        "run_command", {"argv": [_sys.executable, "--version"]})
+    denied = bot._kernel_tools.call("run_command", {"argv": [_sys.executable, "--version"]})
     assert denied.startswith("错误:")
     assert "白名单" in denied
 
     # 把 python 追加进白名单后应真实执行并返回退出码
-    bot.permissions.configure(mode_command_allowlist={
-        "code": ("dir", "ls", "python"), "learn": ()})
-    allowed = bot._kernel_tools.call(
-        "run_command", {"argv": [_sys.executable, "--version"]})
+    bot.permissions.configure(mode_command_allowlist={"code": ("dir", "ls", "python"), "learn": ()})
+    allowed = bot._kernel_tools.call("run_command", {"argv": [_sys.executable, "--version"]})
     assert "退出码" in allowed, f"白名单命令未执行: {allowed[:200]}"
 
 
 # ============================================================================
 # B. F6：AI.tools_mode 只读属性
 # ============================================================================
+
 
 def test_tools_mode_is_read_only(make_bot):
     bot = make_bot(mode="code")
@@ -254,6 +255,7 @@ def test_kernel_tools_exposes_mode_property():
 # C. F3：会话写者登记不随实例数增长
 # ============================================================================
 
+
 def test_repeated_construction_does_not_leak_writer_registrations(make_bot, tmp_path):
     """F3 回归：连续构造 N 个 AI 实例后 _ACTIVE_WRITERS 不增长。
 
@@ -265,17 +267,16 @@ def test_repeated_construction_does_not_leak_writer_registrations(make_bot, tmp_
 
     after_construct = len(session_module._ACTIVE_WRITERS)
     assert after_construct - baseline <= 5, (
-        f"构造 5 个实例登记了 {after_construct - baseline} 条写者")
+        f"构造 5 个实例登记了 {after_construct - baseline} 条写者"
+    )
 
     # 每个实例只应持有它自己的那份会话
     for index, bot in enumerate(bots):
-        assert len(bot._sessions) <= 1, (
-            f"实例 {index} 持有 {list(bot._sessions)}，占用了多余登记")
+        assert len(bot._sessions) <= 1, f"实例 {index} 持有 {list(bot._sessions)}，占用了多余登记"
 
     for bot in bots:
         bot.close()
-    assert len(session_module._ACTIVE_WRITERS) == baseline, (
-        "close() 之后写者登记没有回到基线")
+    assert len(session_module._ACTIVE_WRITERS) == baseline, "close() 之后写者登记没有回到基线"
 
 
 # ============================================================================
@@ -284,13 +285,22 @@ def test_repeated_construction_does_not_leak_writer_registrations(make_bot, tmp_
 
 #: modes.py 里 LEARN_ALLOWED 声明的 8 个工具（这里用字面量钉住契约）
 LEARN_DECLARED = {
-    "get_current_time", "read_file", "list_dir", "glob_files", "grep_files",
-    "search_notes", "read_note", "write_note",
+    "get_current_time",
+    "read_file",
+    "list_dir",
+    "glob_files",
+    "grep_files",
+    "search_notes",
+    "read_note",
+    "write_note",
 }
 
 #: deny-ALL 失效路径曾放行、修复后必须收回的工具
 LEARN_FORBIDDEN = {
-    "play_music", "set_reminder", "clear_reminders", "list_reminders",
+    "play_music",
+    "set_reminder",
+    "clear_reminders",
+    "list_reminders",
     "system_info",
 }
 
@@ -304,8 +314,11 @@ def test_learn_visible_tools_exactly_match_the_declaration(make_bot):
     bot = make_bot("n1-learn", mode="learn")
     visible = set(bot.visible_tools())
     assert visible == LEARN_DECLARED, (
-        "learn 可见集合与声明不符: 缺 " + repr(sorted(LEARN_DECLARED - visible))
-        + "，多 " + repr(sorted(visible - LEARN_DECLARED)))
+        "learn 可见集合与声明不符: 缺 "
+        + repr(sorted(LEARN_DECLARED - visible))
+        + "，多 "
+        + repr(sorted(visible - LEARN_DECLARED))
+    )
 
 
 def test_learn_note_tools_run_through_the_real_kernel_exit(make_bot, tmp_path):
@@ -317,24 +330,20 @@ def test_learn_note_tools_run_through_the_real_kernel_exit(make_bot, tmp_path):
     bot.bind_mode_workdir("learn", str(vault))
     bot.set_approval_responder(AutoResponder("allow"))
 
-    (vault / "算法.md").write_text(
-        "# 算法\n\n动态规划入门\n", encoding="utf-8")
+    (vault / "算法.md").write_text("# 算法\n\n动态规划入门\n", encoding="utf-8")
 
     read_result = bot._kernel_tools.call("read_note", {"path": "算法.md"})
-    assert "动态规划入门" in read_result, (
-        "read_note 未真实执行: " + read_result[:200])
+    assert "动态规划入门" in read_result, "read_note 未真实执行: " + read_result[:200]
     assert "在模式" not in read_result
 
-    search_result = bot._kernel_tools.call(
-        "search_notes", {"query": "动态规划"})
-    assert "算法.md" in search_result, (
-        "search_notes 未真实执行: " + search_result[:200])
+    search_result = bot._kernel_tools.call("search_notes", {"query": "动态规划"})
+    assert "算法.md" in search_result, "search_notes 未真实执行: " + search_result[:200]
     assert "在模式" not in search_result
 
     write_result = bot._kernel_tools.call(
-        "write_note", {"path": "新笔记.md", "content": "hello note"})
-    assert write_result.startswith("已"), (
-        "write_note 未真实执行: " + write_result[:200])
+        "write_note", {"path": "新笔记.md", "content": "hello note"}
+    )
+    assert write_result.startswith("已"), "write_note 未真实执行: " + write_result[:200]
     assert "在模式" not in write_result
     assert (vault / "新笔记.md").exists()
     assert "hello note" in (vault / "新笔记.md").read_text(encoding="utf-8")
@@ -344,8 +353,7 @@ def test_learn_reclaims_tools_that_deny_all_let_through(make_bot):
     """N1 反向：deny-ALL 失效路径放行的工具必须被收回。"""
     bot = make_bot("n1-reverse", mode="learn")
     for name in sorted(LEARN_FORBIDDEN):
-        assert not bot.tool_visible(name), (
-            "learn 不应可见 " + name + "（deny-ALL 失效路径回归）")
+        assert not bot.tool_visible(name), "learn 不应可见 " + name + "（deny-ALL 失效路径回归）"
 
 
 def test_work_code_chat_visible_sets_unchanged(make_bot):
@@ -356,8 +364,7 @@ def test_work_code_chat_visible_sets_unchanged(make_bot):
     bot.set_mode("code", persist=False)
     code_visible = set(bot.visible_tools())
     assert len(code_visible) == 16, sorted(code_visible)
-    assert not (code_visible & {"read_note", "search_notes", "write_note"}), (
-        "code 不得可见笔记工具")
+    assert not (code_visible & {"read_note", "search_notes", "write_note"}), "code 不得可见笔记工具"
     bot.set_mode("chat", persist=False)
     assert bot.visible_tools() == [], "chat 可见集合恒为空"
 
@@ -380,30 +387,32 @@ def test_builtin_modes_keeps_mode_names_out_of_known_tools(make_bot):
     import castorice
 
     source = inspect.getsource(ai.AI._build_mode_registry)
-    declared_lines = [line.strip() for line in source.splitlines()
-                      if line.strip().startswith("declared =")]
+    declared_lines = [
+        line.strip() for line in source.splitlines() if line.strip().startswith("declared =")
+    ]
     assert declared_lines, "_build_mode_registry 必须先物化 declared 再传给 builtin_modes"
     for line in declared_lines:
         assert "KNOWN_MODES" not in line, (
-            "declared 不得由模式名集合（KNOWN_MODES）拼出（N1 根因回归）: " + line)
+            "declared 不得由模式名集合（KNOWN_MODES）拼出（N1 根因回归）: " + line
+        )
         assert "set(allowed)" not in line, (
-            "declared 不得混入按模式分桶的 allowed（其键是模式名）: " + line)
-    assert "builtin_modes(" in source, (
-        "模式物化必须经过 castorice.builtin_modes")
+            "declared 不得混入按模式分桶的 allowed（其键是模式名）: " + line
+        )
+    assert "builtin_modes(" in source, "模式物化必须经过 castorice.builtin_modes"
 
     # 动态证据：真实装配路径下 learn 的 allow 掩码就是 8 个声明工具
     bot = make_bot("n1-root", mode="learn")
     learn = bot._mode_registry.get("learn")
     assert learn.tool_policy.allow == frozenset(LEARN_DECLARED), (
-        "learn 的 allow 掩码不是声明集合（入参语义回归到模式名了）: "
-        + repr(learn.tool_policy))
-    assert not learn.tool_policy.deny, (
-        "learn 不得退化为 deny-ALL: " + repr(learn.tool_policy))
+        "learn 的 allow 掩码不是声明集合（入参语义回归到模式名了）: " + repr(learn.tool_policy)
+    )
+    assert not learn.tool_policy.deny, "learn 不得退化为 deny-ALL: " + repr(learn.tool_policy)
 
     # 语义方向对照：把**工具名**传给 builtin_modes 时，learn 的 allowlist
     # 恰为 8 个正确工具、deny 为空（与上面的真实对象一致）
-    learn_static = [m for m in castorice.builtin_modes(
-        frozenset(LEARN_DECLARED)) if m.name == "learn"][0]
+    learn_static = next(
+        m for m in castorice.builtin_modes(frozenset(LEARN_DECLARED)) if m.name == "learn"
+    )
     assert set(learn_static.tool_allowlist) == LEARN_DECLARED
     bot.close()
 
@@ -422,7 +431,7 @@ def test_placeholder_session_is_reused_not_orphaned(make_bot):
 def test_close_is_idempotent(make_bot):
     bot = make_bot("idem", mode="code")
     bot.close()
-    bot.close()          # 第二次不应抛异常
+    bot.close()  # 第二次不应抛异常
     # SessionStore 的关闭状态在私有字段上（没有公开 closed 属性）
     assert bot.session._closed is True
 
@@ -434,10 +443,14 @@ def test_context_manager_releases_writers(tmp_path):
     scaffold(root)
     config = write_config(root, mode="chat")
     baseline = len(session_module._ACTIVE_WRITERS)
-    with ai.AI(config_path=str(config), prompts_dir=str(root / "prompts"),
-               chroma_dir=str(root / "chroma"), provider_name="fake",
-               image_dir=str(root / "Image"),
-               sessions_dir=str(root / "sessions")) as bot:
+    with ai.AI(
+        config_path=str(config),
+        prompts_dir=str(root / "prompts"),
+        chroma_dir=str(root / "chroma"),
+        provider_name="fake",
+        image_dir=str(root / "Image"),
+        sessions_dir=str(root / "sessions"),
+    ) as bot:
         assert bot.tools_mode == "chat"
         assert len(session_module._ACTIVE_WRITERS) == baseline + 1
     assert len(session_module._ACTIVE_WRITERS) == baseline
@@ -455,20 +468,29 @@ def test_rebuild_after_close_succeeds(tmp_path):
     config = write_config(root, mode="chat")
     sessions = root / "sessions"
 
-    first = ai.AI(config_path=str(config), prompts_dir=str(root / "prompts"),
-                  chroma_dir=str(root / "chroma"), provider_name="fake",
-                  image_dir=str(root / "Image"), sessions_dir=str(sessions))
+    first = ai.AI(
+        config_path=str(config),
+        prompts_dir=str(root / "prompts"),
+        chroma_dir=str(root / "chroma"),
+        provider_name="fake",
+        image_dir=str(root / "Image"),
+        sessions_dir=str(sessions),
+    )
     first.session.append("user", {"content": "第一轮"})
     first.session.checkpoint("probe")
     first.close()
 
-    second = ai.AI(config_path=str(config), prompts_dir=str(root / "prompts"),
-                   chroma_dir=str(root / "chroma"), provider_name="fake",
-                   image_dir=str(root / "Image"), sessions_dir=str(sessions))
+    second = ai.AI(
+        config_path=str(config),
+        prompts_dir=str(root / "prompts"),
+        chroma_dir=str(root / "chroma"),
+        provider_name="fake",
+        image_dir=str(root / "Image"),
+        sessions_dir=str(sessions),
+    )
     try:
         # 历史应当从磁盘恢复
-        contents = [m.get("content") for m in second.get_history()
-                    if m.get("role") == "user"]
+        contents = [m.get("content") for m in second.get_history() if m.get("role") == "user"]
         assert "第一轮" in contents
     finally:
         second.close()

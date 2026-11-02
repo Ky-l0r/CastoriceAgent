@@ -40,16 +40,16 @@ export function NapcatPanel() {
 
   const save = async () => {
     setSaving(true);
-    const ok = await saveNapcat(config);
+    const result = await saveNapcat(config);
     setSaving(false);
-    setDirty(false);
+    if (result.ok) setDirty(false);
     setToast({
-      ok,
-      text: ok
+      ok: result.ok,
+      text: result.ok
         ? "渠道配置已写入 config.yaml（新配置在下次后端重启后生效）"
-        : "保存失败：config.yaml 写回被拒绝",
+        : "保存失败：" + (result.error ?? "config.yaml 写回被拒绝"),
     });
-    setTimeout(() => setToast(null), 3000);
+    setTimeout(() => setToast(null), 6000);
   };
 
   return (
@@ -117,6 +117,11 @@ export function NapcatPanel() {
         >
           放弃修改
         </GhostButton>
+        {dirty && (
+          <span className="text-[11.5px]" style={{ color: "var(--c-muted)" }}>
+            有未保存的修改
+          </span>
+        )}
       </div>
       {toast && <Toast text={toast.text} ok={toast.ok} />}
     </div>

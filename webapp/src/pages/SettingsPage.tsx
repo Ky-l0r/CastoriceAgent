@@ -9,7 +9,11 @@ import {
   ShieldCheck,
   UserRound,
   Info,
+  MonitorCog,
+  MessagesSquare,
 } from "lucide-react";
+import { GeneralPanel } from "../components/settings/GeneralPanel";
+import { ChatPanel } from "../components/settings/ChatPanel";
 import { AppearancePanel } from "../components/settings/AppearancePanel";
 import { ProvidersPanel } from "../components/settings/ProvidersPanel";
 import { NapcatPanel } from "../components/settings/NapcatPanel";
@@ -25,6 +29,8 @@ import { AboutPanel } from "../components/settings/AboutPanel";
  */
 
 export type SettingsTab =
+  | "general"
+  | "chat"
   | "appearance"
   | "providers"
   | "channels"
@@ -43,6 +49,8 @@ const TABS: {
   }>;
   title: string;
 }[] = [
+  { id: "general", label: "通用", icon: MonitorCog, title: "通用" },
+  { id: "chat", label: "聊天", icon: MessagesSquare, title: "聊天" },
   { id: "appearance", label: "外观", icon: Palette, title: "外观" },
   { id: "providers", label: "模型 API", icon: Cpu, title: "模型 API" },
   { id: "channels", label: "渠道", icon: Cable, title: "渠道（NapCat）" },
@@ -60,7 +68,7 @@ export function SettingsPage({
   /** 从侧栏快捷入口进来时直接定位的分类。 */
   initialTab?: SettingsTab;
 }) {
-  const [tab, setTab] = useState<SettingsTab>(initialTab ?? "appearance");
+  const [tab, setTab] = useState<SettingsTab>(initialTab ?? "general");
 
   // 侧栏再次点其它快捷入口时，App 会传新的 initialTab（组件不卸载），
   // 这里跟随更新——否则点了「模型 API」还停在上一个分类。
@@ -127,6 +135,8 @@ export function SettingsPage({
           </h2>
         </header>
         <div className="mx-auto max-w-2xl px-8 pb-12 pt-2">
+          {tab === "general" && <GeneralPanel />}
+          {tab === "chat" && <ChatPanel />}
           {tab === "appearance" && <AppearancePanel />}
           {tab === "providers" && <ProvidersPanel />}
           {tab === "channels" && <NapcatPanel />}

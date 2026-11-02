@@ -1,5 +1,4 @@
 import { useEffect } from "react";
-import { AnimatePresence, motion } from "motion/react";
 import { Bell, X } from "lucide-react";
 import { useBridgeStore } from "../store/bridge-store";
 
@@ -19,13 +18,8 @@ function Banner({ id, title, body }: { id: string; title: string; body: string }
   }, [id, dismiss]);
 
   return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, x: 60 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: 60 }}
-      transition={{ type: "spring", stiffness: 260, damping: 24 }}
-      className="pointer-events-auto flex w-80 items-start gap-2.5 rounded-xl border p-3 shadow-lg backdrop-blur"
+    <div
+      className="ui-fade-in pointer-events-auto flex w-80 items-start gap-2.5 rounded-xl border p-3 shadow-lg backdrop-blur"
       style={{
         background: "var(--c-tool-bg)",
         borderColor: "var(--c-approval-border)",
@@ -57,7 +51,7 @@ function Banner({ id, title, body }: { id: string; title: string; body: string }
       >
         <X size={13} />
       </button>
-    </motion.div>
+    </div>
   );
 }
 
@@ -65,11 +59,9 @@ export function NotificationBanner() {
   const banners = useBridgeStore((s) => s.banners);
   return (
     <div className="pointer-events-none fixed right-4 top-12 z-40 flex flex-col gap-2">
-      <AnimatePresence>
-        {banners.map((b) => (
-          <Banner key={b.id} id={b.id} title={b.title} body={b.body} />
-        ))}
-      </AnimatePresence>
+      {banners.map((b) => (
+        <Banner key={b.id} id={b.id} title={b.title} body={b.body} />
+      ))}
     </div>
   );
 }

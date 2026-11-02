@@ -36,6 +36,8 @@ const api = {
   // ---- 窗口控制（自绘标题栏；主进程直通）----
   minimize: () => ipcRenderer.send("window:minimize"),
   hide: () => ipcRenderer.send("window:hide"),
+  /** 标题栏「×」：按「关闭时最小化到托盘」设置决定隐藏还是退出。 */
+  requestClose: () => ipcRenderer.send("window:request-close"),
   toggleMaximize: () => ipcRenderer.send("window:toggle-maximize"),
   /** 目录选择对话框（工作目录绑定）；取消返回 null。 */
   pickDirectory: () => ipcRenderer.invoke("dialog:pick-directory") as Promise<string | null>,
@@ -57,9 +59,34 @@ const api = {
     return () => ipcRenderer.removeListener("bridge:notification", wrapped);
   },
 
-  // ---- 关闭行为（t5 可配置：关闭时最小化到托盘）----
+  // ---- 关闭行为（可配置：关闭时最小化到托盘）----
   getCloseAction: () => ipcRenderer.invoke("window:get-close-action"),
   setCloseAction: (value: boolean) => ipcRenderer.invoke("window:set-close-action", value),
+
+  // ---- 壳层设置：开机自启动 / 静默启动 / 数据目录 ----
+  getShellState: () => ipcRenderer.invoke("app:get-shell-state"),
+  setAutostart: (enabled: boolean) => ipcRenderer.invoke("app:set-autostart", enabled),
+  setSilentStart: (enabled: boolean) => ipcRenderer.invoke("app:set-silent-start", enabled),
+  openDataDir: () => ipcRenderer.invoke("app:open-data-dir"),
+  /** 重启 Python 后端（渠道配置写回后需要重启才生效）。 */
+  restartBackend: () => ipcRenderer.invoke("app:restart-backend"),
+  /** 壳层设置变化推送（托盘菜单 / 设置页都会改）。 */
+  onShellStateChanged: (listener: (state: unknown) => void) => {
+    const wrapped = (_: unknown, state: unknown) => listener(state);
+    ipcRenderer.on("app:shell-prefs-changed", wrapped);
+    return () => ipcRenderer.removeListener("app:shell-prefs-changed", wrapped);
+  },
+
+  /**
+   * 后端启动失败的具体原因（主进程新增的推送）。
+   * null 表示已恢复正常。有了它，界面才能显示「配置文件格式错误」
+   * 这类可自行修复的原因，而不是笼统的「后端未连接」。
+   */
+  onBackendError: (listener: (info: { message: string } | null) => void) => {
+    const wrapped = (_: unknown, info: { message: string } | null) => listener(info);
+    ipcRenderer.on("bridge:backend-error", wrapped);
+    return () => ipcRenderer.removeListener("bridge:backend-error", wrapped);
+  },
 };
 
 export type CastoriceBridgeApi = typeof api;
