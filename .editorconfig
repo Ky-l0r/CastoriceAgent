@@ -1,0 +1,38 @@
+# ============================================================
+#  .editorconfig —— 跨编辑器的基础排版约定
+# ============================================================
+#  VS Code 需安装 EditorConfig for VS Code 扩展，JetBrains 系原生支持。
+#  只约定「不会引起争议」的底线规则，代码风格细节交给 ruff / prettier。
+# ============================================================
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# Python 与配置文件
+[*.{py,pyi}]
+indent_size = 4
+max_line_length = 100
+
+# 前端与 JSON / YAML
+[*.{ts,tsx,js,jsx,json,jsonc,css,yml,yaml}]
+indent_size = 2
+
+# Markdown：保留行尾空格（换行符语法），不强制断行
+[*.md]
+trim_trailing_whitespace = false
+max_line_length = off
+
+# PowerShell 脚本（打包脚本）
+[*.ps1]
+indent_size = 4
+
+# 锁文件与生成物不做格式约束
+[pnpm-lock.yaml]
+insert_final_newline = false

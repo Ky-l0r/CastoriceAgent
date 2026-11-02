@@ -1,0 +1,99 @@
+# ============================================================
+#  CI —— 每次 push / PR 自动检查
+# ============================================================
+#  三个独立作业并行：
+#    lint    Python 静态检查与格式（快，10 秒级）
+#    test    Python 全量测试（慢，2~4 分钟，需装 chromadb）
+#    webapp  前端三方类型检查与构建
+#  任一项失败即视为不可合并。
+# ============================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---- Python 静态检查：不做任何构建，最快给出反馈 ----
+  lint:
+    name: Lint / Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: 安装 ruff
+        run: pip install "ruff==0.17.0"
+
+      - name: ruff check（规则见 pyproject.toml）
+        run: ruff check .
+
+      - name: ruff format --check（只检查不改写）
+        run: ruff format --check .
+
+  # ---- Python 测试：项目仅支持 Windows，用 Windows runner 贴合真实环境 ----
+  test:
+    name: Pytest (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          pip install -r requirements.txt
+
+      - name: 运行测试
+        run: python -m pytest -q
+
+  # ---- 前端：三个 tsconfig 分别做类型检查，再验证 vite 构建 ----
+  webapp:
+    name: Webapp Typecheck / Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webapp
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: webapp/pnpm-lock.yaml
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 类型检查（renderer / main / preload）
+        run: |
+          pnpm run check:renderer
+          pnpm run check:main
+          pnpm run check:preload
+
+      - name: 构建界面
+        run: pnpm run build:renderer

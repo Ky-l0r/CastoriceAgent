@@ -1,0 +1,56 @@
+# ============================================================
+#  pre-commit —— 提交前自动检查
+# ============================================================
+#  首次启用（只需一次）：
+#      pip install -r requirements-dev.txt
+#      pre-commit install
+#  手动对全仓库跑一遍：
+#      pre-commit run --all-files
+#  临时跳过（不建议）：
+#      git commit --no-verify
+# ============================================================
+
+default_language_version:
+  python: python3
+
+repos:
+  # ---- Ruff：lint + format（配置全部来自 pyproject.toml）----
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.0
+    hooks:
+      - id: ruff
+        name: ruff (lint, 自动修复可修项)
+        args: [--fix, --exit-non-zero-on-fix]
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: ruff (format)
+        types_or: [python, pyi]
+
+  # ---- 通用文件卫生 ----
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: \.(md|txt)$          # 中文文档里的行尾空格多为有意保留
+      - id: end-of-file-fixer
+        exclude: \.(png|ico|jpe?g|bin|sqlite3)$
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: check-json
+        exclude: ^webapp/(tsconfig.*\.json|electron-builder\.json)$  # 允许注释的 jsonc
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=2048]          # 防止误提交打包产物
+      - id: mixed-line-ending
+        args: [--fix=lf]
+        exclude: \.(ps1|bat)$         # Windows 脚本保持 CRLF
+
+  # ---- 前端：TypeScript 类型检查（不改写文件，只拦错）----
+  - repo: local
+    hooks:
+      - id: webapp-typecheck
+        name: webapp tsc --noEmit
+        entry: bash -c 'cd webapp && pnpm run check:renderer && pnpm run check:main && pnpm run check:preload'
+        language: system
+        files: ^webapp/(src|electron)/.*\.(ts|tsx)$
+        pass_filenames: false

@@ -1,0 +1,104 @@
+# ============================================================
+#  pyproject.toml —— 工具配置与工程规范的唯一入口
+# ============================================================
+#  说明：本项目是「应用」而非可分发库，因此这里不声明 [build-system]，
+#  `pip install -e .` 不适用；依赖请用 requirements.txt / requirements-dev.txt。
+#  本文件只承担两件事：
+#    1. 统一 lint / format 标准（ruff）；
+#    2. 统一测试配置（pytest，原 pytest.ini 已并入此处）。
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. Ruff：lint + format
+# ------------------------------------------------------------
+[tool.ruff]
+# 最低支持版本，与 README「环境要求」一致。
+# 注意：target-version 会直接影响 UP 规则是否建议 `X | None`，
+# 改成 py310 前请先确认放弃 Python 3.9 兼容。
+target-version = "py39"
+line-length = 100
+
+extend-exclude = [
+    "build",
+    "dist",
+    "发布包",
+    "Cyrene-Agent-master",
+    "webapp",
+    ".venv",
+    "venv",
+    "docs",       # 文档里的 Python 示例代码块保持原样（历史过程文档）
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes：未定义名、未使用导入
+    "W",   # pycodestyle warnings
+    "I",   # isort：导入排序
+    "B",   # flake8-bugbear：常见陷阱
+    "C4",  # flake8-comprehensions
+    "PIE", # flake8-pie
+    "SIM", # flake8-simplify
+    "FLY", # flynt：f-string
+    "RUF", # ruff 自有规则
+    "PL",  # pylint 子集（复杂度、重复代码）
+    "UP",  # pyupgrade
+    "BLE", # flake8-blind-except
+    "S",   # flake8-bandit：安全相关
+    "N",   # pep8-naming
+]
+
+ignore = [
+    # —— 与中文代码库的固有冲突 ——
+    "RUF001", "RUF002", "RUF003", # 中文全角标点被判为「歧义 Unicode」，本项目全中文注释
+    # —— 交给 formatter 处理 ——
+    "E501",                       # 行长由 ruff format 保证，注释/长字符串不强断
+    # —— 与最低支持版本（Python 3.9）保持一致 ——
+    "UP006",                      # typing.List -> list：保留 typing 风格，避免与 UP045 混用
+    "UP045",                      # Optional[X] -> X | None：运行期需要 3.10+
+    "UP035",                      # 随 UP006 一并保留 typing 导入写法
+    # —— 历史债务：已登记，分模块逐步收敛（见 CONTRIBUTING.md「技术债」）——
+    "BLE001",                     # 90 处裸 except：多数在降级兜底路径，需逐个判断
+    "S110",                       # try-except-pass：同上
+    "PLC0415",                    # 函数内延迟导入：规避循环依赖的有意设计
+    "PLR2004",                    # 魔法数字：协议常量就地书写更易读
+    "PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR0917",  # 复杂度阈值
+    "PLR1711",                    # 无返回值函数显式 return None：保持风格统一
+    # —— 与外部协议对齐 ——
+    "S311",                       # 表情包随机选择不涉及密码学安全
+    "S603", "S607",               # 子进程 argv 全部来自仓库内固定模板
+    "N802", "N803", "N806",       # 与外部 API / 数据字段命名对齐
+    # —— 有意为之的写法（已逐项确认，非遗留缺陷）——
+    "N818",                       # 异常类名（SandboxDenied 等）是公开 API，改名会破坏调用方
+    "PLW0603",                    # 单例装配点使用 global，全项目仅 3 处且有注释
+    "SIM105",                     # 显式 try/except/pass 比 contextlib.suppress 更能表达降级意图
+    "RUF015",                     # list(...)[0] 的 IndexError 语义比 next(iter(...)) 更直观
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试里 assert 是正常写法；夹具与用例参数名贴近被测语义
+"tests/**" = ["S101", "S106", "RUF006", "RUF059", "PLR2004", "N806", "B017"]
+"scripts/**" = ["S101", "T201"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+# ------------------------------------------------------------
+# 2. pytest（原 pytest.ini 内容迁入，保持行为完全一致）
+# ------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-ra"
+# 不递归进打包产物、数据库与脚本目录
+norecursedirs = [
+    ".*", "build", "dist", "发布包", "database", "scripts", "docs",
+    "*.egg", "_darcs", "CVS", "node_modules", "venv", "{arch}",
+]
+markers = [
+    "allow_network: 允许该用例建立真实网络连接（默认所有用例禁用联网）",
+]

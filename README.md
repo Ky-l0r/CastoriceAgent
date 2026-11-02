@@ -149,6 +149,9 @@ Key 要去 AI 服务商的官网注册后自行创建，例如：
 | **切换主题** | 右上角齿轮 → 外观 → 跟随系统 / 浅色 / 深色 |
 | **复制消息** | 鼠标直接拖选文字即可 |
 | **最小化 / 关闭** | 右上角标题栏按钮；窗口可按住标题栏拖动 |
+| **开机自启动** | 右上角齿轮 → 通用 → 打开「开机自动启动」，登录 Windows 后自动运行 |
+| **后台静默启动** | 同页打开「后台静默启动」：开机时不弹窗口，只在托盘驻留；点托盘图标即回到界面 |
+| **真正的退出** | 托盘图标右键 → 退出（关窗口默认只是隐藏到托盘） |
 
 > 💡 图片功能需要**视觉模型**。程序会按模型名自动判断（`*-vl`、`gpt-4o`、`claude-3` 等视为视觉模型），
 > 也可以在「设置」里手动勾选「该模型支持图片输入」。
@@ -226,6 +229,46 @@ API Key 没填或填错了。打开右上角设置重新填写。
 
 文件夹版首次启动约 2~5 秒，要加载本地检索库（onnxruntime 等），属正常现象。
 启动过一次后会快一些。
+</details>
+
+<details>
+<summary><b>反复开关程序后，再也打不开（进程还在但没窗口）</b></summary>
+
+旧版本在「关闭时最小化到托盘」被关掉后，窗口其实已经被销毁，托盘图标
+却还留着；此时再双击图标只会把程序拉到那扇**已经不存在的窗户**前，
+看起来就是「点了没反应」。v1.5.3 起托盘双击/单击都会重建窗口，
+且关掉那一项后关闭窗口会真正退出进程。
+
+如果已经卡住，在任务管理器里结束 `CastoriceAgent.exe` 再重新打开即可，
+数据不会丢（配置与对话都在 `%APPDATA%\CastoriceAgent`）。
+</details>
+
+<details>
+<summary><b>保存渠道（NapCat）配置失败 / 添加模型 API 报错</b></summary>
+
+两个现象曾是同一个根因：**写回 `config.yaml` 时把文件写坏了**。
+
+- 渠道那一节在模板里是整段注释，旧版本逐键写入会「找不到键」→ 保存失败；
+- 更早的版本还有一种插入位置错误，会把子级行插到下一个顶层键之后，
+  整份配置变成非法 YAML，于是下次启动后端直接报「配置文件格式错误」，
+  界面表现为「添加 API Key 时报 bridge not started」。
+
+v1.5.3 起：
+
+1. 渠道配置走「整节写入」，节不存在就整块创建；
+2. 每次写回都先做 YAML 校验，写坏就**放弃这次写入**（原文件不动）；
+3. 启动时若发现配置已被旧版本写坏，会自动修复并留一份
+   `config.yaml.broken-<时间戳>` 备份，日志里也会写明。
+
+如果你手上的 config.yaml 还是坏的，直接启动新版本即可自动修复；
+也可以在「设置 → 通用 → 打开数据目录」里手动把备份文件改名回去。
+</details>
+
+<details>
+<summary><b>改了渠道配置，什么时候生效</b></summary>
+
+渠道配置在**后端重启后**生效。设置 → 通用里有个「重启后端」按钮，
+点一下即可（不必关掉整个程序）。QQ 渠道若已配置，重启会重新连接 NapCat。
 </details>
 
 ---
@@ -549,18 +592,39 @@ python main.py
 ### 打包为 exe
 
 ```powershell
+# 全量打包（界面与后端并行构建，PyInstaller 复用缓存）
 pwsh -File scripts\打包.ps1
+
+# 只改了界面：跳过 Python 打包与 electron-builder 的复制
+pwsh -File scripts\打包.ps1 -SkipBackend -Pack
+
+# 只改了 Python：跳过前端构建
+pwsh -File scripts\打包.ps1 -SkipWeb -Pack
+
+# 改了依赖 / 怀疑缓存坏了：清掉 PyInstaller 缓存重打
+pwsh -File scripts\打包.ps1 -CleanBackend -Pack
 ```
 
 产物在 `发布包\CastoriceAgent\`，整个文件夹拷给别人就能用。
-脚本会自动生成并嵌入 exe 图标（取自 `Image\CastoriceAvatar.jpeg`），
-发布包里的 `config.yaml` 用示例配置占位，不含任何密钥。
+不带 `-Pack` 时脚本只做构建（产物在 `webapp\release\win-unpacked`），
+方便先验证再组装。发布包里的 `config.yaml` 用示例配置占位，不含任何密钥。
 
 打包分三步：`scripts\打包后端.ps1` 用 PyInstaller 把 Python 后端打成独立 sidecar
 （`dist\castorice-sidecar\`，含 `_internal`，同样排除 torch / scipy / pandas / transformers，
 `torch_cpu.dll` 单个就有 291MB），`pnpm run build` 构建界面，最后 electron-builder
 把两者嵌套成单目录绿色便携包（sidecar 经 extraResources 放进 `resources/`，
-用户机器**无需安装 Python**）。发布包里的 `config.yaml` 用示例配置占位，不含任何密钥。
+用户机器**无需安装 Python**）。
+
+**为什么现在快很多**：
+
+* PyInstaller 不再每次都 `--clean`（原来会重新分析 chromadb / onnxruntime
+  的上万个文件，只改几行 Python 也要十几分钟）。默认复用 `build/` 缓存，
+  增量重打通常 1~2 分钟；
+* 界面构建与后端打包互不依赖，脚本默认并行执行；
+* Tailwind 的源扫描范围收窄到 `webapp/src` 与 `index.html`
+  （原来会扫 `dist/`、`release/`、`public/` 与 node_modules 软链接，
+  CSS 生成要 30 秒以上，现在是秒级）；
+* 前端不再依赖 `motion`（体积与首屏解析都省了一截），改为纯 CSS 入场动画。
 
 ### 项目结构
 
@@ -572,17 +636,27 @@ CastoriceAgent/
 ├── ai.py                       AI 核心：配置、记忆库、提供商适配、工具、表情包
 ├── castorice/                  四模式内核：模式注册表 / 会话日志 / agent 循环 /
 │                               权限审批 / 工具集 / 记忆引擎 / 渠道接口（castorice/channels/）
-├── requirements.txt            依赖清单
+├── tests/                      回归测试（19 个文件、799 条用例，见 tests/README.md）
+├── pyproject.toml              ruff 规则与 pytest 配置的唯一入口
+├── requirements.txt            运行依赖
+├── requirements-dev.txt        开发依赖（pytest / ruff / pre-commit）
 ├── example_config.yaml         配置模板（发布时用它占位）
 ├── config.yaml                 你的实际配置（已被 .gitignore 忽略）
+├── CONTRIBUTING.md             贡献指南（环境 / 规范 / 提交信息 / 技术债）
+├── CHANGELOG.md                版本变更记录
+├── .pre-commit-config.yaml     提交前钩子（ruff + 文件卫生 + 前端类型检查）
+├── .github/workflows/ci.yml    CI：lint / pytest / 前端类型检查与构建
 ├── scripts/
 │   ├── 打包.ps1                一键打包脚本（Electron 嵌套总控）
 │   ├── 打包后端.ps1            Python sidecar 打包（PyInstaller，产 _internal）
+│   ├── 打包补丁.ps1            增量补丁包
 │   └── requirement_install.py  依赖安装脚本
+├── build-specs/archive/        历史 PyInstaller .spec 存档（不参与构建）
 ├── docs/
+│   ├── README.md               文档索引
+│   ├── refactor/               四期改造的过程文档（架构 / 验证 / 契约）
 │   ├── 使用说明.txt             给最终用户的说明书（随发布包分发）
-│   ├── screenshot-dark.png     界面截图（深色）
-│   └── screenshot-light.png    界面截图（浅色）
+│   └── screenshot-*.png        界面截图
 ├── prompts/                    角色设定（11 个模块）
 ├── Image/
 │   ├── CastoriceAvatar.jpeg    聊天头像
@@ -591,5 +665,23 @@ CastoriceAgent/
 ├── database/                   对话记忆库（自动生成）
 └── logs/app.log                运行日志
 ```
+
+### 代码规范与测试
+
+```bash
+# 一次性：装提交钩子（之后每次 commit 自动跑 ruff）
+pip install -r requirements-dev.txt
+pre-commit install
+
+# 静态检查与格式（规则只在 pyproject.toml 里配）
+ruff check .
+ruff format --check .
+
+# 全量测试（约 2~3 分钟，期望 798 passed / 1 skipped）
+python -m pytest -q
+```
+
+提交信息用 `type(中文scope): 摘要`，例如 `fix(渠道): 断线重连后重复回复`。
+完整规范、目录归属与技术债清单见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 </details>
