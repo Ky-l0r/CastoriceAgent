@@ -78,7 +78,10 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          # 必须与开发环境一致：仓库根的 pnpm-workspace.yaml 使用了
+          # onlyBuiltDependencies（pnpm 10+ 语法），pnpm 9 会解析失败。
+          # 本机实测 12.14.0，lockfile 为 version 9.0（向后兼容）。
+          version: 12
 
       - uses: actions/setup-node@v4
         with:
