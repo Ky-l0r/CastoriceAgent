@@ -14,19 +14,33 @@
 config.yaml
 
 # 对话记忆数据库：里面是你们的聊天记录
-database/
+/database/
 
 # 结构化记忆落盘（wiki / 摘要 / 世界书）与各模式会话记录：
 # sessions_dir 与 DEFAULT_ROOT 都是相对路径，落点为进程 CWD，
 # 从仓库根启动（python main.py / 测试）时会在这里创建
-memory/
-sessions/
+#
+# ⚠ 这几条必须带前导斜杠（只匹配仓库根）：
+# 不带斜杠的 `memory/` 会匹配任意层级的 memory 目录，
+# 从而把源码包 castorice/memory/ 整个忽略掉（2026-11-03 已发生并修复）。
+/memory/
+/sessions/
+
+# 主动聊天的定时任务（运行时生成，含你的投递目标）
+/schedules.json
+
+# 渠道路由数据目录（启用 QQ 渠道后自动生成）
+# 注意必须写成 /channels/：不带前导斜杠会连 castorice/channels/ 一起忽略
+/channels/
 
 # AgentTeams 协作状态（本地工具产物）
 .agent-teams/
 
+# AI 助手的工作区记忆与本地状态（不要把个人上下文传上去）
+.workbuddy/
+
 # 运行日志：可能包含对话内容
-logs/
+/logs/
 
 # 界面设置：你的主题偏好
 ui_settings.json
@@ -39,9 +53,14 @@ ui_settings.json
 build/
 dist/
 发布包/
+webapp/release/
+webapp/dist/
 *.spec
 *.zip
 *.7z
+
+# 说明：PyInstaller 的 .spec 已全部归档到 build-specs/archive/（仅作历史参考），
+# 正式打包以 scripts/打包*.ps1 的命令行参数为准，因此继续忽略 *.spec。
 
 
 # ------------------------------------------------------------
@@ -91,6 +110,9 @@ desktop.ini
 .mypy_cache/
 .ruff_cache/
 .ipynb_checkpoints/
+
+# 临时脚本与中间产物（任务结束前自行清理）
+.tmp/
 
 # 第三期 UI 参考仓库（用户手动放置，勿提交勿删除）
 Cyrene-Agent-master/
