@@ -66,16 +66,27 @@ jobs:
       # 失败时把用例名以 ::error:: 输出成 annotation：
       # GitHub 的 job 日志需要认证才能下载，但 annotation 是公开可读的，
       # 任何人都能在 Actions 页面（或 API）直接看到是哪个用例挂了。
+      #
+      # 注意 set +e：GitHub Actions 的 bash 默认带 -e，pytest 非零退出
+      # 会让脚本立刻终止，后面的诊断块根本执行不到。
       - name: 运行测试
         shell: bash
         run: |
+          set +e
           python -m pytest -q --tb=short > pytest.log 2>&1
           status=$?
           if [ $status -ne 0 ]; then
-            echo "===== 失败用例 ====="
-            grep -E "^(FAILED|ERROR)" pytest.log | head -20 | while IFS= read -r line; do
-              echo "::error title=Pytest failure::$line"
-            done
+            failed=$(grep -E "^(FAILED|ERROR)" pytest.log | head -20)
+            if [ -n "$failed" ]; then
+              echo "$failed" | while IFS= read -r line; do
+                echo "::error title=Pytest failure::$line"
+              done
+            else
+              # 没抓到 FAILED 行说明可能是收集阶段就崩了，把尾部逐行抛出来
+              tail -15 pytest.log | while IFS= read -r line; do
+                echo "::error title=Pytest error::$line"
+              done
+            fi
             echo "===== 输出尾部 60 行 ====="
             tail -60 pytest.log
           fi
