@@ -63,6 +63,29 @@ jobs:
           pip install -r requirements-dev.txt
           pip install -r requirements.txt
 
+      # chromadb 的默认 embedding 走本地 ONNX 模型（all-MiniLM-L6-v2），
+      # 首次 add/query 时才下载。开发机通常已有 ~/.cache/chroma 缓存，
+      # CI 是全新环境，会在测试期间触发下载——而测试夹具默认禁止联网，
+      # 于是 4 个记忆用例在 CI 上必然失败、本地全绿。
+      # 在 pytest 之外先预热一次，把模型落进缓存目录，测试期间就不再联网。
+      - name: 缓存 embedding 模型
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/chroma
+          key: chroma-default-embedding-v1
+
+      - name: 预热 embedding 模型
+        shell: bash
+        run: |
+          python - <<'PY'
+          import chromadb
+
+          client = chromadb.EphemeralClient()
+          collection = client.get_or_create_collection("warmup")
+          collection.add(ids=["1"], documents=["warmup"])
+          print("embedding model ready")
+          PY
+
       # 失败时把用例名以 ::error:: 输出成 annotation：
       # GitHub 的 job 日志需要认证才能下载，但 annotation 是公开可读的，
       # 任何人都能在 Actions 页面（或 API）直接看到是哪个用例挂了。
@@ -73,20 +96,22 @@ jobs:
         shell: bash
         run: |
           set +e
-          python -m pytest -q --tb=short > pytest.log 2>&1
+          python -m pytest -q --tb=short -l > pytest.log 2>&1
           status=$?
           if [ $status -ne 0 ]; then
-            failed=$(grep -E "^(FAILED|ERROR)" pytest.log | head -20)
-            if [ -n "$failed" ]; then
-              echo "$failed" | while IFS= read -r line; do
-                echo "::error title=Pytest failure::$line"
-              done
-            else
-              # 没抓到 FAILED 行说明可能是收集阶段就崩了，把尾部逐行抛出来
-              tail -15 pytest.log | while IFS= read -r line; do
-                echo "::error title=Pytest error::$line"
-              done
+            grep -E "^(FAILED|ERROR)" pytest.log | head -10 | while IFS= read -r line; do
+              echo "::error title=Pytest failure::$line"
+            done
+            # 失败详情：-l 会连带打印局部变量，拼成一条多行 annotation，
+            # 这样不登录也能看到实际值（例如 events 列表的内容）。
+            detail=$(sed -n '/=== FAILURES ===/,/short test summary info/p' pytest.log | head -50)
+            if [ -z "$detail" ]; then
+              detail=$(tail -30 pytest.log)
             fi
+            detail=${detail//'%'/'%25'}
+            detail=${detail//$'\r'/''}
+            detail=${detail//$'\n'/'%0A'}
+            echo "::error title=Pytest detail::$detail"
             echo "===== 输出尾部 60 行 ====="
             tail -60 pytest.log
           fi
