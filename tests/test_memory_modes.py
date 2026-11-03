@@ -289,6 +289,9 @@ def test_new_ids_do_not_collide(memory_root):
     assert engine.get(first).content == "第一条", "旧记忆不得被覆盖"
 
 
+@pytest.mark.skipif(
+    not (REPOSITORY_DATABASE / "chroma.sqlite3").exists(), reason="仓库里没有既有 database/"
+)
 def test_repository_database_has_legacy_entries_without_metadata(tmp_path):
     """仓库既有 database/ 的实际构成：58 条里多数是早期无 metadata 的记忆
 
@@ -395,6 +398,9 @@ def test_existing_repository_database_is_readable(tmp_path):
     assert engine.search_memories("用户"), "旧数据必须能被检索到"
 
 
+@pytest.mark.skipif(
+    not (REPOSITORY_DATABASE / "chroma.sqlite3").exists(), reason="仓库里没有既有 database/"
+)
 def test_repository_database_stays_readable_after_copy(tmp_path):
     """同一份既有数据用只读 sqlite 直查，交叉验证 count 的可信度"""
     database = tmp_path / "database"
