@@ -165,12 +165,15 @@ def test_format_now_without_timezone_is_legacy_format():
 
 
 def test_format_now_with_timezone_renders_that_zone():
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     import ai
 
     UserProfile.save_values({"timezone": "Asia/Shanghai"})
-    text = ai.AI._format_now(datetime(2026, 10, 3, 16, 20, 15))
+    # 必须传 aware datetime：_format_now 内部走 now.astimezone(ZoneInfo(...))，
+    # 对 naive datetime 会按「运行机器的本地时区」解释，断言就变成依赖机器时区
+    # （本机 UTC+8 恰好等于 Asia/Shanghai 才通过，CI 的 UTC 会跨到次日）。
+    text = ai.AI._format_now(datetime(2026, 10, 3, 8, 20, 15, tzinfo=timezone.utc))
     assert "2026-10-03 16:20:15" in text
     assert "星期六" in text
     assert "Asia/Shanghai" in text
