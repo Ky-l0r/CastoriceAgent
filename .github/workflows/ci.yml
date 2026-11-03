@@ -63,8 +63,23 @@ jobs:
           pip install -r requirements-dev.txt
           pip install -r requirements.txt
 
+      # 失败时把用例名以 ::error:: 输出成 annotation：
+      # GitHub 的 job 日志需要认证才能下载，但 annotation 是公开可读的，
+      # 任何人都能在 Actions 页面（或 API）直接看到是哪个用例挂了。
       - name: 运行测试
-        run: python -m pytest -q
+        shell: bash
+        run: |
+          python -m pytest -q --tb=short > pytest.log 2>&1
+          status=$?
+          if [ $status -ne 0 ]; then
+            echo "===== 失败用例 ====="
+            grep -E "^(FAILED|ERROR)" pytest.log | head -20 | while IFS= read -r line; do
+              echo "::error title=Pytest failure::$line"
+            done
+            echo "===== 输出尾部 60 行 ====="
+            tail -60 pytest.log
+          fi
+          exit $status
 
   # ---- 前端：三个 tsconfig 分别做类型检查，再验证 vite 构建 ----
   webapp:
